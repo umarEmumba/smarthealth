@@ -18,8 +18,11 @@ from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
 from services.identity.api.admin_ping import router as admin_ping_router
 from services.identity.api.auth import router as auth_router
+from services.identity.api.availability import router as availability_router
 from services.identity.api.clinics import router as clinics_router
 from services.identity.api.departments import router as departments_router
+from services.identity.api.patients import router as patients_router
+from services.identity.api.providers import router as providers_router
 from smarthealth.db import get_mongo_client
 
 
@@ -37,6 +40,9 @@ def create_app() -> FastAPI:
     app.include_router(admin_ping_router)
     app.include_router(clinics_router)
     app.include_router(departments_router)
+    app.include_router(patients_router)
+    app.include_router(providers_router)
+    app.include_router(availability_router)
 
     # OTel FastAPI auto-instrumentation — request/response body capture is
     # NOT enabled anywhere in this codebase (PHI safety, see libs/observability/otel.py).
