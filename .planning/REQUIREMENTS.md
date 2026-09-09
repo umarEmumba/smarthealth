@@ -9,10 +9,10 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 
 ### Identity & Access (IAM)
 
-- [ ] **IAM-01**: User can register and authenticate with a role of patient, provider, front-desk staff, or admin
-- [ ] **IAM-02**: System enforces role-based access control so each role can only perform its permitted actions (e.g., front-desk manages appointments but cannot access admin-only operations)
-- [ ] **IAM-03**: User sessions/tokens are issued on login and validated on every protected request
-- [ ] **IAM-04**: Every mutating profile and operational action is recorded in an audit trail (who, what, when) with no PHI in logs
+- [x] **IAM-01**: User can register and authenticate with a role of patient, provider, front-desk staff, or admin
+- [x] **IAM-02**: System enforces role-based access control so each role can only perform its permitted actions (e.g., front-desk manages appointments but cannot access admin-only operations)
+- [x] **IAM-03**: User sessions/tokens are issued on login and validated on every protected request
+- [x] **IAM-04**: Every mutating profile and operational action is recorded in an audit trail (who, what, when) with no PHI in logs
 
 ### Patient & Provider Management (PPL)
 
@@ -116,10 +116,10 @@ Explicitly excluded to prevent scope creep.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| IAM-01 | Phase 1 | Pending |
-| IAM-02 | Phase 1 | Pending |
-| IAM-03 | Phase 1 | Pending |
-| IAM-04 | Phase 1 | Pending |
+| IAM-01 | Phase 1 | Complete |
+| IAM-02 | Phase 1 | Complete |
+| IAM-03 | Phase 1 | Complete |
+| IAM-04 | Phase 1 | Complete |
 | PPL-01 | Phase 1 | Complete |
 | PPL-02 | Phase 1 | Complete |
 | PPL-03 | Phase 1 | Complete |

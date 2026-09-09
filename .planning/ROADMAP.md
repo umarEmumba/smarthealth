@@ -31,7 +31,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Every mutating profile/operational action produces an audit-trail entry (who, what, when) inspectable in MongoDB, with no PHI content present in application logs.
   6. `docker compose up` brings up the full stack (Postgres, MongoDB, Redis, plus Kafka/Temporal/RabbitMQ/observability scaffolding even if not yet wired into code) with passing health checks, and the self-contained HTML dashboard opens with an architecture diagram and documented technology tradeoffs (including NoSQL choice, Temporal, Kafka+RabbitMQ split, Postgres system-of-record, Redis role).
 
-**Plans**: 2/6 plans executed
+**Plans**: 3/6 plans executed
 
 Plans:
 **Wave 1**
@@ -44,7 +44,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-tracer-auth-rbac-audit-PLAN.md — TRACER: end-to-end register→login→RBAC-scoped request→audit→PHI-safe log/trace (IAM-01/02/03/04)
+- [x] 01-03-tracer-auth-rbac-audit-PLAN.md — TRACER: end-to-end register→login→RBAC-scoped request→audit→PHI-safe log/trace (IAM-01/02/03/04)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -96,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Core Services | 2/6 | In Progress|  |
+| 1. Foundation + Core Services | 3/6 | In Progress|  |
 | 2. Scheduling + Service Workflow | 0/TBD | Not started | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |
