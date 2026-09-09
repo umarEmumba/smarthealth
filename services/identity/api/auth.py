@@ -220,8 +220,8 @@ async def login(
         )
 
     clinic_id_str = str(user.clinic_id) if user.clinic_id else None
-    access_token, _access_jti = create_access_token(str(user.id), user.role, clinic_id_str)
-    refresh_token, _refresh_jti = create_refresh_token(str(user.id))
+    access_token, access_jti = create_access_token(str(user.id), user.role, clinic_id_str)
+    refresh_token, refresh_jti = create_refresh_token(str(user.id))
 
     await write_audit(
         mongo,
@@ -233,7 +233,17 @@ async def login(
         clinic_id=clinic_id_str,
         outcome="success",
     )
-    log.info("auth.login.success", user_id=str(user.id), role=user.role)
+    # WR-04: thread both jtis into the log line so the issued token pair
+    # can be correlated to this login event without re-decoding either
+    # token — the audit document's schema is a locked contract (jti is
+    # not one of its fields), so this correlation lives in the log only.
+    log.info(
+        "auth.login.success",
+        user_id=str(user.id),
+        role=user.role,
+        access_jti=access_jti,
+        refresh_jti=refresh_jti,
+    )
 
     return LoginResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -261,10 +271,17 @@ async def refresh(
     # Re-derive role/clinic from CURRENT DB state — a role change takes
     # effect on next refresh, not just next login (locked contract).
     clinic_id_str = str(user.clinic_id) if user.clinic_id else None
-    access_token, _access_jti = create_access_token(str(user.id), user.role, clinic_id_str)
-    new_refresh_token, _refresh_jti = create_refresh_token(str(user.id))
+    access_token, access_jti = create_access_token(str(user.id), user.role, clinic_id_str)
+    new_refresh_token, new_refresh_jti = create_refresh_token(str(user.id))
 
-    log.info("auth.refresh.success", user_id=str(user.id))
+    # WR-04: thread both newly-issued jtis into the log line for
+    # audit/revocation correlation (see the matching note in login()).
+    log.info(
+        "auth.refresh.success",
+        user_id=str(user.id),
+        access_jti=access_jti,
+        refresh_jti=new_refresh_jti,
+    )
 
     return TokenPair(access_token=access_token, refresh_token=new_refresh_token)
 

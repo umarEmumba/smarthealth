@@ -225,6 +225,52 @@ async def test_refresh_reissues_access_token(client: AsyncClient) -> None:
 
 
 @pytest.mark.integration
+async def test_login_and_refresh_log_lines_carry_jti_for_correlation(
+    client: AsyncClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """WR-04 regression: `auth.login.success` and `auth.refresh.success`
+    log lines must carry the issued access/refresh jti(s) so the audit
+    trail for a login/refresh event can be correlated to the specific
+    token pair that was issued, without re-decoding either token.
+    """
+    import json
+
+    email = _unique_email("jti-correlation")
+    register_resp = await client.post(
+        "/api/auth/register",
+        json={"email": email, "password": "correct-horse-battery"},
+    )
+    assert register_resp.status_code == 201, register_resp.text
+
+    capsys.readouterr()  # discard anything captured so far this test
+
+    login_resp = await client.post(
+        "/api/auth/login", json={"email": email, "password": "correct-horse-battery"}
+    )
+    assert login_resp.status_code == 200, login_resp.text
+    tokens = login_resp.json()
+
+    login_out = capsys.readouterr().out
+    login_lines = [json.loads(line) for line in login_out.strip().splitlines() if line.strip()]
+    login_success = next(line for line in login_lines if line.get("event") == "auth.login.success")
+    assert "access_jti" in login_success
+    assert "refresh_jti" in login_success
+
+    refresh_resp = await client.post(
+        "/api/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert refresh_resp.status_code == 200, refresh_resp.text
+
+    refresh_out = capsys.readouterr().out
+    refresh_lines = [json.loads(line) for line in refresh_out.strip().splitlines() if line.strip()]
+    refresh_success = next(
+        line for line in refresh_lines if line.get("event") == "auth.refresh.success"
+    )
+    assert "access_jti" in refresh_success
+    assert "refresh_jti" in refresh_success
+
+
+@pytest.mark.integration
 async def test_refresh_rejects_empty_and_garbage_token(client: AsyncClient) -> None:
     empty_resp = await client.post("/api/auth/refresh", json={"refresh_token": ""})
     assert empty_resp.status_code == 401
