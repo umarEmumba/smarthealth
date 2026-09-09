@@ -52,7 +52,13 @@ def get_engine() -> AsyncEngine:
     """
     global _engine, _engine_loop, _session_factory  # noqa: PLW0603
 
-    current_loop = asyncio.get_event_loop()
+    # WR-06: `asyncio.get_event_loop()` is deprecated since Python 3.10 when
+    # called with no running loop, and its old fallback behavior of
+    # implicitly CREATING a new loop (rather than raising) can mask a bug
+    # where this is called from a context with no running event loop.
+    # `get_running_loop()` is correct here — every call site (`get_db`,
+    # every FastAPI dependency) is always awaited from within a running loop.
+    current_loop = asyncio.get_running_loop()
     if _engine is None or _engine_loop is not current_loop:
         _engine = create_async_engine(settings.database_url, pool_pre_ping=True)
         _engine_loop = current_loop
@@ -118,7 +124,10 @@ def get_mongo_client() -> AsyncMongoClient:
     """
     global _mongo_client, _mongo_client_loop  # noqa: PLW0603
 
-    current_loop = asyncio.get_event_loop()
+    # WR-06: see the matching note in get_engine() above — get_running_loop()
+    # is correct here since every call site is awaited from within a
+    # running loop (get_mongo() FastAPI dependency).
+    current_loop = asyncio.get_running_loop()
     if _mongo_client is None or _mongo_client_loop is not current_loop:
         _mongo_client = AsyncMongoClient(settings.mongo_url)
         _mongo_client_loop = current_loop
