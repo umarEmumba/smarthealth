@@ -31,7 +31,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Every mutating profile/operational action produces an audit-trail entry (who, what, when) inspectable in MongoDB, with no PHI content present in application logs.
   6. `docker compose up` brings up the full stack (Postgres, MongoDB, Redis, plus Kafka/Temporal/RabbitMQ/observability scaffolding even if not yet wired into code) with passing health checks, and the self-contained HTML dashboard opens with an architecture diagram and documented technology tradeoffs (including NoSQL choice, Temporal, Kafka+RabbitMQ split, Postgres system-of-record, Redis role).
 
-**Plans**: 1/6 plans executed
+**Plans**: 2/6 plans executed
 
 Plans:
 **Wave 1**
@@ -40,7 +40,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-data-model-migrations-PLAN.md — SQLAlchemy 2.0 async data model + Alembic migrations (all entities, empty provider_slots with GiST exclusion constraint) + Mongo audit indexes
+- [x] 01-02-data-model-migrations-PLAN.md — SQLAlchemy 2.0 async data model + Alembic migrations (all entities, empty provider_slots with GiST exclusion constraint) + Mongo audit indexes
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -96,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Core Services | 1/6 | In Progress|  |
+| 1. Foundation + Core Services | 2/6 | In Progress|  |
 | 2. Scheduling + Service Workflow | 0/TBD | Not started | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

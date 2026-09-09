@@ -16,16 +16,16 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 
 ### Patient & Provider Management (PPL)
 
-- [ ] **PPL-01**: Front-desk/admin can register a patient and manage their profile
-- [ ] **PPL-02**: Admin can register a provider with one or more specialties
-- [ ] **PPL-03**: Provider (or admin) can configure provider availability windows and working hours
-- [ ] **PPL-04**: Users can retrieve patient and provider records with consistent, up-to-date state
+- [x] **PPL-01**: Front-desk/admin can register a patient and manage their profile
+- [x] **PPL-02**: Admin can register a provider with one or more specialties
+- [x] **PPL-03**: Provider (or admin) can configure provider availability windows and working hours
+- [x] **PPL-04**: Users can retrieve patient and provider records with consistent, up-to-date state
 
 ### Clinic & Department Management (ORG)
 
-- [ ] **ORG-01**: Admin can create and manage clinics
-- [ ] **ORG-02**: Admin can create and manage departments within a clinic
-- [ ] **ORG-03**: Providers and their schedulable slots are scoped to a clinic/department
+- [x] **ORG-01**: Admin can create and manage clinics
+- [x] **ORG-02**: Admin can create and manage departments within a clinic
+- [x] **ORG-03**: Providers and their schedulable slots are scoped to a clinic/department
 
 ### Appointment Scheduling (SCHED)
 
@@ -120,13 +120,13 @@ Explicitly excluded to prevent scope creep.
 | IAM-02 | Phase 1 | Pending |
 | IAM-03 | Phase 1 | Pending |
 | IAM-04 | Phase 1 | Pending |
-| PPL-01 | Phase 1 | Pending |
-| PPL-02 | Phase 1 | Pending |
-| PPL-03 | Phase 1 | Pending |
-| PPL-04 | Phase 1 | Pending |
-| ORG-01 | Phase 1 | Pending |
-| ORG-02 | Phase 1 | Pending |
-| ORG-03 | Phase 1 | Pending |
+| PPL-01 | Phase 1 | Complete |
+| PPL-02 | Phase 1 | Complete |
+| PPL-03 | Phase 1 | Complete |
+| PPL-04 | Phase 1 | Complete |
+| ORG-01 | Phase 1 | Complete |
+| ORG-02 | Phase 1 | Complete |
+| ORG-03 | Phase 1 | Complete |
 | OBS-04 | Phase 1 | Complete |
 | DASH-01 | Phase 1 | Pending |
 | DASH-02 | Phase 1 | Pending |
