@@ -1,0 +1,132 @@
+"""Patient CRUD router (PPL-01) — front-desk/admin only, audited, PHI-safe.
+
+The highest-PHI-density router in Phase 1. `PatientCreate` carries
+operational-profile PHI fields (full_name/date_of_birth/phone/address).
+NONE of those values are ever passed to `write_audit`'s `changed_fields`
+or to any log/span call in this module — only field NAMES and
+identifiers (patient_id/clinic_id) ever appear in audit/log/trace output
+(RESEARCH PHI-Safe Structured Logging section; T-05-01).
+
+A patient profile (this router) is distinct from a patient's auth
+identity (`users`, IAM-01) — `patients.user_id` is nullable (RESEARCH
+Open Question 1). This route is guarded to FRONT_DESK/ADMIN only; a
+patient-role token cannot self-register a profile via this staff route
+(T-05-02).
+
+Every patient method in `people_repo.py` requires `clinic_id` explicitly
+— there is no id-only patient lookup path (RESEARCH Pitfall 1 / T-05-03).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from pymongo import AsyncMongoClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from libs.audit.writer import write_audit
+from libs.observability.logging import get_logger
+from services.identity.domain.enums import Role
+from services.identity.repository import people_repo
+from services.identity.security.current_user import AuthenticatedUser
+from services.identity.security.rbac import require_role
+from smarthealth.db import get_db, get_mongo
+
+router = APIRouter(prefix="/api/patients", tags=["patients"])
+
+log = get_logger(__name__)
+
+_PATIENT_PROFILE_FIELDS = ["full_name", "date_of_birth", "phone", "address"]
+
+
+class PatientCreate(BaseModel):
+    """PHI-bearing request payload — never log/audit these field VALUES."""
+
+    clinic_id: uuid.UUID
+    full_name: str = Field(min_length=1, max_length=255)
+    date_of_birth: date
+    phone: str | None = Field(default=None, max_length=32)
+    address: str | None = Field(default=None, max_length=2000)
+    user_id: uuid.UUID | None = None
+
+
+class PatientOut(BaseModel):
+    id: uuid.UUID
+    clinic_id: uuid.UUID
+    full_name: str
+    date_of_birth: date
+    phone: str | None = None
+    address: str | None = None
+    user_id: uuid.UUID | None = None
+
+
+def _to_out(patient) -> PatientOut:
+    return PatientOut(
+        id=patient.id,
+        clinic_id=patient.clinic_id,
+        full_name=patient.full_name,
+        date_of_birth=patient.date_of_birth,
+        phone=patient.phone,
+        address=patient.address,
+        user_id=patient.user_id,
+    )
+
+
+@router.post("", response_model=PatientOut, status_code=status.HTTP_201_CREATED)
+async def create_patient(
+    payload: PatientCreate,
+    user: AuthenticatedUser = Depends(require_role(Role.FRONT_DESK, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+) -> PatientOut:
+    patient = await people_repo.create_patient(
+        db,
+        clinic_id=payload.clinic_id,
+        full_name=payload.full_name,
+        date_of_birth=payload.date_of_birth,
+        phone=payload.phone,
+        address=payload.address,
+        user_id=payload.user_id,
+    )
+
+    # PHI-safe: only field NAMES are recorded, never the PHI values above.
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="patient.create",
+        entity_type="patient",
+        entity_id=str(patient.id),
+        clinic_id=str(patient.clinic_id),
+        outcome="success",
+        changed_fields=_PATIENT_PROFILE_FIELDS,
+    )
+    log.info("patient.create.success", patient_id=str(patient.id), clinic_id=str(patient.clinic_id))
+
+    return _to_out(patient)
+
+
+@router.get("", response_model=list[PatientOut])
+async def list_patients(
+    clinic_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(Role.FRONT_DESK, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> list[PatientOut]:
+    patients = await people_repo.list_patients(db, clinic_id)
+    return [_to_out(p) for p in patients]
+
+
+@router.get("/{patient_id}", response_model=PatientOut)
+async def get_patient(
+    patient_id: uuid.UUID,
+    clinic_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(Role.FRONT_DESK, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> PatientOut:
+    patient = await people_repo.get_patient(db, patient_id, clinic_id)
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="patient not found")
+    return _to_out(patient)

@@ -72,3 +72,18 @@ async def list_departments(db: AsyncSession, clinic_id: uuid.UUID) -> list[Depar
         .order_by(Department.created_at)
     )
     return list(result.scalars().all())
+
+
+async def get_department(db: AsyncSession, department_id: uuid.UUID) -> Department | None:
+    """Fetch a department by id alone.
+
+    Unlike `list_departments` (always clinic-scoped), this id-only lookup
+    exists because `people_repo.create_provider` needs to resolve a
+    provider's `department_id` -> `clinic_id` chain (ORG-03) without the
+    caller having to already know the clinic id — mirroring `get_clinic`'s
+    existing id-only shape above. Callers that expose this to an
+    HTTP boundary must still apply their own RBAC/scope checks; this
+    function itself performs no authorization.
+    """
+    result = await db.execute(select(Department).where(Department.id == department_id))
+    return result.scalar_one_or_none()
