@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SmartHealth — Architecture &amp; Decision Dashboard</title>
+<style>
+  :root {
+    --ground: #f6f9f9;
+    --surface: #ffffff;
+    --surface-2: #eef4f4;
+    --ink: #122029;
+    --muted: #586b74;
+    --faint: #8397a0;
+    --accent: #0e7c7b;
+    --accent-ink: #0a5b5a;
+    --accent-soft: #e0efee;
+    --border: #d7e2e3;
+    --border-strong: #bcccce;
+    --good: #2e7d5b;
+    --good-soft: #e3f1ea;
+    --warn: #a96a12;
+    --warn-soft: #f6ecd9;
+    --crit: #b8433a;
+    --crit-soft: #f6e2df;
+    --info: #2c6ca3;
+    --info-soft: #e2edf5;
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", "Menlo", "Consolas", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --shadow: 0 1px 2px rgba(18, 32, 41, .04), 0 4px 16px rgba(18, 32, 41, .05);
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  a { color: var(--accent-ink); }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- Top bar ---- */
+  header.top {
+    background: var(--ink);
+    color: #eaf1f1;
+    padding: 28px 0 24px;
+    border-bottom: 3px solid var(--accent);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #7fd0cd;
+    margin: 0 0 8px;
+  }
+  header.top h1 {
+    margin: 0;
+    font-size: clamp(26px, 4vw, 38px);
+    line-height: 1.12;
+    font-weight: 680;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+  }
+  header.top .lede {
+    margin: 12px 0 0;
+    max-width: 68ch;
+    color: #b9cccc;
+    font-size: 16px;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    margin-top: 20px;
+    font-size: 13px;
+    color: #9fb6b6;
+    font-family: var(--mono);
+  }
+  .meta-row b { color: #d7e6e6; font-weight: 600; }
+
+  /* ---- Sticky nav ---- */
+  nav.sections {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(246, 249, 249, .92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.sections .wrap {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  nav.sections a {
+    flex: 0 0 auto;
+    text-decoration: none;
+    color: var(--muted);
+    font-size: 13.5px;
+    font-weight: 550;
+    padding: 7px 13px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  nav.sections a:hover { background: var(--surface-2); color: var(--ink); }
+  nav.sections a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- Section scaffolding ---- */
+  section { padding: 44px 0 8px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px; }
+  .sec-num {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 600;
+    padding-top: 4px;
+  }
+  h2 {
+    font-size: clamp(20px, 2.6vw, 26px);
+    line-height: 1.2;
+    margin: 0;
+    letter-spacing: -.01em;
+    font-weight: 660;
+    text-wrap: balance;
+  }
+  .sec-sub { color: var(--muted); margin: 4px 0 26px; max-width: 74ch; }
+
+  /* ---- Architecture diagram ---- */
+  .diagram { display: flex; flex-direction: column; gap: 14px; }
+  .layer {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 16px;
+  }
+  .layer-label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 10px;
+  }
+  .nodes { display: flex; flex-wrap: wrap; gap: 10px; }
+  .node {
+    flex: 1 1 150px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .node .n-name { font-weight: 620; font-size: 14.5px; }
+  .node .n-tech { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); margin-top: 2px; }
+  .node .n-role { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  .node.accent { background: var(--accent-soft); border-color: #b9dedc; }
+  .flow-arrow { text-align: center; color: var(--border-strong); font-size: 18px; line-height: 1; margin: -6px 0; }
+
+  /* ---- Cards grid ---- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 18px 18px 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 2px; }
+  .card h3 { margin: 0; font-size: 17px; font-weight: 640; letter-spacing: -.005em; }
+  .card .chosen { font-family: var(--mono); font-size: 12.5px; color: var(--accent-ink); margin: 2px 0 12px; }
+
+  .kv { margin: 0 0 10px; }
+  .kv .k {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    display: block;
+    margin-bottom: 3px;
+  }
+  .kv .v { font-size: 14px; color: var(--ink); }
+  .kv .v.muted { color: var(--muted); }
+
+  /* ---- Chips ---- */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .03em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .85; }
+  .chip.high { background: var(--good-soft); color: var(--good); }
+  .chip.med { background: var(--warn-soft); color: var(--warn); }
+  .chip.low { background: var(--crit-soft); color: var(--crit); }
+  .chip.info { background: var(--info-soft); color: var(--info); }
+  .chip.plain::before { display: none; }
+
+  /* ---- Flow sequences ---- */
+  .flow {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .flow h3 { margin: 0 0 4px; font-size: 16.5px; font-weight: 640; }
+  .flow .flow-sub { color: var(--muted); font-size: 13.5px; margin: 0 0 16px; }
+  ol.steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
+  ol.steps li {
+    counter-increment: step;
+    position: relative;
+    padding: 0 0 16px 42px;
+    border-left: 2px solid var(--border);
+    margin-left: 13px;
+  }
+  ol.steps li:last-child { border-left-color: transparent; padding-bottom: 0; }
+  ol.steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: -14px;
+    top: -2px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  ol.steps li.compensate::before { background: var(--warn); }
+  ol.steps .s-title { font-weight: 600; font-size: 14.5px; }
+  ol.steps .s-desc { color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+  ol.steps code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin-top: 14px;
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .callout b { color: var(--accent-ink); }
+
+  /* ---- Q&A ---- */
+  details.qa {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  details.qa summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 15px 18px;
+    font-weight: 600;
+    font-size: 15px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  details.qa summary::-webkit-details-marker { display: none; }
+  details.qa summary::before {
+    content: "Q";
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--accent);
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+  details.qa summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  details.qa[open] summary { border-bottom: 1px solid var(--border); }
+  details.qa .answer { padding: 14px 18px 16px 52px; color: var(--ink); font-size: 14.5px; }
+  details.qa .answer p { margin: 0 0 10px; }
+  details.qa .answer p:last-child { margin-bottom: 0; }
+  details.qa .answer code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+
+  /* ---- Roadmap ---- */
+  .phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 16px 18px;
+    border-top: 3px solid var(--border-strong);
+  }
+  .phase.active { border-top-color: var(--accent); }
+  .phase .p-num { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+  .phase h3 { margin: 4px 0 8px; font-size: 16px; font-weight: 640; }
+  .phase p { margin: 0 0 12px; font-size: 13.5px; color: var(--muted); }
+  .phase .reqs { font-family: var(--mono); font-size: 11.5px; color: var(--accent-ink); line-height: 1.7; }
+
+  /* ---- misc ---- */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+
+  footer {
+    margin-top: 48px;
+    padding: 28px 0 40px;
+    border-top: 1px solid var(--border);
+    color: var(--faint);
+    font-size: 13px;
+  }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+  footer code { font-family: var(--mono); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 24px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">SmartHealth · Part A · MediNova</p>
+    <h1>Architecture &amp; Decision Dashboard</h1>
+    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary.</p>
+    <div class="meta-row">
+      <span>Milestone <b>Part A — Core Platform</b></span>
+      <span>Dashboard <b>v1 · Phase 1</b></span>
+      <span>Core value <b>reliable scheduling, no corrupted state</b></span>
+    </div>
+  </div>
+</header>
+
+<nav class="sections" aria-label="Sections">
+  <div class="wrap">
+    <a href="#overview">Overview</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#decisions">Decisions</a>
+    <a href="#patterns">Consistency Patterns</a>
+    <a href="#flows">Flows</a>
+    <a href="#qa">Evaluation Q&amp;A</a>
+    <a href="#roadmap">Roadmap</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+  <!-- OVERVIEW -->
+  <section id="overview">
+    <div class="sec-head"><span class="sec-num">01</span><h2>What SmartHealth Part A is</h2></div>
+    <p class="sec-sub">A production-grade, distributed backend for hospital and clinic operations: patient/provider management, appointment scheduling, visit workflows, billing pre-checks, notifications, and operational analytics. Part A is graded on architecture clarity, tradeoff reasoning, correct use of the mandated stack, reliability, and observability — so the reasoning below is a first-class deliverable, not documentation after the fact.</p>
+    <div class="two-col">
+      <div class="card">
+        <div class="card-top"><h3>The one thing that must hold</h3></div>
+        <p class="kv"><span class="v muted">Booking, updating, and completing an appointment is reliable and consistent under load. A partial failure never corrupts scheduling state, and every operational data model stays accurate, durable, and queryable. Every design decision on this page is justified against that sentence.</span></p>
+      </div>
+      <div class="card">
+        <div class="card-top"><h3>Mandated stack</h3></div>
+        <p class="kv"><span class="k">Backend</span><span class="v">Python · FastAPI · PostgreSQL · MongoDB · Redis</span></p>
+        <p class="kv"><span class="k">Async &amp; workflows</span><span class="v">Temporal · Kafka + Schema Registry · Celery + RabbitMQ</span></p>
+        <p class="kv"><span class="k">Observability</span><span class="v">Prometheus + Grafana · Jaeger · OpenTelemetry</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">DevOps</span><span class="v">Docker · Docker Compose</span></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section id="architecture">
+    <div class="sec-head"><span class="sec-num">02</span><h2>System architecture</h2></div>
+    <p class="sec-sub">Requests enter through FastAPI. Multi-step operations are owned by Temporal, which reads and writes the PostgreSQL system of record and delegates single-step jobs to Celery. State changes become durable Kafka events via a transactional outbox; consumers build read models and drive notifications. Everything is traced end-to-end with OpenTelemetry.</p>
+    <div class="diagram">
+
+      <div class="layer">
+        <div class="layer-label">Clients</div>
+        <div class="nodes">
+          <div class="node"><div class="n-name">Patient / Front-desk / Provider / Admin</div><div class="n-role">Role-scoped API consumers (patient, provider, front-desk, admin).</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">API &amp; Auth</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">API service</div><div class="n-tech">FastAPI</div><div class="n-role">Request validation (Pydantic), authentication, RBAC enforcement, OpenAPI surface.</div></div>
+          <div class="node"><div class="n-name">Auth &amp; RBAC</div><div class="n-tech">JWT / sessions</div><div class="n-role">Issues tokens, checks role → permitted action on every protected request.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Orchestration</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal</div><div class="n-role">Owns booking, cancel/reschedule, and visit-lifecycle sagas. Durable, resumable, compensating on failure.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Data stores</div>
+        <div class="nodes">
+          <div class="node"><div class="n-name">System of record</div><div class="n-tech">PostgreSQL</div><div class="n-role">Patients, providers, appointments, slots, billing, outbox table. Constraints enforce correctness.</div></div>
+          <div class="node"><div class="n-name">Operational documents</div><div class="n-tech">MongoDB</div><div class="n-role">Audit trail, visit/service records, notification logs, analytics projections.</div></div>
+          <div class="node"><div class="n-name">Cache &amp; coordination</div><div class="n-tech">Redis</div><div class="n-role">Hot availability reads, idempotency-key cache, short-lived locks.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Messaging &amp; background work</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">Event log</div><div class="n-tech">Kafka + Schema Registry</div><div class="n-role">Durable, replayable domain events. Fed by the transactional outbox. Many independent consumers.</div></div>
+          <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Discrete background jobs: notifications, reminders, follow-ups, projections. Retries + DLQ.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Observability (cross-cutting)</div>
+        <div class="nodes">
+          <div class="node"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">Per-flow metrics and dashboards.</div></div>
+          <div class="node"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry</div><div class="n-role">One connected trace across HTTP → Temporal → Kafka → Celery.</div></div>
+          <div class="node"><div class="n-name">Logs</div><div class="n-tech">Structured JSON</div><div class="n-role">Diagnosable, no PHI in log content.</div></div>
+        </div>
+      </div>
+
+    </div>
+    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
+  </section>
+
+  <!-- DECISIONS -->
+  <section id="decisions">
+    <div class="sec-head"><span class="sec-num">03</span><h2>Technology decisions</h2></div>
+    <p class="sec-sub">Each card states what was chosen, what else was on the table, why this won against the core value, and what it costs. The confidence chip reflects how settled the decision is.</p>
+    <div class="legend">
+      <span class="chip high">high confidence</span>
+      <span class="chip med">to confirm in build</span>
+      <span class="chip info plain">alternatives considered</span>
+    </div>
+
+    <div class="grid">
+
+      <div class="card">
+        <div class="card-top"><h3>Workflow orchestration</h3><span class="chip high">high</span></div>
+        <div class="chosen">Temporal</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains only · hand-rolled DB state machine · AWS Step Functions</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Booking is a multi-step transaction (validate → reserve → conflict-check → notify → billing → confirm). Temporal makes it durable and resumable, and models failure recovery as first-class compensation — directly satisfying "partial failures never corrupt scheduling state."</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Another infra component + a determinism discipline (no wall-clock/random in workflow code). Worth it for the graded reliability core.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Event backbone</h3><span class="chip high">high</span></div>
+        <div class="chosen">Kafka + Schema Registry</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">RabbitMQ only · Postgres LISTEN/NOTIFY · cloud stream (Kinesis)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">A durable, replayable log lets analytics, notifications, and audit consume the same events independently and lets a new consumer replay history. Schema Registry keeps event contracts safe to evolve across services.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Heavier to run (KRaft mode, matched Schema Registry version). Justified by the multi-consumer, replay, and scale requirements.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Background task queue</h3><span class="chip high">high</span></div>
+        <div class="chosen">Celery + RabbitMQ</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Kafka consumers as workers · Temporal for every job · Dramatiq / RQ</span></p>
+        <p class="kv"><span class="k">Why both, not just Kafka</span><span class="v">Kafka is a <em>log of facts</em>; RabbitMQ/Celery is a <em>work queue</em> for discrete fire-and-forget jobs (send reminder, schedule follow-up) with per-task retry and a dead-letter path. Different jobs, both needed.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Two messaging systems to operate. The responsibility split (below) keeps it defensible.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>System of record</h3><span class="chip high">high</span></div>
+        <div class="chosen">PostgreSQL</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">MongoDB for everything · MySQL</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant, and the transactional outbox rides the same commit.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Rigid schema vs documents — which is exactly why non-transactional data goes to MongoDB instead.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Operational document store</h3><span class="chip med">confirm</span></div>
+        <div class="chosen">MongoDB</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Postgres JSONB · Elasticsearch</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A second datastore to run. Confirm in Phase 1 that JSONB wouldn't be simpler for the volume at hand.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Cache &amp; coordination</h3><span class="chip high">high</span></div>
+        <div class="chosen">Redis</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">In-process cache · Postgres advisory locks</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Caches hot provider-availability reads during peak booking, stores idempotency keys for the fast dedup path, and provides short-lived locks.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A Redis lock is defense-in-depth, <em>not</em> the correctness backstop — TTL expiry can race. The Postgres constraint is the real guarantee.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>API framework</h3><span class="chip high">high</span></div>
+        <div class="chosen">FastAPI</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Django REST Framework · Flask</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Native async fits the I/O-bound orchestration workload; Pydantic gives validation at the edge; automatic OpenAPI documents the API for reviewers for free.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Less batteries-included than Django (no built-in admin/ORM) — acceptable; we compose SQLAlchemy + Alembic deliberately.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Observability</h3><span class="chip high">high</span></div>
+        <div class="chosen">Prometheus + Grafana · Jaeger · OpenTelemetry</div>
+        <p class="kv"><span class="k">Decision</span><span class="v">Instrument once with OpenTelemetry; export traces to Jaeger over <strong>OTLP</strong> (not the deprecated Jaeger exporter), metrics to Prometheus, visualize in Grafana.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Why it matters</span><span class="v muted">Observability is explicitly graded. The hard part is propagating trace context across async boundaries — see the consistency patterns below.</span></p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- PATTERNS -->
+  <section id="patterns">
+    <div class="sec-head"><span class="sec-num">04</span><h2>The three responsibility split &amp; consistency patterns</h2></div>
+    <p class="sec-sub">The most-asked evaluation question is "why do you have Temporal <em>and</em> Kafka <em>and</em> Celery?" They solve different problems, and three patterns keep the system consistent under failure.</p>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="card-top"><h3>Who does what</h3></div>
+        <p class="kv"><span class="k">Temporal</span><span class="v">Multi-step <em>orchestration</em> with compensation — the booking / cancel / visit sagas. Knows the whole transaction.</span></p>
+        <p class="kv"><span class="k">Kafka</span><span class="v">Durable <em>facts that already happened</em> — broadcast to independent consumers (analytics, audit, notifications). Replayable.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Celery</span><span class="v">Discrete <em>single-step jobs</em>, usually triggered by a Temporal activity or a Kafka consumer — send an email, compute a projection.</span></p>
+      </div>
+      <div class="card">
+        <div class="card-top"><h3>Three patterns that keep state honest</h3></div>
+        <p class="kv"><span class="k">Transactional outbox</span><span class="v">Business row + event row commit in one Postgres transaction; a relay publishes to Kafka after. No dual-write gap.</span></p>
+        <p class="kv"><span class="k">Layered idempotency</span><span class="v">Redis key (fast) + Temporal workflow-id dedup + Postgres unique constraint (backstop). At-least-once delivery becomes effectively-once.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Saga compensation</span><span class="v">On failure, run <em>forward</em> transactions (release slot, reverse billing, notify) — never a hard delete or silent rollback. Audit history stays intact.</span></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FLOWS -->
+  <section id="flows">
+    <div class="sec-head"><span class="sec-num">05</span><h2>Core flows</h2></div>
+    <p class="sec-sub">The booking saga is the heart of the system. Steps 1–6 are the happy path Temporal drives; the compensation step is what runs on failure. Cancel/reschedule and the visit lifecycle are shown as designed — implemented in Phase 2.</p>
+
+    <div class="flow">
+      <h3>Appointment booking saga</h3>
+      <p class="flow-sub">Orchestrated by Temporal · appointment is <code>confirmed</code> only after step 6.</p>
+      <ol class="steps">
+        <li><div class="s-title">Validate</div><div class="s-desc">Check patient eligibility and request details. Reject early on bad input.</div></li>
+        <li><div class="s-title">Reserve slot</div><div class="s-desc">Reserve the provider slot; the Postgres exclusion constraint makes a concurrent double-book impossible, not just unlikely.</div></li>
+        <li><div class="s-title">Prevent conflicts</div><div class="s-desc">Confirm no overlapping hold for this provider/time; honor the idempotency key so a retry returns the same appointment.</div></li>
+        <li><div class="s-title">Schedule notifications</div><div class="s-desc">Hand a reminder job to Celery — asynchronous, never blocking the booking transaction.</div></li>
+        <li><div class="s-title">Billing pre-check</div><div class="s-desc">Run the modeled eligibility check (<code>pending → verified/failed</code>). No live payment gateway.</div></li>
+        <li><div class="s-title">Confirm</div><div class="s-desc">Mark the appointment <code>confirmed</code> and emit <code>AppointmentBooked</code> via the outbox.</div></li>
+        <li class="compensate"><div class="s-title">Compensate (on any failure)</div><div class="s-desc">Run forward compensations — release the slot, reverse the billing hold, notify the patient. State is left clean, history preserved.</div></li>
+      </ol>
+      <div class="callout"><b>Evaluation hook:</b> "Under a concurrent load test, parallel bookings against the same slot never produce more than one confirmed appointment" is a Phase 2 success criterion — enforced at the data layer, demonstrated with a load test.</div>
+    </div>
+
+    <div class="two-col">
+      <div class="flow">
+        <h3>Cancel / reschedule</h3>
+        <p class="flow-sub">Phase 2 · slot release + waitlist advance.</p>
+        <ol class="steps">
+          <li><div class="s-title">Release slot</div><div class="s-desc">Free the held slot atomically.</div></li>
+          <li><div class="s-title">Update billing</div><div class="s-desc">Reschedule re-reserves the new slot; cancel triggers refund/billing state update.</div></li>
+          <li><div class="s-title">Advance waitlist</div><div class="s-desc">Match the next appropriate patient to the freed slot.</div></li>
+          <li><div class="s-title">Notify &amp; emit event</div><div class="s-desc">Async patient notification; emit <code>AppointmentCancelled/Rescheduled</code>.</div></li>
+        </ol>
+      </div>
+      <div class="flow">
+        <h3>Visit lifecycle</h3>
+        <p class="flow-sub">Phase 2 · idempotent state machine.</p>
+        <ol class="steps">
+          <li><div class="s-title">Check in</div><div class="s-desc">Front-desk records arrival for a confirmed appointment.</div></li>
+          <li><div class="s-title">In progress</div><div class="s-desc">Provider/front-desk advances state; transitions are duplicate-safe.</div></li>
+          <li><div class="s-title">Complete</div><div class="s-desc">Triggers billing / follow-up / analytics without blocking the transition; emits <code>VisitCompleted</code>.</div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- Q&A -->
+  <section id="qa">
+    <div class="sec-head"><span class="sec-num">06</span><h2>Anticipated evaluation questions</h2></div>
+    <p class="sec-sub">Prepared, defensible answers to the questions a mentor is most likely to ask, mapped to the graded criteria: architecture clarity, reliability &amp; failure handling, correct tool use, observability.</p>
+
+    <details class="qa" open>
+      <summary>Why Temporal instead of just Celery for booking?</summary>
+      <div class="answer">
+        <p>Celery runs discrete jobs; it doesn't own a multi-step transaction or model compensation. Booking is a saga — validate, reserve, conflict-check, notify, billing, confirm — where a failure at step 5 must undo steps 1–4 cleanly. Temporal gives durable execution (the workflow survives a worker crash and resumes), deterministic replay, and first-class compensation.</p>
+        <p>Celery still has a job here: Temporal <em>delegates</em> single-step work (send a notification) to Celery. They're complementary, not competing.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>Why do you run both Kafka and RabbitMQ?</summary>
+      <div class="answer">
+        <p>Kafka is a durable, replayable <em>log of facts</em> — many independent consumers (analytics, audit, notification triggers) read the same <code>AppointmentBooked</code> event, and a new consumer can replay history. RabbitMQ + Celery is a <em>work queue</em> for discrete jobs with per-task retry and a dead-letter path.</p>
+        <p>Using Kafka as a task queue loses per-message retry/ack semantics; using RabbitMQ as an event log loses replay and multi-consumer fan-out. Each tool does the job it's good at.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How do you prevent double-booking under concurrency?</summary>
+      <div class="answer">
+        <p>The enforced invariant is a PostgreSQL exclusion constraint on (provider, time-range) — two overlapping confirmed appointments simply cannot both commit. Application checks and a Redis lock are fast-path optimizations, but the database constraint is the correctness guarantee.</p>
+        <p>This is deliberately not "check-then-insert in application code," which races. It's demonstrated with a concurrent load test in Phase 2.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How is an event never lost after a database commit?</summary>
+      <div class="answer">
+        <p>The transactional outbox pattern. The business row and an outbox row are written in the <em>same</em> Postgres transaction, so they commit or fail together — no dual-write gap where the DB commits but the Kafka publish is lost. A separate relay reads the outbox and publishes to Kafka; if it crashes mid-publish, it retries from the outbox, and consumers are idempotent so a re-publish is harmless.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How do you handle duplicate / at-least-once delivery?</summary>
+      <div class="answer">
+        <p>Defense-in-depth idempotency: a Redis idempotency-key cache on the fast path, Temporal deterministic workflow IDs for workflow-level dedup, and Postgres unique constraints as the correctness backstop. Every consumer is written to tolerate redelivery — the outcome is effectively-once even though delivery is at-least-once.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>Why PostgreSQL and MongoDB, rather than one database?</summary>
+      <div class="answer">
+        <p>Split by consistency need. Data the saga must reason about for correctness — patients, providers, appointments, slots, billing, the outbox — needs transactions and constraints, so it lives in Postgres. Append-heavy, schema-flexible data — audit trail, visit records, notification logs, analytics projections — fits a document model, so it lives in MongoDB. Forcing either into the other's model is where teams get burned.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How does a partial failure not corrupt scheduling state?</summary>
+      <div class="answer">
+        <p>Saga compensation as forward transactions. If billing fails after the slot is reserved, we don't hard-delete or silently roll back — we run compensating actions (release the slot, reverse the billing hold, notify the patient). The audit trail keeps the full history of what happened and what undid it. The appointment is never left half-confirmed.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How do you trace a request across async boundaries?</summary>
+      <div class="answer">
+        <p>OpenTelemetry context is propagated explicitly across every hop — HTTP headers into the API, Temporal interceptors into workflow/activity spans, Kafka message headers, and Celery task headers. The goal (a Phase 3 success criterion) is that one booking request shows up in Jaeger as a single connected trace across HTTP → Temporal → Kafka → Celery, not disconnected fragments. Auto-instrumentation alone only covers HTTP/DB, so the async hops are verified with a deliberate end-to-end trace test.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>Is the local Docker Compose setup production-shaped?</summary>
+      <div class="answer">
+        <p>Honestly: the local stack uses Temporal's <code>auto-setup</code> image and single-node Kafka/Postgres for developer convenience — that's labeled as dev-only, not a production deployment. Production-shaping (separate Temporal schema management, replicated brokers, resource limits) is called out as a decision to document rather than something silently claimed. Being explicit about this is part of the reliability story, not a gap.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ROADMAP -->
+  <section id="roadmap">
+    <div class="sec-head"><span class="sec-num">07</span><h2>Roadmap &amp; how this dashboard grows</h2></div>
+    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v1 (Phase 1 scope) and is extended at the end of each phase — Phase 2 adds the finalized workflow/state diagrams, Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
+    <div class="phases">
+      <div class="phase active">
+        <div class="p-num">Phase 1 · Week 1 · current</div>
+        <h3>Foundation + Core Services</h3>
+        <p>Infra skeleton, auth/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, dashboard v1.</p>
+        <div class="reqs">IAM-01..04 · PPL-01..04 · ORG-01..03 · OBS-04 · DASH-01..02</div>
+      </div>
+      <div class="phase">
+        <div class="p-num">Phase 2 · Week 2</div>
+        <h3>Scheduling + Service Workflow</h3>
+        <p>Temporal booking / cancel / reschedule / visit sagas, data-layer conflict prevention, idempotency, waitlist, modeled billing pre-check.</p>
+        <div class="reqs">SCHED-01..08 · VISIT-01..05 · BILL-01..02</div>
+      </div>
+      <div class="phase">
+        <div class="p-num">Phase 3 · Week 3</div>
+        <h3>Event-Driven System + Observability</h3>
+        <p>Kafka outbox backbone, Celery/RabbitMQ workers + DLQ, event-derived analytics, full observability, dashboard closeout.</p>
+        <div class="reqs">EVENT-01..05 · NOTIF-01..04 · ANLY-01..06 · OBS-01..03 · DASH-03..04</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v1 · Phase 1</code></span>
+    <span>Source of truth: <code>docs/architecture-dashboard.html</code> · updated per phase</span>
+  </div>
+</footer>
+
+</body>
+</html>
