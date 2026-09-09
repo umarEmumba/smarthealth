@@ -1,0 +1,222 @@
+name: smarthealth
+
+# Full local-dev stack for SmartHealth Part A. Postgres/Mongo/Redis are the
+# application's live dependencies (Phase 1). Kafka/Schema-Registry/RabbitMQ/
+# Temporal/Jaeger/Prometheus/Grafana are scaffolding this phase — OBS-04
+# requires them to reach a passing health status even though no app code
+# talks to them until Phase 2/3.
+
+services:
+  postgres:
+    image: postgres:15-trixie
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smarthealth}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-local-dev-only}
+      POSTGRES_DB: ${POSTGRES_DB:-smarthealth}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smarthealth} -d ${POSTGRES_DB:-smarthealth}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  mongo:
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-smarthealth}
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    # CLAUDE.md pins redis:8.2-trixie, but that exact tag does not exist on
+    # Docker Hub (verified live against the registry this session) — using
+    # 8.2-bookworm, the same 8.2 minor line CLAUDE.md intended, just the
+    # correct Debian codename tag Redis actually publishes.
+    image: redis:8.2-bookworm
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:4.3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-smarthealth}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-changeme-local-dev-only}
+    ports:
+      - "${RABBITMQ_HOST_PORT:-5672}:5672"
+      - "${RABBITMQ_UI_HOST_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  # Kafka in KRaft mode (broker + controller combined single-node) — no
+  # ZooKeeper service. CLUSTER_ID is a fixed base64 UUID, required for a
+  # KRaft-mode single-node broker to bootstrap deterministically across
+  # `docker compose up` re-runs.
+  kafka:
+    image: confluentinc/cp-kafka:7.6.13
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Fixed base64 UUID (24 chars) — required for KRaft single-node bootstrap.
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+
+  # Same Confluent Platform version line as kafka (7.6.13) — mixing CP image
+  # lines is a known source of wire-protocol/compatibility issues.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.13
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      # Points at Kafka's INTERNAL compose-network listener (kafka:29092),
+      # not the host-mapped localhost:9092 — that only resolves from the host.
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - "${SCHEMA_REGISTRY_HOST_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/subjects || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # NON-PRODUCTION convenience image per CLAUDE.md's "What NOT to Use" table —
+  # auto-provisions Temporal's schema on first boot. Production would use
+  # temporalio/server + a dedicated schema-setup job/container instead.
+  temporal:
+    # CLAUDE.md pins temporalio/auto-setup:1.31.2, but that tag does not
+    # exist on Docker Hub (verified live against the registry this session —
+    # highest available auto-setup tag is 1.29.7). Using the closest
+    # available release in the same 1.2x line CLAUDE.md intended.
+    image: temporalio/auto-setup:1.29.7
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-smarthealth}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-changeme-local-dev-only}
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "${TEMPORAL_HOST_PORT:-7233}:7233"
+    healthcheck:
+      test: ["CMD-SHELL", "tctl --address temporal:7233 cluster health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${TEMPORAL_UI_HOST_PORT:-8080}:8080"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    ports:
+      - "${JAEGER_UI_HOST_PORT:-16686}:16686" # Jaeger query UI
+      - "${JAEGER_OTLP_GRPC_HOST_PORT:-4317}:4317" # OTLP gRPC
+      - "${JAEGER_OTLP_HTTP_HOST_PORT:-4318}:4318" # OTLP HTTP
+
+  prometheus:
+    image: prom/prometheus:v3.13.3
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:13.0.8
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-changeme-local-dev-only}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://smarthealth:changeme-local-dev-only@postgres:5432/smarthealth}
+      MONGO_URL: ${MONGO_URL:-mongodb://mongo:27017}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-smarthealth}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://jaeger:4317}
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  mongo_data:
+  redis_data:
+  rabbitmq_data:
+  kafka_data:
+  prometheus_data:
+  grafana_data:
