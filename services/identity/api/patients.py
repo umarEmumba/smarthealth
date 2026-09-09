@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from libs.audit.writer import write_audit
 from libs.observability.logging import get_logger
 from services.identity.domain.enums import Role
-from services.identity.repository import people_repo
+from services.identity.repository import org_repo, people_repo
 from services.identity.security.current_user import AuthenticatedUser
 from services.identity.security.rbac import require_role
 from smarthealth.db import get_db, get_mongo
@@ -63,6 +63,25 @@ class PatientOut(BaseModel):
     user_id: uuid.UUID | None = None
 
 
+def _assert_clinic_scope(user: AuthenticatedUser, clinic_id: uuid.UUID) -> None:
+    """WR-02: a non-ADMIN caller may only act on their OWN clinic_id.
+
+    `AuthenticatedUser.clinic_id` is carried in the access-token claims.
+    Without this check, a FRONT_DESK user scoped to Clinic A could pass
+    Clinic B's `clinic_id` and read/create patient PHI there — the
+    repository-level "no id-only lookup" mitigation only closes
+    cross-clinic *enumeration by id alone*, not this cross-clinic access
+    path when the caller already knows another clinic's UUID.
+    """
+    if user.role == Role.ADMIN:
+        return
+    if user.clinic_id is None or uuid.UUID(user.clinic_id) != clinic_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="cannot access another clinic's patients",
+        )
+
+
 def _to_out(patient) -> PatientOut:
     return PatientOut(
         id=patient.id,
@@ -82,6 +101,8 @@ async def create_patient(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> PatientOut:
+    _assert_clinic_scope(user, payload.clinic_id)
+
     patient = await people_repo.create_patient(
         db,
         clinic_id=payload.clinic_id,
@@ -115,6 +136,14 @@ async def list_patients(
     user: AuthenticatedUser = Depends(require_role(Role.FRONT_DESK, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> list[PatientOut]:
+    _assert_clinic_scope(user, clinic_id)
+
+    # WR-01: consistent with list_departments — distinguish "clinic exists,
+    # 0 patients" from "clinic_id doesn't exist" via an explicit 404.
+    clinic = await org_repo.get_clinic(db, clinic_id)
+    if clinic is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="clinic not found")
+
     patients = await people_repo.list_patients(db, clinic_id)
     return [_to_out(p) for p in patients]
 
@@ -126,6 +155,8 @@ async def get_patient(
     user: AuthenticatedUser = Depends(require_role(Role.FRONT_DESK, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> PatientOut:
+    _assert_clinic_scope(user, clinic_id)
+
     patient = await people_repo.get_patient(db, patient_id, clinic_id)
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="patient not found")
