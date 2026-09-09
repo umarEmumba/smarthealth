@@ -80,7 +80,7 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 - [ ] **OBS-01**: All services expose Prometheus metrics surfaced in Grafana dashboards for critical flows
 - [ ] **OBS-02**: Requests and workflows are traced end-to-end with OpenTelemetry, viewable in Jaeger, including trace-context propagation across async boundaries (Kafka, Celery, Temporal)
 - [ ] **OBS-03**: Structured logs exist for booking, availability sync, billing, notifications, and background workers, enabling failure diagnosis
-- [ ] **OBS-04**: The full stack runs locally via Docker Compose with health checks
+- [x] **OBS-04**: The full stack runs locally via Docker Compose with health checks
 
 ### Architecture & Decision Dashboard (DASH)
 
@@ -127,7 +127,7 @@ Explicitly excluded to prevent scope creep.
 | ORG-01 | Phase 1 | Pending |
 | ORG-02 | Phase 1 | Pending |
 | ORG-03 | Phase 1 | Pending |
-| OBS-04 | Phase 1 | Pending |
+| OBS-04 | Phase 1 | Complete |
 | DASH-01 | Phase 1 | Pending |
 | DASH-02 | Phase 1 | Pending |
 | SCHED-01 | Phase 2 | Pending |
@@ -167,6 +167,7 @@ Explicitly excluded to prevent scope creep.
 | DASH-04 | Phase 3 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 49 total
 - Mapped to phases: 49/49
 - Unmapped: 0

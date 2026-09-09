@@ -31,12 +31,12 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Every mutating profile/operational action produces an audit-trail entry (who, what, when) inspectable in MongoDB, with no PHI content present in application logs.
   6. `docker compose up` brings up the full stack (Postgres, MongoDB, Redis, plus Kafka/Temporal/RabbitMQ/observability scaffolding even if not yet wired into code) with passing health checks, and the self-contained HTML dashboard opens with an architecture diagram and documented technology tradeoffs (including NoSQL choice, Temporal, Kafka+RabbitMQ split, Postgres system-of-record, Redis role).
 
-**Plans**: 6 plans
+**Plans**: 1/6 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 01-01-scaffold-compose-pytest-PLAN.md — Project scaffolding, full-stack Docker Compose with health checks (OBS-04), pytest infrastructure
+- [x] 01-01-scaffold-compose-pytest-PLAN.md — Project scaffolding, full-stack Docker Compose with health checks (OBS-04), pytest infrastructure
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -96,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Core Services | 0/TBD | Not started | - |
+| 1. Foundation + Core Services | 1/6 | In Progress|  |
 | 2. Scheduling + Service Workflow | 0/TBD | Not started | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

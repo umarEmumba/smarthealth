@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 1
+current_phase: 01
 current_phase_name: Foundation + Core Services
 status: executing
-stopped_at: ROADMAP.md and STATE.md written; REQUIREMENTS.md traceability update pending
-last_updated: "2026-09-09T11:06:42.149Z"
+stopped_at: Completed 01-01-scaffold-compose-pytest-PLAN.md
+last_updated: "2026-09-09T12:05:11.512Z"
 last_activity: 2026-09-09
-last_activity_desc: Roadmap created; 49/49 v1 requirements mapped across 3 week-aligned phases
-state_head: fd7d1784794014378d022b8dfc0be12e86d740c1
+last_activity_desc: Phase 01 execution started
+state_head: 75399664f279e5a46b6622df7a4f14615bacf93b
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 6
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-09)
 
 **Core value:** Booking, updating, and completing an appointment is reliable and consistent under load — partial failures never corrupt scheduling state, and every operational data model stays accurate, durable, and queryable.
-**Current focus:** Phase 1 — Foundation + Core Services
+**Current focus:** Phase 01 — Foundation + Core Services
 
 ## Current Position
 
-Phase: 1 (Foundation + Core Services) — READY TO EXECUTE
-Plan: 0 of TBD in current phase
+Phase: 01 (Foundation + Core Services) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-09-09 — Roadmap created; 49/49 v1 requirements mapped across 3 week-aligned phases
+Last activity: 2026-09-09 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -54,6 +54,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 01 P01 | 40min | 3 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -65,6 +70,8 @@ Recent decisions affecting current work:
 - Roadmap: Three phases locked to the mandated 3-week execution plan (Week 1 Foundation, Week 2 Scheduling, Week 3 Events/Observability) — horizontal-layer structure, not vertical slices, per PROJECT_MODE=standard and explicit user approval.
 - Roadmap: DASH requirements split across phases (DASH-01/02 in Phase 1, DASH-03/04 in Phase 3) since the dashboard is a cross-cutting, incrementally-updated deliverable, not a standalone phase.
 - Roadmap: v2 requirements (SCHEDX-01, SCHEDX-02 — capacity-aware scheduling, intelligent overbooking) intentionally left unmapped; deferred to a later iteration.
+- [Phase 01]: Pinned structlog to 26.1.0 (verified live PyPI) — closes RESEARCH.md assumption A5
+- [Phase 01]: redis:8.2-trixie and temporalio/auto-setup:1.31.2 do not exist on Docker Hub — substituted redis:8.2-bookworm and auto-setup:1.29.7 (verified live against the registry)
 
 ### Pending Todos
 
@@ -87,6 +94,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-09
-Stopped at: ROADMAP.md and STATE.md written; REQUIREMENTS.md traceability update pending
+Last session: 2026-09-09T12:05:11.494Z
+Stopped at: Completed 01-01-scaffold-compose-pytest-PLAN.md
 Resume file: None
