@@ -1,0 +1,1 @@
+{"content":"SQLAlchemy 2.0.52 + asyncpg 0.31.0 current on PyPI. Use AsyncSession/create_async_engine with asyncpg driver, initialize engine once in FastAPI lifespan, never per-request; configure pool_size/pool_pre_ping/pool_recycle.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-09-09T08:20:29.499Z","ttl":86400000,"kind":"web"}

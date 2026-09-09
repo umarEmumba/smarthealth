@@ -1,0 +1,1 @@
+{"content":"redis-py 8.1.0 current, has native asyncio support (redis.asyncio), unified client after redis-py absorbed aioredis. Use for caching + distributed locks (Redlock pattern) + rate limiting.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-09-09T08:20:29.693Z","ttl":86400000,"kind":"web"}

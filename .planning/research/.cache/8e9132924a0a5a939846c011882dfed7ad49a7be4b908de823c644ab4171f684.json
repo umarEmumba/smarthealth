@@ -1,0 +1,1 @@
+{"content":"prometheus-fastapi-instrumentator 8.1.0 current on PyPI. One-line FastAPI middleware exposing /metrics endpoint scraped by Prometheus (prom/prometheus v3.13.3 current); visualize with Grafana (grafana/grafana 13.0.8 current).","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-09-09T08:20:30.292Z","ttl":86400000,"kind":"web"}

@@ -1,0 +1,1 @@
+{"content":"Pydantic 2.13.5 + pydantic-settings 2.15.0 current on PyPI; FastAPI 0.141.1 built natively on Pydantic v2. Use pydantic-settings BaseSettings for typed env-based config (.env files, 12-factor).","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-09-09T08:20:30.492Z","ttl":86400000,"kind":"web"}

@@ -1,0 +1,1 @@
+{"content":"FastAPI 0.141.1 current on PyPI, requires Python>=3.10; uvicorn 0.52.4 as ASGI server; production pattern is Gunicorn+Uvicorn workers, worker count = CPU cores (not 2n+1 since async), pin exact versions.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-09-09T08:20:29.401Z","ttl":86400000,"kind":"web"}

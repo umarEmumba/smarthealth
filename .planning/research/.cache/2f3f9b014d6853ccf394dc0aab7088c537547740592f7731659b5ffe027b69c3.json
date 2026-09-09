@@ -1,0 +1,1 @@
+{"content":"Motor 3.7.1 deprecated as of May 2025 in favor of PyMongo Async (GA in pymongo 4.9+, current pymongo 4.18.0). MongoDB recommends migrating to pymongo's native AsyncMongoClient; motor EOL May 2026/2027.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-09-09T08:20:29.596Z","ttl":86400000,"kind":"web"}
