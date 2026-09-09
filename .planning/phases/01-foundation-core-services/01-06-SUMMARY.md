@@ -159,4 +159,4 @@ No blockers introduced. Existing Phase 1 blockers (Temporal SDK/server version c
 
 ## Self-Check: PASSED
 
-`docs/architecture-dashboard.html` verified present on disk (45,378 bytes); commit `712f434` verified present in `git log`; all four automated verify commands from the plan's Task 1 (`<verify>` block) re-run and confirmed passing (denylist=4, exclusion/availability/provider_slots=6, auto-setup/non-production=3, external-CDN/CSS/JS=0); div tag balance confirmed (178 open / 178 close).
+`docs/architecture-dashboard.html` verified present on disk (45,378 bytes); `.planning/phases/01-foundation-core-services/01-06-SUMMARY.md` verified present on disk; commits `712f434` and `1c653ba` verified present in `git log`; all four automated verify commands from the plan's Task 1 (`<verify>` block) re-run and confirmed passing (denylist=4, exclusion/availability/provider_slots=6, auto-setup/non-production=3, external-CDN/CSS/JS=0); div tag balance confirmed (178 open / 178 close).
