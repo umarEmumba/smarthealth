@@ -32,7 +32,7 @@ from libs.audit.writer import write_audit
 from libs.observability.logging import get_logger
 from services.identity.domain.enums import Role
 from services.identity.repository import people_repo
-from services.identity.security.current_user import AuthenticatedUser
+from services.identity.security.current_user import AuthenticatedUser, user_id_as_uuid
 from services.identity.security.rbac import require_role
 from smarthealth.db import get_db, get_mongo
 
@@ -118,6 +118,29 @@ async def create_availability_template(
         log.info("availability.create.provider_not_found", provider_id=str(provider_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="provider not found")
 
+    # CR-02: a PROVIDER may only manage their OWN availability — Provider.user_id
+    # must match the authenticated caller. ADMIN may act on any provider_id.
+    if user.role == Role.PROVIDER and provider.user_id != user_id_as_uuid(user):
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="availability.create",
+            entity_type="availability_template",
+            entity_id=str(provider_id),
+            clinic_id=None,
+            outcome="failure",
+        )
+        log.info(
+            "availability.create.forbidden_not_owner",
+            provider_id=str(provider_id),
+            user_id=user.sub,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="cannot manage another provider's availability",
+        )
+
     template = await people_repo.create_availability_template(
         db,
         provider_id=provider_id,
@@ -159,6 +182,19 @@ async def list_availability(
     provider = await people_repo.get_provider(db, provider_id)
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="provider not found")
+
+    # CR-02: a PROVIDER may only read their OWN availability — see the
+    # matching check in create_availability_template for rationale.
+    if user.role == Role.PROVIDER and provider.user_id != user_id_as_uuid(user):
+        log.info(
+            "availability.list.forbidden_not_owner",
+            provider_id=str(provider_id),
+            user_id=user.sub,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="cannot view another provider's availability",
+        )
 
     templates = await people_repo.list_availability(db, provider_id)
     return [_to_out(t) for t in templates]

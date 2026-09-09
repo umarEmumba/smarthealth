@@ -9,10 +9,12 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from jose import jwt as jose_jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.identity.repository.models import ProviderSlot
+from smarthealth.config import settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
 
 
@@ -191,3 +193,118 @@ async def test_availability_forbidden_for_front_desk(client: AsyncClient) -> Non
         headers=_auth_header(front_desk_tokens),
     )
     assert resp.status_code == 403
+
+
+def _sub_from_tokens(tokens: dict) -> str:
+    claims = jose_jwt.decode(
+        tokens["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm]
+    )
+    return claims["sub"]
+
+
+async def _create_clinic_department_provider_for_user(
+    client: AsyncClient,
+    admin_tokens: dict,
+    *,
+    clinic_name: str,
+    provider_user_id: str,
+) -> str:
+    """Like `_create_clinic_department_provider`, but links the created
+    Provider row's `user_id` to `provider_user_id` (CR-02 test support —
+    lets a test authenticate AS that provider and prove ownership-scoped
+    access).
+    """
+    clinic_resp = await client.post(
+        "/api/clinics",
+        json={"name": clinic_name, "timezone": "America/New_York"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert clinic_resp.status_code == 201, clinic_resp.text
+    clinic_id = clinic_resp.json()["id"]
+
+    dept_resp = await client.post(
+        f"/api/clinics/{clinic_id}/departments",
+        json={"name": "General"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert dept_resp.status_code == 201, dept_resp.text
+    department_id = dept_resp.json()["id"]
+
+    provider_resp = await client.post(
+        "/api/providers",
+        json={
+            "department_id": department_id,
+            "full_name": "Dr. Owned Provider",
+            "specialties": ["General Medicine"],
+            "user_id": provider_user_id,
+        },
+        headers=_auth_header(admin_tokens),
+    )
+    assert provider_resp.status_code == 201, provider_resp.text
+    return provider_resp.json()["id"]
+
+
+@pytest.mark.integration
+async def test_provider_can_manage_own_availability(client: AsyncClient) -> None:
+    """A PROVIDER token whose linked Provider.user_id matches the caller
+    CAN create/list their own availability templates (CR-02: the ownership
+    check must not block the legitimate owner).
+    """
+    admin_tokens = await _register_and_login(client, role="admin")
+    provider_tokens = await _register_and_login(client, role="provider")
+    provider_user_id = _sub_from_tokens(provider_tokens)
+
+    provider_id = await _create_clinic_department_provider_for_user(
+        client,
+        admin_tokens,
+        clinic_name="Own Availability Clinic",
+        provider_user_id=provider_user_id,
+    )
+
+    create_resp = await client.post(
+        f"/api/providers/{provider_id}/availability",
+        json=_valid_template_payload(),
+        headers=_auth_header(provider_tokens),
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    list_resp = await client.get(
+        f"/api/providers/{provider_id}/availability", headers=_auth_header(provider_tokens)
+    )
+    assert list_resp.status_code == 200
+
+
+@pytest.mark.integration
+async def test_provider_cannot_manage_another_providers_availability(
+    client: AsyncClient,
+) -> None:
+    """CR-02 regression: a PROVIDER token whose linked Provider.user_id
+    does NOT match the `provider_id` in the path must be rejected 403 on
+    both create and list — closes the IDOR that let any authenticated
+    provider read/write every other provider's availability templates.
+    """
+    admin_tokens = await _register_and_login(client, role="admin")
+
+    victim_provider_tokens = await _register_and_login(client, role="provider")
+    victim_provider_user_id = _sub_from_tokens(victim_provider_tokens)
+    victim_provider_id = await _create_clinic_department_provider_for_user(
+        client,
+        admin_tokens,
+        clinic_name="Victim Provider Clinic",
+        provider_user_id=victim_provider_user_id,
+    )
+
+    attacker_provider_tokens = await _register_and_login(client, role="provider")
+
+    create_resp = await client.post(
+        f"/api/providers/{victim_provider_id}/availability",
+        json=_valid_template_payload(),
+        headers=_auth_header(attacker_provider_tokens),
+    )
+    assert create_resp.status_code == 403, create_resp.text
+
+    list_resp = await client.get(
+        f"/api/providers/{victim_provider_id}/availability",
+        headers=_auth_header(attacker_provider_tokens),
+    )
+    assert list_resp.status_code == 403, list_resp.text
