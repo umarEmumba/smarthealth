@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 01
 current_phase_name: Foundation + Core Services
 status: executing
-stopped_at: Completed 01-04-clinic-department-crud-PLAN.md
-last_updated: "2026-09-09T17:33:41.301Z"
+stopped_at: Completed 01-05-patient-provider-availability-crud-PLAN.md
+last_updated: "2026-09-09T17:45:04.778Z"
 last_activity: 2026-09-09
 last_activity_desc: Phase 01 execution started
-state_head: edfbea47a5f136981c95935640a2b962a369d3d1
+state_head: b4d1b14c82fab05541bae4843bdaa9aa15cd0491
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 01 (Foundation + Core Services) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-09-09 — Phase 01 execution started
 
@@ -62,6 +62,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P02 | 55min | 3 tasks | 12 files |
 | Phase 01 P03 | 55min | 3 tasks | 20 files |
 | Phase 01 P04 | 25min | 2 tasks | 6 files |
+| Phase 01 P05 | 35min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,9 @@ Recent decisions affecting current work:
 - [Phase 01]: [Phase 01] passlib 1.7.4 is incompatible with bcrypt 5.0.0 (CLAUDE.md pin) - passlib's internal bcrypt self-test raises ValueError on bcrypt's strict 72-byte limit; libs/auth/passwords.py calls bcrypt directly instead
 - [Phase 01]: [Phase 01] (01-04) No uniqueness constraint on department name within a clinic - two same-named departments under the same clinic are both allowed with distinct ids (tested, deterministic outcome, not a schema gap)
 - [Phase 01]: [Phase 01] (01-04) Clinic/department Pydantic schemas defined inline in their router files rather than added to services/identity/domain/schemas.py - keeps each router's request/response contract co-located; schemas.py stays scoped to auth-router payloads
+- [Phase 01]: [Phase 01] (01-05) Availability is templates-only in Phase 1 (confirmed in code) — no concrete provider_slots rows generated; zero-count grep + integration test lock this in
+- [Phase 01]: [Phase 01] (01-05) Async ORM relationships (Provider.specialties) must be eager-loaded via selectinload() in the SELECT itself — a lazy-load touched after commit raises MissingGreenlet under SQLAlchemy's async engine
+- [Phase 01]: [Phase 01] (01-05) Zero-specialties provider creation is rejected 422 via Pydantic min_length=1 — deterministic outcome for the empty-list edge case
 
 ### Pending Todos
 
@@ -104,6 +108,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-09T17:33:41.278Z
-Stopped at: Completed 01-04-clinic-department-crud-PLAN.md
+Last session: 2026-09-09T17:45:04.753Z
+Stopped at: Completed 01-05-patient-provider-availability-crud-PLAN.md
 Resume file: None
