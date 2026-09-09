@@ -21,6 +21,7 @@ from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from services.identity.repository.models import (
     AvailabilityTemplate,
@@ -139,20 +140,24 @@ async def create_provider(
     )
     db.add(provider)
     await db.commit()
-    await db.refresh(provider, attribute_names=["specialties"])
-    return provider
+
+    # Re-select with `specialties` eagerly loaded (selectinload) instead of
+    # touching the lazy relationship attribute post-commit — an async
+    # lazy-load triggered outside the greenlet context SQLAlchemy's async
+    # ORM uses to bridge to its sync core raises
+    # `MissingGreenlet: greenlet_spawn has not been called` (confirmed via
+    # this plan's own first test run). Eager-loading via a fresh SELECT is
+    # the correct async-ORM pattern, not a workaround.
+    return await get_provider(db, provider.id)
 
 
 async def get_provider(db: AsyncSession, provider_id: uuid.UUID) -> Provider | None:
     result = await db.execute(
-        select(Provider).where(Provider.id == provider_id)
+        select(Provider)
+        .where(Provider.id == provider_id)
+        .options(selectinload(Provider.specialties))
     )
-    provider = result.scalar_one_or_none()
-    if provider is not None:
-        # Force-load specialties within this session (avoids a lazy-load
-        # attempt outside an async context on the returned ORM object).
-        _ = provider.specialties
-    return provider
+    return result.scalar_one_or_none()
 
 
 async def list_providers(
@@ -165,16 +170,18 @@ async def list_providers(
     a future cross-department admin listing view could use this, but
     this plan's router always passes an explicit `department_id`).
     """
-    stmt = select(Provider).order_by(Provider.created_at)
+    stmt = select(Provider).options(selectinload(Provider.specialties)).order_by(
+        Provider.created_at
+    )
     if department_id is not None:
-        stmt = select(Provider).where(Provider.department_id == department_id).order_by(
-            Provider.created_at
+        stmt = (
+            select(Provider)
+            .where(Provider.department_id == department_id)
+            .options(selectinload(Provider.specialties))
+            .order_by(Provider.created_at)
         )
     result = await db.execute(stmt)
-    providers = list(result.scalars().all())
-    for provider in providers:
-        _ = provider.specialties
-    return providers
+    return list(result.scalars().all())
 
 
 async def create_availability_template(
