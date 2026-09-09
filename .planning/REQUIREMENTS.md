@@ -114,17 +114,65 @@ Explicitly excluded to prevent scope creep.
 
 ## Traceability
 
-Populated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (to be filled by roadmapper) | | |
+| IAM-01 | Phase 1 | Pending |
+| IAM-02 | Phase 1 | Pending |
+| IAM-03 | Phase 1 | Pending |
+| IAM-04 | Phase 1 | Pending |
+| PPL-01 | Phase 1 | Pending |
+| PPL-02 | Phase 1 | Pending |
+| PPL-03 | Phase 1 | Pending |
+| PPL-04 | Phase 1 | Pending |
+| ORG-01 | Phase 1 | Pending |
+| ORG-02 | Phase 1 | Pending |
+| ORG-03 | Phase 1 | Pending |
+| OBS-04 | Phase 1 | Pending |
+| DASH-01 | Phase 1 | Pending |
+| DASH-02 | Phase 1 | Pending |
+| SCHED-01 | Phase 2 | Pending |
+| SCHED-02 | Phase 2 | Pending |
+| SCHED-03 | Phase 2 | Pending |
+| SCHED-04 | Phase 2 | Pending |
+| SCHED-05 | Phase 2 | Pending |
+| SCHED-06 | Phase 2 | Pending |
+| SCHED-07 | Phase 2 | Pending |
+| SCHED-08 | Phase 2 | Pending |
+| VISIT-01 | Phase 2 | Pending |
+| VISIT-02 | Phase 2 | Pending |
+| VISIT-03 | Phase 2 | Pending |
+| VISIT-04 | Phase 2 | Pending |
+| VISIT-05 | Phase 2 | Pending |
+| BILL-01 | Phase 2 | Pending |
+| BILL-02 | Phase 2 | Pending |
+| EVENT-01 | Phase 3 | Pending |
+| EVENT-02 | Phase 3 | Pending |
+| EVENT-03 | Phase 3 | Pending |
+| EVENT-04 | Phase 3 | Pending |
+| EVENT-05 | Phase 3 | Pending |
+| NOTIF-01 | Phase 3 | Pending |
+| NOTIF-02 | Phase 3 | Pending |
+| NOTIF-03 | Phase 3 | Pending |
+| NOTIF-04 | Phase 3 | Pending |
+| ANLY-01 | Phase 3 | Pending |
+| ANLY-02 | Phase 3 | Pending |
+| ANLY-03 | Phase 3 | Pending |
+| ANLY-04 | Phase 3 | Pending |
+| ANLY-05 | Phase 3 | Pending |
+| ANLY-06 | Phase 3 | Pending |
+| OBS-01 | Phase 3 | Pending |
+| OBS-02 | Phase 3 | Pending |
+| OBS-03 | Phase 3 | Pending |
+| DASH-03 | Phase 3 | Pending |
+| DASH-04 | Phase 3 | Pending |
 
 **Coverage:**
-- v1 requirements: 45 total
-- Mapped to phases: (pending roadmap)
-- Unmapped: (pending roadmap)
+- v1 requirements: 49 total
+- Mapped to phases: 49/49
+- Unmapped: 0
+
+**v2 (deferred, not mapped to Part A phases):** SCHEDX-01, SCHEDX-02
 
 ---
 *Requirements defined: 2026-09-09*
-*Last updated: 2026-09-09 after initial definition*
+*Last updated: 2026-09-09 after roadmap creation — 49/49 v1 requirements mapped across Phase 1 (14), Phase 2 (15), Phase 3 (20); corrected v1 total from stale count of 45 to actual 49 (v2 items SCHEDX-01/02 counted separately, not in v1 total)*
