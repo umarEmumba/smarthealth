@@ -11,7 +11,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 - Integer phases (1, 2, 3): Planned milestone work, one per execution week
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED) — none currently planned
 
-- [ ] **Phase 1: Foundation + Core Services** - Infra skeleton, identity/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, and dashboard v1
+- [x] **Phase 1: Foundation + Core Services** - Infra skeleton, identity/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, and dashboard v1 (completed 2026-09-09)
 - [ ] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check
 - [ ] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout
 
@@ -96,6 +96,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Core Services | 6/6 | In Progress|  |
+| 1. Foundation + Core Services | 6/6 | Complete    | 2026-09-09 |
 | 2. Scheduling + Service Workflow | 0/TBD | Not started | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |
