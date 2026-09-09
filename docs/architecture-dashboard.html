@@ -397,7 +397,7 @@
   <!-- ARCHITECTURE -->
   <section id="architecture">
     <div class="sec-head"><span class="sec-num">02</span><h2>System architecture</h2></div>
-    <p class="sec-sub">Requests enter through FastAPI. Multi-step operations are owned by Temporal, which reads and writes the PostgreSQL system of record and delegates single-step jobs to Celery. State changes become durable Kafka events via a transactional outbox; consumers build read models and drive notifications. Everything is traced end-to-end with OpenTelemetry.</p>
+    <p class="sec-sub">Phase 1 delivers a working, wired vertical slice: FastAPI + PostgreSQL (system of record) + MongoDB (audit trail) + Redis (cache + auth-revocation), fully implemented and tested. Temporal, Kafka + Schema Registry, Celery + RabbitMQ, and the Prometheus/Grafana/Jaeger observability stack are running in Docker Compose with passing health checks (OBS-04) but are <strong>not yet wired into application code</strong> — that integration is Phase 2 (Temporal saga, billing/notification jobs) and Phase 3 (Kafka outbox, full observability). The diagram below marks each layer <span class="chip high" style="display:inline">wired</span> or <span class="chip med" style="display:inline">scaffolding only</span> accordingly.</p>
     <div class="diagram">
 
       <div class="layer">
@@ -409,52 +409,53 @@
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">API &amp; Auth</div>
+        <div class="layer-label">API &amp; Auth &mdash; wired, Phase 1</div>
         <div class="nodes">
           <div class="node accent"><div class="n-name">API service</div><div class="n-tech">FastAPI</div><div class="n-role">Request validation (Pydantic), authentication, RBAC enforcement, OpenAPI surface.</div></div>
-          <div class="node"><div class="n-name">Auth &amp; RBAC</div><div class="n-tech">JWT / sessions</div><div class="n-role">Issues tokens, checks role → permitted action on every protected request.</div></div>
+          <div class="node accent"><div class="n-name">Auth &amp; RBAC</div><div class="n-tech">Access + refresh JWT (python-jose, HS256)</div><div class="n-role">Access token (~15min: sub/role/clinic_id/jti) validated on every protected request; refresh token (~7days: sub/jti only) re-derives role/clinic from the current DB row. <code>require_role(*roles)</code> server-side guard on every mutating route.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Orchestration</div>
+        <div class="layer-label">Orchestration &mdash; scaffolding only, not yet wired (Phase 2)</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal</div><div class="n-role">Owns booking, cancel/reschedule, and visit-lifecycle sagas. Durable, resumable, compensating on failure.</div></div>
+          <div class="node"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>)</div><div class="n-role">Container runs and reports healthy; no workflow/activity code exists yet. Will own booking, cancel/reschedule, and visit-lifecycle sagas from Phase 2 onward.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Data stores</div>
+        <div class="layer-label">Data stores &mdash; wired, Phase 1</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">System of record</div><div class="n-tech">PostgreSQL</div><div class="n-role">Patients, providers, appointments, slots, billing, outbox table. Constraints enforce correctness.</div></div>
-          <div class="node"><div class="n-name">Operational documents</div><div class="n-tech">MongoDB</div><div class="n-role">Audit trail, visit/service records, notification logs, analytics projections.</div></div>
-          <div class="node"><div class="n-name">Cache &amp; coordination</div><div class="n-tech">Redis</div><div class="n-role">Hot availability reads, idempotency-key cache, short-lived locks.</div></div>
+          <div class="node accent"><div class="n-name">System of record</div><div class="n-tech">PostgreSQL</div><div class="n-role">users, patients, providers, specialties, clinics, departments, availability_templates, and an <strong>empty</strong> provider_slots table carrying a live GiST exclusion constraint (designed and proven now, populated by Phase 2's slot-generation job).</div></div>
+          <div class="node accent"><div class="n-name">Operational documents</div><div class="n-tech">MongoDB</div><div class="n-role">Append-only <code>audit_log</code> collection — every mutating action, success and failure, field names only (never PHI values). Indexed by entity, actor, and clinic.</div></div>
+          <div class="node accent"><div class="n-name">Cache &amp; auth revocation</div><div class="n-tech">Redis</div><div class="n-role">jti-denylist for JWT revocation (<code>revoked:{jti}</code>, TTL = remaining token life) — the live Phase 1 use. Hot-read caching and slot-reservation locks are Phase 2 additions once booking exists.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Messaging &amp; background work</div>
+        <div class="layer-label">Messaging &amp; background work &mdash; scaffolding only, not yet wired (Phase 2/3)</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">Event log</div><div class="n-tech">Kafka + Schema Registry</div><div class="n-role">Durable, replayable domain events. Fed by the transactional outbox. Many independent consumers.</div></div>
-          <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Discrete background jobs: notifications, reminders, follow-ups, projections. Retries + DLQ.</div></div>
+          <div class="node"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry</div><div class="n-role">Containers healthy, no producer/consumer code yet. Transactional-outbox-fed domain events are Phase 3 scope.</div></div>
+          <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Containers healthy, no tasks defined yet. Notifications/reminders/follow-ups are Phase 2/3 scope.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Observability (cross-cutting)</div>
+        <div class="layer-label">Observability (cross-cutting) &mdash; scaffolding only, not yet wired (Phase 3)</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">Per-flow metrics and dashboards.</div></div>
-          <div class="node"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry</div><div class="n-role">One connected trace across HTTP → Temporal → Kafka → Celery.</div></div>
-          <div class="node"><div class="n-name">Logs</div><div class="n-tech">Structured JSON</div><div class="n-role">Diagnosable, no PHI in log content.</div></div>
+          <div class="node"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">Containers healthy; prometheus-fastapi-instrumentator exposes <code>/metrics</code>, dashboards not yet built (Phase 3, OBS-01..03).</div></div>
+          <div class="node"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry</div><div class="n-role">OTel FastAPI auto-instrumentation is wired and exports OTLP toward Jaeger with graceful degradation if Jaeger is down (confirmed in Plan 03); full connected HTTP&rarr;Temporal&rarr;Kafka&rarr;Celery trace is Phase 3 scope. Body capture is disabled.</div></div>
+          <div class="node accent"><div class="n-name">Logs</div><div class="n-tech">structlog JSON</div><div class="n-role">Wired, Phase 1: every log line carries trace_id/span_id; identifiers only, no PHI field values — enforced by a dedicated test, not just convention.</div></div>
         </div>
       </div>
 
     </div>
     <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
+    <div class="callout"><b>Modeling assumption &mdash; users vs. patients:</b> <code>users</code> (login/auth identity: email, password hash, role) and <code>patients</code> (operational profile: name, DOB, contact info) are deliberately <strong>separate tables</strong>, with <code>patients.user_id</code> nullable. This lets front-desk/admin create a patient record with no login (walk-in, phone-booked) while still supporting self-registering patient accounts (IAM-01) — one model can't satisfy both without this split.</div>
   </section>
 
   <!-- DECISIONS -->
@@ -474,7 +475,24 @@
         <div class="chosen">Temporal</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains only · hand-rolled DB state machine · AWS Step Functions</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v">Booking is a multi-step transaction (validate → reserve → conflict-check → notify → billing → confirm). Temporal makes it durable and resumable, and models failure recovery as first-class compensation — directly satisfying "partial failures never corrupt scheduling state."</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Another infra component + a determinism discipline (no wall-clock/random in workflow code). Worth it for the graded reliability core.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Another infra component + a determinism discipline (no wall-clock/random in workflow code). Worth it for the graded reliability core.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 1 status</span><span class="v muted">Running via the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; used here only because Temporal isn't wired into application code until Phase 2 and auto-setup's schema auto-provisioning saves local-dev time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Auth &amp; session model</h3><span class="chip high">high</span></div>
+        <div class="chosen">Access + refresh JWT, Redis jti-denylist</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Access-only JWT (no refresh) · access+refresh with no revocation list · server-side session store only</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Access token (~15min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>type=access</code>) is validated on every protected request; refresh token (~7days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only, no role/clinic claims) re-derives role/clinic from the current DB row on exchange, so a role change takes effect on next refresh, not just next login. Logout writes the access token's <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life, self-expiring) — an access-only or no-revocation-list design can't support a working logout, and Redis is already in the mandated stack so the marginal cost is low.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">One extra Redis round-trip per authenticated request (the denylist EXISTS check); bounded, self-expiring memory use since entries carry the token's own remaining TTL.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Availability &amp; slot model</h3><span class="chip high">high</span></div>
+        <div class="chosen">Weekly availability templates now, provider_slots exclusion constraint designed now</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Generate concrete bookable slot rows in Phase 1 (e.g. next 90 days materialized) · free-text working hours (unstructured) · concrete slots only, no template</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">PPL-03 ("configure availability windows") is a configuration requirement, not a booking-generation requirement — a weekly <code>availability_templates</code> row (day_of_week/start_time/end_time/slot_duration/effective dates) satisfies it without deciding a materialization horizon that has no consumer until Phase 2's booking saga exists. <code>provider_slots</code> is created now but left <b>empty</b> — its <code>EXCLUDE USING gist (provider_id WITH =, tstzrange(start_time,end_time) WITH &amp;&amp;) WHERE (status &lt;&gt; 'cancelled')</code> constraint (<code>btree_gist</code> extension) is live and proven by an integration test today, so Phase 2's double-booking guarantee is inherited as a tested invariant, not a Phase-2 to-do under saga-implementation pressure.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Phase 1 ships no bookable slots yet (by design — nothing consumes them until Phase 2's Temporal saga). The constraint's correctness is proven independent of any booking code, which is the point.</span></p>
       </div>
 
       <div class="card">
@@ -502,11 +520,11 @@
       </div>
 
       <div class="card">
-        <div class="card-top"><h3>Operational document store</h3><span class="chip med">confirm</span></div>
+        <div class="card-top"><h3>Operational document store</h3><span class="chip high">high</span></div>
         <div class="chosen">MongoDB</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Postgres JSONB · Elasticsearch</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A second datastore to run. Confirm in Phase 1 that JSONB wouldn't be simpler for the volume at hand.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean. Delivered in Phase 1 as an append-only <code>audit_log</code> collection (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A second datastore to run. Confirmed in Phase 1 that the append-heavy, no-retention-policy-yet audit use case fits a document model well; JSONB remains a valid simpler alternative if the volume never grows beyond what a single Postgres table would need.</span></p>
       </div>
 
       <div class="card">
