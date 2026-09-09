@@ -33,11 +33,13 @@ from services.identity.domain.schemas import (
     LoginResponse,
     RefreshRequest,
     RegisterRequest,
+    StaffRegisterRequest,
     TokenPair,
     UserOut,
 )
 from services.identity.repository.models import User
 from services.identity.security.current_user import AuthenticatedUser, get_current_user, get_redis
+from services.identity.security.rbac import require_role
 from smarthealth.db import get_db, get_mongo
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -51,6 +53,13 @@ async def register(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> UserOut:
+    """Public, unauthenticated self-registration.
+
+    CR-01: always creates a `Role.PATIENT` account — `RegisterRequest` has
+    no `role` field, so there is nothing for an anonymous caller to
+    escalate. Elevated-role account creation is handled by the
+    authenticated-admin-only `create_staff_user` route below.
+    """
     from libs.auth.passwords import hash_password  # noqa: PLC0415
 
     existing = await db.execute(select(User).where(User.email == payload.email))
@@ -73,7 +82,7 @@ async def register(
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
-        role=payload.role.value,
+        role=Role.PATIENT.value,
         clinic_id=payload.clinic_id,
     )
     db.add(user)
@@ -91,6 +100,82 @@ async def register(
         outcome="success",
     )
     log.info("auth.register.success", user_id=str(user.id), role=user.role)
+
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        role=Role(user.role),
+        clinic_id=user.clinic_id,
+    )
+
+
+@router.post(
+    "/admin/users",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_staff_user(
+    payload: StaffRegisterRequest,
+    admin: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+) -> UserOut:
+    """Admin-only staff/provider/admin account creation (CR-01).
+
+    Unlike public `/register`, this route accepts a caller-supplied
+    `role` — but only an already-authenticated `Role.ADMIN` caller can
+    reach it (`require_role(Role.ADMIN)`), so the role is no longer
+    attacker-controlled.
+    """
+    from libs.auth.passwords import hash_password  # noqa: PLC0415
+
+    existing = await db.execute(select(User).where(User.email == payload.email))
+    if existing.scalar_one_or_none() is not None:
+        await write_audit(
+            mongo,
+            actor_id=admin.sub,
+            actor_role=admin.role.value,
+            action="user.create",
+            entity_type="user",
+            entity_id="unknown",
+            clinic_id=str(payload.clinic_id) if payload.clinic_id else None,
+            outcome="failure",
+        )
+        log.info(
+            "auth.create_staff_user.duplicate_email",
+            email_domain=payload.email.split("@")[-1],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email already registered"
+        )
+
+    user = User(
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        role=payload.role.value,
+        clinic_id=payload.clinic_id,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    await write_audit(
+        mongo,
+        actor_id=admin.sub,
+        actor_role=admin.role.value,
+        action="user.create",
+        entity_type="user",
+        entity_id=str(user.id),
+        clinic_id=str(user.clinic_id) if user.clinic_id else None,
+        outcome="success",
+        changed_fields=["role", "clinic_id"],
+    )
+    log.info(
+        "auth.create_staff_user.success",
+        user_id=str(user.id),
+        role=user.role,
+        created_by=admin.sub,
+    )
 
     return UserOut(
         id=user.id,

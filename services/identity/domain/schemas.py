@@ -15,6 +15,29 @@ from services.identity.domain.enums import Role
 
 
 class RegisterRequest(BaseModel):
+    """Public self-registration payload.
+
+    Deliberately has NO `role` field — public, unauthenticated
+    self-registration always creates a `Role.PATIENT` account (CR-01).
+    Elevated-role accounts (admin/provider/front_desk) must be created via
+    an authenticated-admin-only staff-creation route, never via this
+    anonymous endpoint.
+    """
+
+    email: EmailStr
+    password: str = Field(min_length=8)
+    clinic_id: uuid.UUID | None = None
+
+
+class StaffRegisterRequest(BaseModel):
+    """Admin-only staff/provider/admin account creation payload (CR-01).
+
+    Unlike `RegisterRequest`, this DOES accept a caller-supplied `role`
+    because the caller is required (by the route's `require_role(Role.ADMIN)`
+    dependency) to already be an authenticated admin — the role is no
+    longer attacker-controlled at this point.
+    """
+
     email: EmailStr
     password: str = Field(min_length=8)
     role: Role

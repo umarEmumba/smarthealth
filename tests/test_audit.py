@@ -44,9 +44,11 @@ async def test_mutation_creates_audit_entry(
     collection = db[AUDIT_COLLECTION_NAME]
 
     try:
+        # CR-01: public /register always creates a PATIENT account now —
+        # `actor_role` on this audit entry is expected to be "patient".
         resp = await client.post(
             "/api/auth/register",
-            json={"email": email, "password": "correct-horse-battery", "role": "front_desk"},
+            json={"email": email, "password": "correct-horse-battery"},
         )
         assert resp.status_code == 201
         user_id = resp.json()["id"]
@@ -54,7 +56,7 @@ async def test_mutation_creates_audit_entry(
         doc = await collection.find_one({"action": "user.create", "entity_id": user_id})
         assert doc is not None
         assert doc["actor_id"] == user_id
-        assert doc["actor_role"] == "front_desk"
+        assert doc["actor_role"] == "patient"
         assert doc["entity_type"] == "user"
         assert doc["outcome"] == "success"
         assert "timestamp" in doc
@@ -78,15 +80,18 @@ async def test_failed_mutation_audited(
     collection = db[AUDIT_COLLECTION_NAME]
 
     try:
+        # CR-01: public /register always creates a PATIENT account now —
+        # role is irrelevant to this test (it only exercises the
+        # duplicate-email failure-audit path), so no `role` is sent.
         first = await client.post(
             "/api/auth/register",
-            json={"email": email, "password": "correct-horse-battery", "role": "admin"},
+            json={"email": email, "password": "correct-horse-battery"},
         )
         assert first.status_code == 201
 
         second = await client.post(
             "/api/auth/register",
-            json={"email": email, "password": "correct-horse-battery", "role": "admin"},
+            json={"email": email, "password": "correct-horse-battery"},
         )
         assert second.status_code == 409
 
@@ -97,7 +102,7 @@ async def test_failed_mutation_audited(
         assert failure_doc is not None
         assert failure_doc["outcome"] == "failure"
     finally:
-        await collection.delete_many({"action": "user.create", "actor_role": "admin"})
+        await collection.delete_many({"action": "user.create", "actor_role": "patient"})
 
 
 def test_no_phi_in_logs() -> None:

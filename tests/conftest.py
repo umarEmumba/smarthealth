@@ -12,6 +12,7 @@ only ever holds local-dev placeholder values (see `.env.example`).
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
@@ -19,6 +20,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from smarthealth.config import settings
@@ -99,3 +101,48 @@ async def client() -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
+
+
+def unique_email(prefix: str = "user") -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:12]}@example.com"
+
+
+async def bootstrap_admin_and_login(client: AsyncClient) -> dict:
+    """Create a throwaway ADMIN account and return its login token pair.
+
+    CR-01 fix: public `/api/auth/register` always creates a PATIENT
+    account now (no caller-supplied `role`), so there is no API path for
+    an unauthenticated caller to mint the very first admin. Tests need a
+    seeded admin to exercise the admin-only `/api/auth/admin/users` route
+    (and every other admin-guarded route) — this helper seeds one directly
+    via a committed DB insert, exactly like `test_models.py`'s established
+    direct-model-insertion pattern, using the SAME password-hashing helper
+    the real register/login code path uses so the seeded row round-trips
+    through the app's own bcrypt verification.
+
+    The row is committed against its own short-lived engine (distinct
+    from `db_session`'s rolled-back transaction) so the running app --
+    which opens its own connection via `get_db()` -- can actually see it.
+    Test emails are uuid-suffixed and never cleaned up, matching this
+    suite's existing established convention (test_auth.py's docstring:
+    "no cleanup fixture exists for the live `users` table across test
+    runs").
+    """
+    from libs.auth.passwords import hash_password  # noqa: PLC0415
+    from services.identity.repository.models import User  # noqa: PLC0415
+
+    email = unique_email("bootstrap-admin")
+    password = "correct-horse-battery"
+
+    engine = create_async_engine(settings.database_url)
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    async with session_factory() as session:
+        existing = await session.execute(select(User).where(User.email == email))
+        if existing.scalar_one_or_none() is None:
+            session.add(User(email=email, hashed_password=hash_password(password), role="admin"))
+            await session.commit()
+    await engine.dispose()
+
+    login_resp = await client.post("/api/auth/login", json={"email": email, "password": password})
+    assert login_resp.status_code == 200, login_resp.text
+    return login_resp.json()

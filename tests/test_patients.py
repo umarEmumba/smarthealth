@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import json
-import uuid
 
 import pytest
 import structlog
@@ -20,23 +19,36 @@ from pymongo import AsyncMongoClient
 
 from libs.observability.logging import add_trace_context
 from smarthealth.config import settings
+from tests.conftest import bootstrap_admin_and_login, unique_email
 
 SYNTHETIC_PHI_NAME = "Zzyzx Testpatient Synthetic"
 SYNTHETIC_PHI_DOB = "1990-01-01"
 SYNTHETIC_PHI_PHONE = "+1-555-010-9999"
 
 
-def _unique_email(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:12]}@example.com"
-
-
 async def _register_and_login(client: AsyncClient, *, role: str) -> dict:
-    email = _unique_email(role)
-    register_resp = await client.post(
-        "/api/auth/register",
-        json={"email": email, "password": "correct-horse-battery", "role": role},
-    )
-    assert register_resp.status_code == 201, register_resp.text
+    """Create a user with `role` and return its login token pair.
+
+    CR-01: public `/api/auth/register` always creates a PATIENT account
+    now, so a `role="patient"` request goes straight through it; any
+    other role is created via the authenticated-admin-only
+    `/api/auth/admin/users` route, using a throwaway bootstrap admin.
+    """
+    email = unique_email(role)
+    if role == "patient":
+        register_resp = await client.post(
+            "/api/auth/register",
+            json={"email": email, "password": "correct-horse-battery"},
+        )
+        assert register_resp.status_code == 201, register_resp.text
+    else:
+        admin_tokens = await bootstrap_admin_and_login(client)
+        create_resp = await client.post(
+            "/api/auth/admin/users",
+            json={"email": email, "password": "correct-horse-battery", "role": role},
+            headers={"Authorization": f"Bearer {admin_tokens['access_token']}"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
 
     login_resp = await client.post(
         "/api/auth/login", json={"email": email, "password": "correct-horse-battery"}
