@@ -178,9 +178,26 @@ async def list_availability(
     provider_id: uuid.UUID,
     user: AuthenticatedUser = Depends(require_role(Role.PROVIDER, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> list[AvailabilityTemplateOut]:
     provider = await people_repo.get_provider(db, provider_id)
     if provider is None:
+        # IN-06: audit the 404 (provider-not-found) branch for consistency
+        # with the sibling create_availability_template's 404 branch and
+        # with this route's own 403 (ownership) branch below — this
+        # codebase's design principle is that denied/failed attempts are
+        # ALSO audited, not only successful mutations/reads.
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="availability.list",
+            entity_type="availability_template",
+            entity_id="unknown",
+            clinic_id=None,
+            outcome="failure",
+        )
+        log.info("availability.list.provider_not_found", provider_id=str(provider_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="provider not found")
 
     # CR-02: a PROVIDER may only read their OWN availability — see the
