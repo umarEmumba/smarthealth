@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 01
 current_phase_name: Foundation + Core Services
 status: executing
-stopped_at: Completed 01-03-tracer-auth-rbac-audit-PLAN.md
-last_updated: "2026-09-09T17:25:54.567Z"
+stopped_at: Completed 01-04-clinic-department-crud-PLAN.md
+last_updated: "2026-09-09T17:33:41.301Z"
 last_activity: 2026-09-09
 last_activity_desc: Phase 01 execution started
-state_head: 2011a4eecb6a14fad438c15201b135551dd74c0d
+state_head: edfbea47a5f136981c95935640a2b962a369d3d1
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 01 (Foundation + Core Services) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-09-09 — Phase 01 execution started
 
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P01 | 40min | 3 tasks | 17 files |
 | Phase 01 P02 | 55min | 3 tasks | 12 files |
 | Phase 01 P03 | 55min | 3 tasks | 20 files |
+| Phase 01 P04 | 25min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Checkpoint resolved (01-03): audit_log document shape locked - actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome(success|failure)/changes(field-names-only, never PHI values)
 - [Phase 01]: [Phase 01] Fixed a latent cross-event-loop bug in smarthealth/db.py: AsyncMongoClient and the SQLAlchemy async engine are now loop-tracking singletons (get_engine()/get_mongo_client()), safe under both a single long-lived production event loop and pytest-asyncio's per-test-function loops
 - [Phase 01]: [Phase 01] passlib 1.7.4 is incompatible with bcrypt 5.0.0 (CLAUDE.md pin) - passlib's internal bcrypt self-test raises ValueError on bcrypt's strict 72-byte limit; libs/auth/passwords.py calls bcrypt directly instead
+- [Phase 01]: [Phase 01] (01-04) No uniqueness constraint on department name within a clinic - two same-named departments under the same clinic are both allowed with distinct ids (tested, deterministic outcome, not a schema gap)
+- [Phase 01]: [Phase 01] (01-04) Clinic/department Pydantic schemas defined inline in their router files rather than added to services/identity/domain/schemas.py - keeps each router's request/response contract co-located; schemas.py stays scoped to auth-router payloads
 
 ### Pending Todos
 
@@ -101,6 +104,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-09T17:25:54.545Z
-Stopped at: Completed 01-03-tracer-auth-rbac-audit-PLAN.md
+Last session: 2026-09-09T17:33:41.278Z
+Stopped at: Completed 01-04-clinic-department-crud-PLAN.md
 Resume file: None
