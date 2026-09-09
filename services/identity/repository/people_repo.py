@@ -174,12 +174,7 @@ async def list_providers(
         Provider.created_at
     )
     if department_id is not None:
-        stmt = (
-            select(Provider)
-            .where(Provider.department_id == department_id)
-            .options(selectinload(Provider.specialties))
-            .order_by(Provider.created_at)
-        )
+        stmt = stmt.where(Provider.department_id == department_id)
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
