@@ -27,7 +27,15 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   4. Admin can create a clinic and departments within it, and providers/slots are visibly scoped to the correct clinic/department.
   5. Every mutating profile/operational action produces an audit-trail entry (who, what, when) inspectable in MongoDB, with no PHI content present in application logs.
   6. `docker compose up` brings up the full stack (Postgres, MongoDB, Redis, plus Kafka/Temporal/RabbitMQ/observability scaffolding even if not yet wired into code) with passing health checks, and the self-contained HTML dashboard opens with an architecture diagram and documented technology tradeoffs (including NoSQL choice, Temporal, Kafka+RabbitMQ split, Postgres system-of-record, Redis role).
-**Plans**: TBD
+**Plans**: 6 plans
+
+Plans:
+- [ ] 01-01-scaffold-compose-pytest-PLAN.md — Project scaffolding, full-stack Docker Compose with health checks (OBS-04), pytest infrastructure
+- [ ] 01-02-data-model-migrations-PLAN.md — SQLAlchemy 2.0 async data model + Alembic migrations (all entities, empty provider_slots with GiST exclusion constraint) + Mongo audit indexes
+- [ ] 01-03-tracer-auth-rbac-audit-PLAN.md — TRACER: end-to-end register→login→RBAC-scoped request→audit→PHI-safe log/trace (IAM-01/02/03/04)
+- [ ] 01-04-clinic-department-crud-PLAN.md — Clinic + department CRUD, admin-only, clinic-scoped, audited (ORG-01/02/03)
+- [ ] 01-05-patient-provider-availability-crud-PLAN.md — Patient + provider (with specialties) + availability-template CRUD, PHI-safe (PPL-01/02/03/04)
+- [ ] 01-06-dashboard-reconciliation-PLAN.md — Reconcile the self-contained Architecture & Decision dashboard to the actual build (DASH-01/02)
 
 ### Phase 2: Scheduling + Service Workflow
 **Goal**: Booking, rescheduling, cancelling, and completing a visit are reliable and consistent under concurrent load — every multi-step transition is Temporal-orchestrated, double-booking is impossible at the data layer, retries never duplicate effects, partial failures compensate cleanly with no corrupted state, and the dashboard is extended with workflow/state diagrams and the "why Temporal" rationale.
