@@ -191,12 +191,19 @@ async def login(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> LoginResponse:
-    from libs.auth.passwords import verify_password  # noqa: PLC0415
+    from libs.auth.passwords import DUMMY_PASSWORD_HASH, verify_password  # noqa: PLC0415
 
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
-    if user is None or not verify_password(payload.password, user.hashed_password):
+    # WR-03: always pay bcrypt's cost, even when the user doesn't exist —
+    # verify against a precomputed dummy hash rather than short-circuiting
+    # on `user is None`, closing a login-timing side-channel that would
+    # otherwise let an attacker enumerate valid registered emails.
+    hashed_for_verification = user.hashed_password if user is not None else DUMMY_PASSWORD_HASH
+    password_ok = verify_password(payload.password, hashed_for_verification)
+
+    if user is None or not password_ok:
         await write_audit(
             mongo,
             actor_id="anonymous",

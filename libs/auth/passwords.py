@@ -25,6 +25,17 @@ import bcrypt
 
 _MAX_PASSWORD_BYTES = 72
 
+# WR-03: a precomputed dummy hash, verified against when no real user
+# exists, so a login attempt against a non-existent email pays the SAME
+# bcrypt cost as one against a real email with a wrong password — closing
+# a timing side-channel that would otherwise let an attacker enumerate
+# valid registered emails (a privacy-sensitive fact in a healthcare
+# system) purely from response latency. Computed once at import time
+# (bcrypt's own gensalt() cost factor governs the cost paid either way).
+DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-constant-time-login", bcrypt.gensalt()).decode(
+    "ascii"
+)
+
 
 def _truncate_to_bcrypt_limit(password: str) -> bytes:
     return password.encode("utf-8")[:_MAX_PASSWORD_BYTES]
