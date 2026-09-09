@@ -89,19 +89,12 @@ async def redis_client() -> AsyncIterator[Redis]:
 
 @pytest_asyncio.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    """httpx.AsyncClient wired to the FastAPI app for integration tests.
+    """httpx.AsyncClient wired to the real FastAPI app for integration tests.
 
-    The FastAPI app itself (`smarthealth.main:app`) is added in a later plan
-    (01-03, the auth/RBAC/audit tracer). Until then this fixture targets a
-    minimal placeholder ASGI app so the fixture is importable and later
-    plans only need to swap the app import, not the fixture shape.
+    `smarthealth.main:app` (added in Plan 01-03, the auth/RBAC/audit
+    tracer) is the app every later plan's routers mount onto.
     """
-    try:
-        from smarthealth.main import app  # noqa: PLC0415
-    except ImportError:
-        from fastapi import FastAPI
-
-        app = FastAPI()
+    from smarthealth.main import app  # noqa: PLC0415
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:

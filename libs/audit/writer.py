@@ -1,0 +1,79 @@
+"""The single shared audit-write helper — every mutating route in this
+codebase calls `write_audit`, never a per-router Mongo insert copy (RESEARCH
+anti-patterns: a copy-pasted audit write is how an endpoint silently ends up
+unaudited).
+
+Document shape (locked contract, checkpoint-resolved — see RESEARCH's
+MongoDB Audit-Trail Schema Design section):
+
+    {
+        actor_id: str,        # opaque user UUID string, or "system" for
+                               # non-human-initiated actions (future phases)
+        actor_role: str,
+        action: str,           # dot-namespaced "<entity>.<verb>", e.g. "user.create"
+        entity_type: str,
+        entity_id: str,
+        clinic_id: str | None,
+        timestamp: datetime,   # UTC, set here — never trust a caller-supplied clock
+        trace_id: str | None,  # correlates to the request's OTel trace in Jaeger
+        outcome: "success" | "failure",
+        changes: {"fields": [str, ...]} | None,  # field NAMES only, never PHI values
+    }
+
+PHI boundary: `changes` records which fields changed, never their values.
+Passing a PHI value (patient name/dob/phone/address) into `changes` is a
+caller bug this helper does not attempt to auto-redact — callers must only
+ever pass field names.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Literal
+
+from pymongo import AsyncMongoClient
+
+from libs.observability.otel import current_trace_id
+from smarthealth.config import settings
+
+AUDIT_COLLECTION_NAME = "audit_log"
+
+Outcome = Literal["success", "failure"]
+
+
+async def write_audit(
+    mongo_client: AsyncMongoClient,
+    *,
+    actor_id: str,
+    actor_role: str,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    clinic_id: str | None,
+    outcome: Outcome,
+    trace_id: str | None = None,
+    changed_fields: list[str] | None = None,
+) -> None:
+    """Insert one audit_log document. `trace_id` defaults to the active OTel
+    span's trace_id if not explicitly supplied (so most call sites don't
+    need to thread it through manually).
+
+    `changed_fields` must be field NAMES ONLY — never pass PHI values here.
+    """
+    db = mongo_client[settings.mongo_db_name]
+    collection = db[AUDIT_COLLECTION_NAME]
+
+    document = {
+        "actor_id": actor_id,
+        "actor_role": actor_role,
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "clinic_id": clinic_id,
+        "timestamp": datetime.now(timezone.utc),
+        "trace_id": trace_id if trace_id is not None else current_trace_id(),
+        "outcome": outcome,
+        "changes": {"fields": changed_fields} if changed_fields else None,
+    }
+
+    await collection.insert_one(document)
