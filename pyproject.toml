@@ -1,0 +1,49 @@
+[project]
+name = "smarthealth"
+version = "0.1.0"
+description = "SmartHealth — Intelligent Healthcare Operations Platform (Part A)"
+requires-python = ">=3.12,<3.13"
+readme = "README.md"
+
+dependencies = [
+    "fastapi[standard]==0.141.1",
+    "uvicorn==0.52.4",
+    "gunicorn",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "sqlalchemy[asyncio]==2.0.52",
+    "asyncpg==0.31.0",
+    "alembic==1.19.2",
+    "pymongo==4.18.0",
+    "redis==8.1.0",
+    "python-jose[cryptography]==3.5.0",
+    "passlib[bcrypt]==1.7.4",
+    "bcrypt==5.0.0",
+    "httpx",
+    "structlog==26.1.0",
+    "opentelemetry-api==1.44.0",
+    "opentelemetry-sdk==1.44.0",
+    "opentelemetry-exporter-otlp==1.44.0",
+    "opentelemetry-instrumentation-fastapi==0.65b0",
+    "prometheus-fastapi-instrumentator==8.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require live Postgres/Mongo/Redis containers",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["smarthealth", "libs", "services", "services.identity"]
