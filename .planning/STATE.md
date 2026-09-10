@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Scheduling + Service Workflow
 status: planning
-stopped_at: Phase 01 complete, ready to plan Phase 2
-last_updated: "2026-09-09T18:51:16.233Z"
-last_activity: 2026-09-09
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
-state_head: 190f272e6d2035afe5e832f97b2afb998dcb7d58
+stopped_at: Phase 01 gap-closure plan 01-07 complete, ready to plan Phase 2
+last_updated: "2026-09-10T10:58:38.971Z"
+last_activity: 2026-09-10
+last_activity_desc: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
+state_head: a6bfaa2a4333b351edbc9c0d21e7a77612dca660
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 7
+  completed_plans: 7
   percent: 33
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 Phase: 2 — Scheduling + Service Workflow
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-09-09 — Phase 01 complete, transitioned to Phase 2
+Last activity: 2026-09-10 — Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
 
 Progress: [███░░░░░░░] 33%
 
@@ -38,7 +38,7 @@ Progress: [███░░░░░░░] 33%
 
 **Velocity:**
 
-- Total plans completed: 6
+- Total plans completed: 7
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -46,7 +46,7 @@ Progress: [███░░░░░░░] 33%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 6 | - | - |
+| 01 | 7 | - | - |
 
 **Recent Trend:**
 
@@ -64,6 +64,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 01 P04 | 25min | 2 tasks | 6 files |
 | Phase 01 P05 | 35min | 3 tasks | 9 files |
 | Phase 01 P06 | 3min | 2 tasks | 1 files |
+| Phase 01 P07 | 40min | 4 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -89,6 +90,10 @@ Recent decisions affecting current work:
 - [Phase 01]: [Phase 01] (01-05) Zero-specialties provider creation is rejected 422 via Pydantic min_length=1 — deterministic outcome for the empty-list edge case
 - [Phase 01]: [Phase 01] (01-06) Reconciled architecture-dashboard.html in place against actual Phase-1 build: diagram now distinguishes wired (Postgres/Mongo/Redis) vs scaffolding-only (Temporal/Kafka/RabbitMQ/observability); added auth-model and slot-model decision cards; Temporal card documents auto-setup non-production tradeoff
 - [Phase 01]: [Phase 01] (01-06) Dashboard reconciliation confirmed no rebuild was needed — only #architecture and #decisions sections had drifted from delivered Phase-1 reality; #overview/#patterns/#flows/#qa/#roadmap were already accurate
+- [Phase 01]: [Phase 01] (01-07 gap-closure) Deactivate (soft-delete) is idempotent as a no-op success (200, unchanged state) across all five resources, not 409 — matches HTTP idempotency convention for state-setting operations
+- [Phase 01]: [Phase 01] (01-07 gap-closure) Provider `specialties` on PATCH REPLACES the full set (not append/merge) when supplied — consistent PATCH field-level semantics, reuses the create-path get-or-create-by-name logic
+- [Phase 01]: [Phase 01] (01-07 gap-closure) Availability PATCH validates the RESULTING window (existing values merged with the partial update), not just the supplied fields in isolation — a single-field PATCH can never silently create an inverted start/end or effective_from>effective_to window
+- [Phase 01]: [Phase 01] (01-07 gap-closure) No hard deletes anywhere in the codebase — every "delete" is a status flip (is_active=false + deactivated_at=now()); migration 0002 added these columns to all five Phase-1 resource tables with a verified upgrade/downgrade round-trip
 
 ### Pending Todos
 
@@ -111,6 +116,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-09T17:52:44.219Z
-Stopped at: Phase 01 complete, ready to plan Phase 2
+Last session: 2026-09-10T10:56:38.971Z
+Stopped at: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
 Resume file: None

@@ -31,9 +31,8 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Every mutating profile/operational action produces an audit-trail entry (who, what, when) inspectable in MongoDB, with no PHI content present in application logs.
   6. `docker compose up` brings up the full stack (Postgres, MongoDB, Redis, plus Kafka/Temporal/RabbitMQ/observability scaffolding even if not yet wired into code) with passing health checks, and the self-contained HTML dashboard opens with an architecture diagram and documented technology tradeoffs (including NoSQL choice, Temporal, Kafka+RabbitMQ split, Postgres system-of-record, Redis role).
 
-**Plans**: 6/6 plans executed
+**Plans**: 7/7 plans executed
 
-Plans:
 **Wave 1**
 
 - [x] 01-01-scaffold-compose-pytest-PLAN.md — Project scaffolding, full-stack Docker Compose with health checks (OBS-04), pytest infrastructure
@@ -57,6 +56,10 @@ Plans:
 **Wave 6** *(blocked on Wave 5 completion)*
 
 - [x] 01-06-dashboard-reconciliation-PLAN.md — Reconcile the self-contained Architecture & Decision dashboard to the actual build (DASH-01/02)
+
+**Wave 7** *(gap-closure, blocked on Wave 4/5 completion)*
+
+- [x] 01-07-crud-update-softdelete-PLAN.md — PATCH + soft-delete (deactivate) for clinics/departments/patients/providers/availability, closing the PPL-01/ORG-01/ORG-02 "manage" gap surfaced in Phase 1 verification (no hard deletes)
 
 ### Phase 2: Scheduling + Service Workflow
 
@@ -96,6 +99,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Core Services | 6/6 | Complete    | 2026-09-09 |
+| 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 0/TBD | Not started | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |
