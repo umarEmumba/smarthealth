@@ -8,7 +8,9 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from pymongo import AsyncMongoClient
 
+from smarthealth.config import settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
 
 
@@ -165,3 +167,172 @@ async def test_duplicate_department_name_defined_outcome(client: AsyncClient) ->
     )
     names = [d["name"] for d in departments.json()]
     assert names.count("Pediatrics") == 2
+
+
+async def _create_department(
+    client: AsyncClient, tokens: dict, clinic_id: str, *, name: str = "PATCH Test Department"
+) -> str:
+    resp = await client.post(
+        f"/api/clinics/{clinic_id}/departments",
+        json={"name": name},
+        headers=_auth_header(tokens),
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+@pytest.mark.integration
+async def test_patch_department_full_and_partial(client: AsyncClient) -> None:
+    """PATCH updates only supplied fields (gap-closure Plan 01-07)."""
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens, name="Department PATCH Clinic")
+    department_id = await _create_department(client, tokens, clinic_id)
+
+    resp = await client.patch(
+        f"/api/clinics/{clinic_id}/departments/{department_id}",
+        json={"name": "Renamed Department"},
+        headers=_auth_header(tokens),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Renamed Department"
+
+
+@pytest.mark.integration
+async def test_patch_department_empty_body_422(client: AsyncClient) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens, name="Department Empty Body Clinic")
+    department_id = await _create_department(client, tokens, clinic_id)
+
+    resp = await client.patch(
+        f"/api/clinics/{clinic_id}/departments/{department_id}",
+        json={},
+        headers=_auth_header(tokens),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.integration
+async def test_patch_department_unknown_id_404(client: AsyncClient) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens, name="Department Unknown Clinic")
+
+    resp = await client.patch(
+        f"/api/clinics/{clinic_id}/departments/{uuid.uuid4()}",
+        json={"name": "Ghost Department"},
+        headers=_auth_header(tokens),
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.integration
+async def test_patch_department_wrong_clinic_scope_404(client: AsyncClient) -> None:
+    """A department id from a different clinic is 404, not editable
+    (clinic-scoped PATCH, mirrors create's scoping discipline)."""
+    tokens = await _register_and_login(client, role="admin")
+    clinic_a = await _create_clinic(client, tokens, name="Scope Clinic A PATCH")
+    clinic_b = await _create_clinic(client, tokens, name="Scope Clinic B PATCH")
+    department_id = await _create_department(client, tokens, clinic_a)
+
+    resp = await client.patch(
+        f"/api/clinics/{clinic_b}/departments/{department_id}",
+        json={"name": "Cross-Clinic Rename"},
+        headers=_auth_header(tokens),
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.integration
+async def test_patch_department_non_admin_forbidden(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Department RBAC Clinic")
+    department_id = await _create_department(client, admin_tokens, clinic_id)
+
+    front_desk_tokens = await _register_and_login(client, role="front_desk")
+    resp = await client.patch(
+        f"/api/clinics/{clinic_id}/departments/{department_id}",
+        json={"name": "Should Not Change"},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.integration
+async def test_deactivate_department_hides_from_default_list(client: AsyncClient) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens, name="Department Deactivate Clinic")
+    department_id = await _create_department(client, tokens, clinic_id)
+
+    deactivate_resp = await client.post(
+        f"/api/clinics/{clinic_id}/departments/{department_id}/deactivate",
+        headers=_auth_header(tokens),
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+    assert deactivate_resp.json()["is_active"] is False
+    assert deactivate_resp.json()["deactivated_at"] is not None
+
+    default_list = await client.get(
+        f"/api/clinics/{clinic_id}/departments", headers=_auth_header(tokens)
+    )
+    assert all(d["id"] != department_id for d in default_list.json())
+
+    inactive_list = await client.get(
+        f"/api/clinics/{clinic_id}/departments",
+        params={"include_inactive": "true"},
+        headers=_auth_header(tokens),
+    )
+    assert any(d["id"] == department_id for d in inactive_list.json())
+
+
+@pytest.mark.integration
+async def test_deactivate_department_idempotent(client: AsyncClient) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens, name="Department Idempotent Clinic")
+    department_id = await _create_department(client, tokens, clinic_id)
+
+    first = await client.post(
+        f"/api/clinics/{clinic_id}/departments/{department_id}/deactivate",
+        headers=_auth_header(tokens),
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        f"/api/clinics/{clinic_id}/departments/{department_id}/deactivate",
+        headers=_auth_header(tokens),
+    )
+    assert second.status_code == 200
+    assert second.json()["is_active"] is False
+
+
+@pytest.mark.integration
+async def test_department_update_and_deactivate_audited(
+    client: AsyncClient, mongo_client: AsyncMongoClient
+) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens, name="Department Audited Clinic")
+    department_id = await _create_department(client, tokens, clinic_id)
+
+    patch_resp = await client.patch(
+        f"/api/clinics/{clinic_id}/departments/{department_id}",
+        json={"name": "Audited Renamed Department"},
+        headers=_auth_header(tokens),
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+
+    deactivate_resp = await client.post(
+        f"/api/clinics/{clinic_id}/departments/{department_id}/deactivate",
+        headers=_auth_header(tokens),
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+
+    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    update_doc = await collection.find_one(
+        {"action": "department.update", "entity_id": department_id}
+    )
+    assert update_doc is not None
+    assert update_doc["outcome"] == "success"
+
+    deactivate_doc = await collection.find_one(
+        {"action": "department.deactivate", "entity_id": department_id}
+    )
+    assert deactivate_doc is not None
+    assert deactivate_doc["outcome"] == "success"

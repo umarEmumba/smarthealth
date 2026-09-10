@@ -8,7 +8,9 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from pymongo import AsyncMongoClient
 
+from smarthealth.config import settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
 
 
@@ -189,3 +191,178 @@ async def test_non_admin_forbidden(client: AsyncClient) -> None:
         headers=_auth_header(front_desk_tokens),
     )
     assert resp.status_code == 403
+
+
+async def _create_provider(
+    client: AsyncClient, admin_tokens: dict, department_id: str, *, full_name: str = "Dr. PATCH Testperson"
+) -> str:
+    resp = await client.post(
+        "/api/providers",
+        json={
+            "department_id": department_id,
+            "full_name": full_name,
+            "specialties": ["General Medicine"],
+        },
+        headers=_auth_header(admin_tokens),
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+@pytest.mark.integration
+async def test_patch_provider_full_and_partial(client: AsyncClient) -> None:
+    """PATCH updates only supplied fields; specialties REPLACES the full
+    set when supplied (gap-closure Plan 01-07)."""
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Provider PATCH Clinic"
+    )
+    provider_id = await _create_provider(client, admin_tokens, department_id)
+
+    name_resp = await client.patch(
+        f"/api/providers/{provider_id}",
+        json={"full_name": "Dr. Renamed"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert name_resp.status_code == 200, name_resp.text
+    assert name_resp.json()["full_name"] == "Dr. Renamed"
+    specialty_names = {s["name"] for s in name_resp.json()["specialties"]}
+    assert specialty_names == {"General Medicine"}  # untouched
+
+    specialty_resp = await client.patch(
+        f"/api/providers/{provider_id}",
+        json={"specialties": ["Cardiology"]},
+        headers=_auth_header(admin_tokens),
+    )
+    assert specialty_resp.status_code == 200, specialty_resp.text
+    new_specialty_names = {s["name"] for s in specialty_resp.json()["specialties"]}
+    assert new_specialty_names == {"Cardiology"}  # replaced, not appended
+    assert specialty_resp.json()["full_name"] == "Dr. Renamed"  # untouched
+
+
+@pytest.mark.integration
+async def test_patch_provider_empty_body_422(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Provider Empty Body Clinic"
+    )
+    provider_id = await _create_provider(client, admin_tokens, department_id)
+
+    resp = await client.patch(
+        f"/api/providers/{provider_id}", json={}, headers=_auth_header(admin_tokens)
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.integration
+async def test_patch_provider_unknown_id_404(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    resp = await client.patch(
+        f"/api/providers/{uuid.uuid4()}",
+        json={"full_name": "Dr. Ghost"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.integration
+async def test_patch_provider_non_admin_forbidden(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Provider RBAC PATCH Clinic"
+    )
+    provider_id = await _create_provider(client, admin_tokens, department_id)
+
+    front_desk_tokens = await _register_and_login(client, role="front_desk")
+    resp = await client.patch(
+        f"/api/providers/{provider_id}",
+        json={"full_name": "Should Not Change"},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.integration
+async def test_deactivate_provider_hides_from_default_list(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Provider Deactivate Clinic"
+    )
+    provider_id = await _create_provider(client, admin_tokens, department_id)
+
+    deactivate_resp = await client.post(
+        f"/api/providers/{provider_id}/deactivate", headers=_auth_header(admin_tokens)
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+    assert deactivate_resp.json()["is_active"] is False
+    assert deactivate_resp.json()["deactivated_at"] is not None
+
+    default_list = await client.get(
+        "/api/providers", params={"department_id": department_id}, headers=_auth_header(admin_tokens)
+    )
+    assert all(p["id"] != provider_id for p in default_list.json())
+
+    inactive_list = await client.get(
+        "/api/providers",
+        params={"department_id": department_id, "include_inactive": "true"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert any(p["id"] == provider_id for p in inactive_list.json())
+
+    get_resp = await client.get(f"/api/providers/{provider_id}", headers=_auth_header(admin_tokens))
+    assert get_resp.status_code == 200
+    assert get_resp.json()["is_active"] is False
+
+
+@pytest.mark.integration
+async def test_deactivate_provider_idempotent(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Provider Idempotent Clinic"
+    )
+    provider_id = await _create_provider(client, admin_tokens, department_id)
+
+    first = await client.post(
+        f"/api/providers/{provider_id}/deactivate", headers=_auth_header(admin_tokens)
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        f"/api/providers/{provider_id}/deactivate", headers=_auth_header(admin_tokens)
+    )
+    assert second.status_code == 200
+    assert second.json()["is_active"] is False
+
+
+@pytest.mark.integration
+async def test_provider_update_and_deactivate_audited(
+    client: AsyncClient, mongo_client: AsyncMongoClient
+) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Provider Audited Clinic"
+    )
+    provider_id = await _create_provider(client, admin_tokens, department_id)
+
+    patch_resp = await client.patch(
+        f"/api/providers/{provider_id}",
+        json={"full_name": "Dr. Audited Renamed"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+
+    deactivate_resp = await client.post(
+        f"/api/providers/{provider_id}/deactivate", headers=_auth_header(admin_tokens)
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+
+    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    update_doc = await collection.find_one({"action": "provider.update", "entity_id": provider_id})
+    assert update_doc is not None
+    assert update_doc["outcome"] == "success"
+
+    deactivate_doc = await collection.find_one(
+        {"action": "provider.deactivate", "entity_id": provider_id}
+    )
+    assert deactivate_doc is not None
+    assert deactivate_doc["outcome"] == "success"

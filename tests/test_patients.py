@@ -275,3 +275,197 @@ async def test_no_phi_in_patient_audit_or_logs(
     assert SYNTHETIC_PHI_NAME not in output
     assert SYNTHETIC_PHI_DOB not in output
     assert SYNTHETIC_PHI_PHONE not in output
+
+
+async def _create_patient(client: AsyncClient, tokens: dict, clinic_id: str) -> str:
+    resp = await client.post(
+        "/api/patients", json=_patient_payload(clinic_id), headers=_auth_header(tokens)
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+@pytest.mark.integration
+async def test_patch_patient_full_and_partial(client: AsyncClient) -> None:
+    """PATCH updates only supplied fields (gap-closure Plan 01-07)."""
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient PATCH Clinic")
+    front_desk_tokens = await _register_and_login(
+        client, role="front_desk", clinic_id=clinic_id
+    )
+    patient_id = await _create_patient(client, front_desk_tokens, clinic_id)
+
+    resp = await client.patch(
+        f"/api/patients/{patient_id}",
+        params={"clinic_id": clinic_id},
+        json={"phone": "+1-555-020-0000"},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phone"] == "+1-555-020-0000"
+    assert resp.json()["full_name"] == SYNTHETIC_PHI_NAME  # untouched
+
+
+@pytest.mark.integration
+async def test_patch_patient_empty_body_422(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient Empty Body Clinic")
+    front_desk_tokens = await _register_and_login(
+        client, role="front_desk", clinic_id=clinic_id
+    )
+    patient_id = await _create_patient(client, front_desk_tokens, clinic_id)
+
+    resp = await client.patch(
+        f"/api/patients/{patient_id}",
+        params={"clinic_id": clinic_id},
+        json={},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.integration
+async def test_patch_patient_unknown_id_404(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient Unknown Clinic")
+
+    resp = await client.patch(
+        f"/api/patients/{uuid.uuid4()}",
+        params={"clinic_id": clinic_id},
+        json={"phone": "+1-555-020-0001"},
+        headers=_auth_header(admin_tokens),
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.integration
+async def test_patch_patient_role_forbidden(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient RBAC Clinic")
+    front_desk_tokens = await _register_and_login(
+        client, role="front_desk", clinic_id=clinic_id
+    )
+    patient_id = await _create_patient(client, front_desk_tokens, clinic_id)
+
+    patient_role_tokens = await _register_and_login(client, role="patient")
+    resp = await client.patch(
+        f"/api/patients/{patient_id}",
+        params={"clinic_id": clinic_id},
+        json={"phone": "+1-555-020-0002"},
+        headers=_auth_header(patient_role_tokens),
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.integration
+async def test_deactivate_patient_hides_from_default_list(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient Deactivate Clinic")
+    front_desk_tokens = await _register_and_login(
+        client, role="front_desk", clinic_id=clinic_id
+    )
+    patient_id = await _create_patient(client, front_desk_tokens, clinic_id)
+
+    deactivate_resp = await client.post(
+        f"/api/patients/{patient_id}/deactivate",
+        params={"clinic_id": clinic_id},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+    assert deactivate_resp.json()["is_active"] is False
+    assert deactivate_resp.json()["deactivated_at"] is not None
+
+    default_list = await client.get(
+        "/api/patients", params={"clinic_id": clinic_id}, headers=_auth_header(front_desk_tokens)
+    )
+    assert all(p["id"] != patient_id for p in default_list.json())
+
+    inactive_list = await client.get(
+        "/api/patients",
+        params={"clinic_id": clinic_id, "include_inactive": "true"},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert any(p["id"] == patient_id for p in inactive_list.json())
+
+    get_resp = await client.get(
+        f"/api/patients/{patient_id}",
+        params={"clinic_id": clinic_id},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["is_active"] is False
+
+
+@pytest.mark.integration
+async def test_deactivate_patient_idempotent(client: AsyncClient) -> None:
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient Idempotent Clinic")
+    front_desk_tokens = await _register_and_login(
+        client, role="front_desk", clinic_id=clinic_id
+    )
+    patient_id = await _create_patient(client, front_desk_tokens, clinic_id)
+
+    first = await client.post(
+        f"/api/patients/{patient_id}/deactivate",
+        params={"clinic_id": clinic_id},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        f"/api/patients/{patient_id}/deactivate",
+        params={"clinic_id": clinic_id},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert second.status_code == 200
+    assert second.json()["is_active"] is False
+
+
+@pytest.mark.integration
+async def test_patient_update_and_deactivate_audited_and_phi_safe(
+    client: AsyncClient, mongo_client: AsyncMongoClient
+) -> None:
+    """PATCH and deactivate both write audit entries; PATCH's audit
+    `changes` field and any captured log contain no PHI value (T-05-01
+    discipline extended to the update path)."""
+    admin_tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, admin_tokens, name="Patient Audited PATCH Clinic")
+    front_desk_tokens = await _register_and_login(
+        client, role="front_desk", clinic_id=clinic_id
+    )
+    patient_id = await _create_patient(client, front_desk_tokens, clinic_id)
+
+    patch_resp = await client.patch(
+        f"/api/patients/{patient_id}",
+        params={"clinic_id": clinic_id},
+        json={"full_name": "Zzyzx Updated Synthetic"},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+
+    deactivate_resp = await client.post(
+        f"/api/patients/{patient_id}/deactivate",
+        params={"clinic_id": clinic_id},
+        headers=_auth_header(front_desk_tokens),
+    )
+    assert deactivate_resp.status_code == 200, deactivate_resp.text
+
+    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    try:
+        update_doc = await collection.find_one(
+            {"action": "patient.update", "entity_id": patient_id}
+        )
+        assert update_doc is not None
+        assert update_doc["outcome"] == "success"
+        assert update_doc["changes"] == {"fields": ["full_name"]}
+        update_doc_text = json.dumps(update_doc, default=str)
+        assert SYNTHETIC_PHI_NAME not in update_doc_text
+        assert "Zzyzx Updated Synthetic" not in update_doc_text
+
+        deactivate_doc = await collection.find_one(
+            {"action": "patient.deactivate", "entity_id": patient_id}
+        )
+        assert deactivate_doc is not None
+        assert deactivate_doc["outcome"] == "success"
+    finally:
+        await collection.delete_many({"entity_id": patient_id})

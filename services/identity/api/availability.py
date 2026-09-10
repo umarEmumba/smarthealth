@@ -297,7 +297,7 @@ async def update_availability_template(
     resulting_end = payload.end_time if payload.end_time is not None else existing.end_time
     if resulting_end <= resulting_start:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail="end_time must be strictly after start_time",
         )
     resulting_from = (
@@ -308,7 +308,7 @@ async def update_availability_template(
     )
     if resulting_to is not None and resulting_from > resulting_to:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail="effective_from must be on or before effective_to",
         )
 
