@@ -16,12 +16,21 @@ resolve a concrete calendar instant; it only validates and persists the
 template. The clinic's timezone is reachable via
 `provider.department.clinic.timezone` for any future consumer (Phase 2)
 that needs to resolve an instant from this template.
+
+Gap-closure Plan 01-07 adds `PATCH .../{template_id}` (partial update)
+and `POST .../{template_id}/deactivate` (soft-delete, NEVER a row
+delete) — both enforce the SAME CR-02 provider-ownership check as
+create/list above (PROVIDER role may only manage their OWN provider_id;
+ADMIN may act on any provider_id). `GET` list excludes inactive
+templates by default; `?include_inactive=true` includes them. A PATCH
+that would leave the window inconsistent (end_time<=start_time after
+merging with existing values) is rejected 422, exactly like create.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
@@ -31,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from libs.audit.writer import write_audit
 from libs.observability.logging import get_logger
 from services.identity.domain.enums import Role
+from services.identity.domain.schemas import AvailabilityTemplateUpdate
 from services.identity.repository import people_repo
 from services.identity.security.current_user import AuthenticatedUser, user_id_as_uuid
 from services.identity.security.rbac import require_role
@@ -79,6 +89,8 @@ class AvailabilityTemplateOut(BaseModel):
     slot_duration_minutes: int
     effective_from: date
     effective_to: date | None = None
+    is_active: bool
+    deactivated_at: datetime | None = None
 
 
 def _to_out(template) -> AvailabilityTemplateOut:
@@ -92,7 +104,22 @@ def _to_out(template) -> AvailabilityTemplateOut:
         slot_duration_minutes=template.slot_duration_minutes,
         effective_from=template.effective_from,
         effective_to=template.effective_to,
+        is_active=template.is_active,
+        deactivated_at=template.deactivated_at,
     )
+
+
+def _assert_provider_owner_or_admin(
+    user: AuthenticatedUser, provider
+) -> None:
+    """CR-02: a PROVIDER may only manage their OWN availability — mirrors
+    the identical check in create_availability_template/list_availability.
+    """
+    if user.role == Role.PROVIDER and provider.user_id != user_id_as_uuid(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="cannot manage another provider's availability",
+        )
 
 
 @router.post("", response_model=AvailabilityTemplateOut, status_code=status.HTTP_201_CREATED)
@@ -176,6 +203,7 @@ async def create_availability_template(
 @router.get("", response_model=list[AvailabilityTemplateOut])
 async def list_availability(
     provider_id: uuid.UUID,
+    include_inactive: bool = False,
     user: AuthenticatedUser = Depends(require_role(Role.PROVIDER, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
@@ -213,5 +241,168 @@ async def list_availability(
             detail="cannot view another provider's availability",
         )
 
-    templates = await people_repo.list_availability(db, provider_id)
+    templates = await people_repo.list_availability(
+        db, provider_id, include_inactive=include_inactive
+    )
     return [_to_out(t) for t in templates]
+
+
+@router.patch("/{template_id}", response_model=AvailabilityTemplateOut)
+async def update_availability_template(
+    provider_id: uuid.UUID,
+    template_id: uuid.UUID,
+    payload: AvailabilityTemplateUpdate,
+    user: AuthenticatedUser = Depends(require_role(Role.PROVIDER, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+) -> AvailabilityTemplateOut:
+    provider = await people_repo.get_provider(db, provider_id)
+    if provider is None:
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="availability.update",
+            entity_type="availability_template",
+            entity_id=str(template_id),
+            clinic_id=None,
+            outcome="failure",
+        )
+        log.info("availability.update.provider_not_found", provider_id=str(provider_id))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="provider not found")
+
+    _assert_provider_owner_or_admin(user, provider)
+
+    existing = await people_repo.get_availability_template(db, template_id, provider_id)
+    if existing is None:
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="availability.update",
+            entity_type="availability_template",
+            entity_id=str(template_id),
+            clinic_id=None,
+            outcome="failure",
+        )
+        log.info(
+            "availability.update.not_found", template_id=str(template_id), provider_id=str(provider_id)
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="availability template not found")
+
+    # Validate the RESULTING window (existing values merged with the
+    # partial update) — a PATCH that supplies only start_time and leaves
+    # end_time untouched must not silently create an inverted window.
+    resulting_start = payload.start_time if payload.start_time is not None else existing.start_time
+    resulting_end = payload.end_time if payload.end_time is not None else existing.end_time
+    if resulting_end <= resulting_start:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="end_time must be strictly after start_time",
+        )
+    resulting_from = (
+        payload.effective_from if payload.effective_from is not None else existing.effective_from
+    )
+    resulting_to = (
+        payload.effective_to if payload.effective_to is not None else existing.effective_to
+    )
+    if resulting_to is not None and resulting_from > resulting_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="effective_from must be on or before effective_to",
+        )
+
+    template = await people_repo.update_availability_template(
+        db,
+        template_id,
+        provider_id,
+        day_of_week=payload.day_of_week,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        slot_duration_minutes=payload.slot_duration_minutes,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+
+    changed_fields = list(payload.model_fields_set)
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="availability.update",
+        entity_type="availability_template",
+        entity_id=str(template.id),
+        clinic_id=None,
+        outcome="success",
+        changed_fields=changed_fields,
+    )
+    log.info(
+        "availability.update.success",
+        availability_template_id=str(template.id),
+        provider_id=str(provider_id),
+    )
+
+    return _to_out(template)
+
+
+@router.post("/{template_id}/deactivate", response_model=AvailabilityTemplateOut)
+async def deactivate_availability_template(
+    provider_id: uuid.UUID,
+    template_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(Role.PROVIDER, Role.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+) -> AvailabilityTemplateOut:
+    provider = await people_repo.get_provider(db, provider_id)
+    if provider is None:
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="availability.deactivate",
+            entity_type="availability_template",
+            entity_id=str(template_id),
+            clinic_id=None,
+            outcome="failure",
+        )
+        log.info("availability.deactivate.provider_not_found", provider_id=str(provider_id))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="provider not found")
+
+    _assert_provider_owner_or_admin(user, provider)
+
+    template = await people_repo.deactivate_availability_template(db, template_id, provider_id)
+    if template is None:
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="availability.deactivate",
+            entity_type="availability_template",
+            entity_id=str(template_id),
+            clinic_id=None,
+            outcome="failure",
+        )
+        log.info(
+            "availability.deactivate.not_found",
+            template_id=str(template_id),
+            provider_id=str(provider_id),
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="availability template not found")
+
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="availability.deactivate",
+        entity_type="availability_template",
+        entity_id=str(template.id),
+        clinic_id=None,
+        outcome="success",
+    )
+    log.info(
+        "availability.deactivate.success",
+        availability_template_id=str(template.id),
+        provider_id=str(provider_id),
+    )
+
+    return _to_out(template)
