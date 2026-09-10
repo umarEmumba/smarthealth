@@ -86,6 +86,8 @@ async def test_read_after_write(client: AsyncClient) -> None:
         "id": clinic_id,
         "name": "Riverside Clinic",
         "timezone": "America/Chicago",
+        "is_active": True,
+        "deactivated_at": None,
     }
 
     list_resp = await client.get("/api/clinics", headers=_auth_header(tokens))
