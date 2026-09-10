@@ -237,3 +237,7 @@ Phase 1's five core resources (clinics, departments, patients, providers, availa
 ---
 *Phase: 01-foundation-core-services*
 *Completed: 2026-09-10*
+
+## Self-Check: PASSED
+
+Created file (infra/migrations/versions/0002_soft_delete_columns.py) verified present on disk; all 5 commits (e144a5d, e0a0575, 1c7087b, 2d76880, 340053b) verified present in git log.
