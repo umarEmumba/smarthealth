@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartHealth — Architecture (Phase 1)</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#16212e; --ink:#e7edf3; --muted:#9fb0c0;
+    --line:#2b3a4a; --accent:#4f9cf9;
+    --wired:#1f6d3d; --wired-bd:#34a853; --wired-ink:#c7f0d5;
+    --pend:#6b5300; --pend-bd:#f9ab00; --pend-ink:#ffe9b0;
+    --store:#3a2b5e; --store-bd:#a385f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:32px 20px 64px}
+  header h1{margin:0 0 4px;font-size:26px;letter-spacing:.2px}
+  header p{margin:0;color:var(--muted)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin:20px 0 8px;font-size:13px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid}
+  .dot.w{background:var(--wired);border-color:var(--wired-bd)}
+  .dot.p{background:var(--pend);border-color:var(--pend-bd);border-style:dashed}
+  .dot.s{background:var(--store);border-color:var(--store-bd)}
+  .layer{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;margin:14px 0}
+  .layer h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:1.4px;
+    color:var(--muted);font-weight:600}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .box{flex:1 1 180px;min-width:150px;background:#1b2836;border:1px solid var(--line);
+    border-radius:10px;padding:12px 14px}
+  .box b{display:block;font-size:14px;margin-bottom:3px}
+  .box small{color:var(--muted);font-size:12px;line-height:1.4;display:block}
+  .store{background:linear-gradient(180deg,#2a2140,#241b38);border-color:var(--store-bd)}
+  .store b{color:#d9c9ff}
+  .wired{border-color:var(--wired-bd)}
+  .wired b{color:var(--wired-ink)}
+  .pending{border-color:var(--pend-bd);border-style:dashed;background:#241f10}
+  .pending b{color:var(--pend-ink)}
+  .flow{color:var(--muted);text-align:center;font-size:22px;margin:2px 0 -4px;line-height:1}
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;margin-left:8px;
+    vertical-align:middle;font-weight:600}
+  .tag.w{background:rgba(52,168,83,.16);color:var(--wired-bd);border:1px solid var(--wired-bd)}
+  .tag.p{background:rgba(249,171,0,.14);color:var(--pend-bd);border:1px solid var(--pend-bd)}
+  .seq{white-space:pre;overflow-x:auto;background:#111b26;border:1px solid var(--line);
+    border-radius:10px;padding:16px;color:#cfe0f0;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  code{background:#0d1620;border:1px solid var(--line);border-radius:5px;padding:.5px 5px;font-size:12.5px}
+  footer{margin-top:28px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>SmartHealth — System Architecture</h1>
+    <p>Part A · Phase 1 — Foundation &amp; Core Services (identity/RBAC, audit trail, observability spine)</p>
+  </header>
+
+  <div class="legend">
+    <span><i class="dot w"></i> Wired &amp; serving (Phase 1)</span>
+    <span><i class="dot s"></i> Data store</span>
+    <span><i class="dot p"></i> Scaffolding only — wired in Phase 2/3</span>
+  </div>
+
+  <!-- Clients -->
+  <div class="layer">
+    <h2>Clients — role-scoped</h2>
+    <div class="row">
+      <div class="box"><b>Patient</b><small>self-register, own records</small></div>
+      <div class="box"><b>Front-desk</b><small>manage patients (clinic-scoped)</small></div>
+      <div class="box"><b>Provider</b><small>own availability</small></div>
+      <div class="box"><b>Admin</b><small>full management</small></div>
+    </div>
+  </div>
+
+  <div class="flow">&#9660;&nbsp; HTTPS + Bearer JWT</div>
+
+  <!-- API -->
+  <div class="layer">
+    <h2>API process — FastAPI (gunicorn + uvicorn workers) · :8000 <span class="tag w">wired</span></h2>
+    <div class="row" style="margin-bottom:12px">
+      <div class="box" style="flex-basis:100%"><b>Cross-cutting middleware</b>
+        <small>OpenTelemetry auto-instrumentation · Prometheus <code>/metrics</code> · structlog (PHI-safe, trace_id-correlated)</small></div>
+    </div>
+    <div class="row" style="margin-bottom:12px">
+      <div class="box wired"><b>JWT issue / verify</b><small>access ~15m · refresh ~7d<br>python-jose · claims: sub, role, clinic_id, jti</small></div>
+      <div class="box wired"><b>current_user</b><small>signature + claim check<br>+ Redis denylist lookup</small></div>
+      <div class="box wired"><b>RBAC — require_role</b><small>patient · front_desk · provider · admin<br>+ ownership / clinic-scope checks</small></div>
+    </div>
+    <div class="row">
+      <div class="box"><b>/api/auth/*</b><small>register · login · refresh · logout · admin/users</small></div>
+      <div class="box"><b>/api/clinics · /departments</b><small>CRUD + soft-delete</small></div>
+      <div class="box"><b>/api/patients · /providers · /availability</b><small>CRUD + soft-delete (PHI-safe)</small></div>
+      <div class="box"><b>/api/admin/ping</b><small>RBAC probe</small></div>
+    </div>
+  </div>
+
+  <div class="flow">&#9660;</div>
+
+  <!-- Data stores -->
+  <div class="layer">
+    <h2>Data stores <span class="tag w">wired</span></h2>
+    <div class="row">
+      <div class="box store"><b>PostgreSQL — system of record</b>
+        <small>SQLAlchemy 2.0 async + asyncpg · Alembic<br>users/patients split · empty <code>provider_slots</code> w/ live GiST no-overlap constraint</small></div>
+      <div class="box store"><b>MongoDB — audit trail</b>
+        <small>append-only <code>audit_log</code> · indexed<br>PHI-free: actor · action · resource · trace_id</small></div>
+      <div class="box store"><b>Redis</b>
+        <small>JWT <code>jti</code>-denylist (revocation, auto-expires)<br>cache · future slot locks</small></div>
+    </div>
+  </div>
+
+  <!-- Observability -->
+  <div class="layer">
+    <h2>Observability <span class="tag w">wired</span></h2>
+    <div class="row">
+      <div class="box wired"><b>Jaeger</b><small>distributed traces via OTLP :4317 · UI :16686</small></div>
+      <div class="box wired"><b>Prometheus</b><small>scrapes API <code>/metrics</code> · :9090</small></div>
+      <div class="box wired"><b>Grafana</b><small>operational dashboards · :3001</small></div>
+    </div>
+  </div>
+
+  <!-- Scaffolding -->
+  <div class="layer">
+    <h2>Event &amp; orchestration — scaffolding only <span class="tag p">Phase 2/3</span></h2>
+    <div class="row">
+      <div class="box pending"><b>Temporal (+ UI)</b><small>booking / cancel / reschedule sagas — <b>Phase 2</b></small></div>
+      <div class="box pending"><b>Kafka + Schema Registry</b><small>KRaft · event backbone — <b>Phase 3</b></small></div>
+      <div class="box pending"><b>RabbitMQ</b><small>Celery broker · background jobs — <b>Phase 3</b></small></div>
+    </div>
+  </div>
+
+  <!-- Request flow -->
+  <div class="layer">
+    <h2>End-to-end request flow — the tracer</h2>
+    <div class="seq">Client ──login──▶ FastAPI ──▶ PostgreSQL (fetch user)
+                     │  bcrypt verify (constant-time even if user absent)
+                     ◀── { access_token, refresh_token }
+
+Client ──Bearer access──▶ FastAPI
+                     ├─▶ Security: verify signature + claims
+                     ├─▶ Redis: jti denylisted?  ──▶ no
+                     ├─▶ RBAC: require_role(...) + ownership/clinic-scope
+                     ├─▶ PostgreSQL: read / write domain data
+                     ├─▶ MongoDB: append audit_log (PHI-free, trace_id)
+                     ├─▶ structlog: PHI-safe line carrying trace_id
+                     └─▶ Jaeger: export OTel span
+Logout / revoke  ──▶ add jti to Redis denylist (auto-expires at token TTL)</div>
+  </div>
+
+  <!-- Decisions -->
+  <div class="layer">
+    <h2>Key design decisions</h2>
+    <table>
+      <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+      <tr><td>Auth &amp; session</td><td>Access+refresh JWT, Redis jti-denylist</td><td>Real revocation (IAM-03); short TTL bounds leaked tokens; no new infra</td></tr>
+      <tr><td>Slot model</td><td>Weekly templates; empty slots + live GiST exclusion constraint</td><td>P1 config-only; P2 inherits a proven no-double-booking invariant</td></tr>
+      <tr><td>Identity vs profile</td><td>Separate users / patients (nullable link)</td><td>Self-registration (IAM-01) + staff-created no-login profiles (PPL-01)</td></tr>
+      <tr><td>Deletion</td><td>Soft-delete (is_active / deactivated_at)</td><td>Records stay auditable &amp; retained — no hard deletes</td></tr>
+      <tr><td>PHI safety</td><td>Field-name-only audit; structlog redaction</td><td>HIPAA — no PHI in logs or traces</td></tr>
+      <tr><td>Concurrency</td><td>Async ORM + asyncpg, async Mongo/Redis</td><td>Sustains concurrent load without blocking the event loop</td></tr>
+    </table>
+  </div>
+
+  <footer>
+    Self-contained diagram — no external assets. Companion docs:
+    <a href="architecture.md">architecture.md</a> (Mermaid, GitHub-rendered) ·
+    <a href="architecture-dashboard.html">architecture-dashboard.html</a> (interactive decision record).
+    Ports reflect the local Docker Compose mapping.
+  </footer>
+</div>
+</body>
+</html>
