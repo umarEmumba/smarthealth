@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 2
-current_phase_name: Scheduling + Service Workflow
-status: planning
-stopped_at: Phase 01 gap-closure plan 01-07 complete, ready to plan Phase 2
-last_updated: "2026-09-10T10:58:38.971Z"
+current_phase: "01.1"
+current_phase_name: Microservice Re-architecture
+status: Ready to discuss/plan
+stopped_at: Phase 01.1 context gathered
+last_updated: "2026-09-30T11:09:16.647Z"
 last_activity: 2026-09-10
 last_activity_desc: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
-state_head: a6bfaa2a4333b351edbc9c0d21e7a77612dca660
+state_head: 5efacc84b4e82ad700dfc0a83bb6c5bf27421f58
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 1
   total_plans: 7
   completed_plans: 7
-  percent: 33
+  percent: 25
 ---
 
 # Project State
@@ -27,12 +27,12 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 
 ## Current Position
 
-Phase: 2 — Scheduling + Service Workflow
+Phase: 01.1 — Microservice Re-architecture (INSERTED)
 Plan: Not started
-Status: Ready to plan
+Status: Ready to discuss/plan
 Last activity: 2026-09-10 — Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
 
-Progress: [███░░░░░░░] 33%
+Progress: [███░░░░░░░] 25%
 
 ## Performance Metrics
 
@@ -105,6 +105,10 @@ None yet.
 - Phase 3 planning: Outbox relay mechanism (Debezium CDC vs. custom polling publisher) is an open architectural tradeoff per research — decide explicitly and document in the Architecture & Decision dashboard, not a default assumption.
 - Phase 1 planning: Decide auto-setup vs. production-shaped Temporal deployment (temporalio/auto-setup vs. temporalio/server + schema-setup) even though Temporal isn't wired until Phase 2 — affects the Phase 1 Docker Compose skeleton.
 
+### Roadmap Evolution
+
+- Phase 01.1 inserted after Phase 1: Microservice Re-architecture — week-1 mentor review required true microservices; Phase 1 monolith to be split (URGENT)
+
 ## Deferred Items
 
 Items acknowledged and deferred at milestone close, most recent first:
@@ -116,6 +120,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-10T10:56:38.971Z
-Stopped at: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
-Resume file: None
+Last session: 2026-09-30T11:09:16.339Z
+Stopped at: Phase 01.1 context gathered
+Resume file: .planning/phases/01.1-microservice-re-architecture/01.1-CONTEXT.md
