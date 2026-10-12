@@ -1,14 +1,17 @@
-# SmartHealth — Architecture (Part A / Phase 1)
+# SmartHealth — Architecture (Part A / Phase 1.1)
 
-Foundational healthcare-operations backend: identity & RBAC, patient/provider/clinic/department
-management, an append-only audit trail with no PHI in logs, first-class tracing, and the full
-mandated stack running locally with health checks.
+Foundational healthcare-operations backend, re-delivered in Phase 1.1 as **six independently
+deployable services** after the week-1 mentor review: an API gateway, Identity, Organization,
+Provider, Patient, and a Scheduling skeleton. Each service owns its own PostgreSQL database;
+tokens are RS256 and verified locally by every service; an append-only audit trail with no PHI
+in logs and first-class tracing carry over from Phase 1.
 
-> **Scope note.** Phase 1 delivers the **core platform** and the **observability spine**. The
-> event/orchestration components (Kafka, RabbitMQ, Temporal) are stood up in Docker Compose but are
-> **scaffolding only** this phase — they are wired into request/workflow flow in Phase 2 (Temporal
-> booking sagas) and Phase 3 (Kafka event backbone + Celery workers). The diagrams below label this
-> distinction explicitly.
+> **Scope note.** Phase 1.1 adds no new functional capability. The event/orchestration components
+> (Kafka, RabbitMQ, Temporal) are still **scaffolding only**: they run in Docker Compose with
+> health checks but no application code uses them. They are wired in Phase 2 (Temporal booking
+> sagas) and Phase 3 (Kafka event backbone, Celery workers, dedicated Audit service). Diagrams
+> mark this distinction explicitly. Nothing here is claimed as production-hardened; see
+> [Known limitations](#7-known-limitations-and-unverified-items).
 
 ---
 
@@ -23,204 +26,311 @@ flowchart TB
         C4["Admin"]
     end
 
-    subgraph api["API Process — FastAPI (gunicorn + uvicorn workers) :8000"]
-        direction TB
-        MW["OTel instrumentation · Prometheus /metrics · structlog (PHI-safe)"]
-        subgraph sec["Security layer"]
-            direction LR
-            JWT["JWT issue/verify<br/>access ~15m · refresh ~7d<br/>(python-jose)"]
-            RBAC["RBAC require_role<br/>patient · front_desk · provider · admin"]
-            CU["current_user<br/>signature + denylist check"]
-        end
-        subgraph routers["Routers"]
-            direction LR
-            R1["/api/auth/*"]
-            R2["/api/clinics · /departments"]
-            R3["/api/patients · /providers · /availability"]
-            R4["/api/admin/ping"]
-        end
+    subgraph edge["Edge — wired"]
+        GW["API Gateway :8000<br/>FastAPI + httpx proxy<br/>route table · /internal + unsafe paths 404<br/>per-IP limits (fail-open) · no JWT check"]
     end
 
-    subgraph data["Data stores (wired — Phase 1)"]
+    subgraph svc["Services — wired (each: FastAPI, gunicorn + uvicorn workers)"]
         direction LR
-        PG[("PostgreSQL<br/>system of record<br/>SQLAlchemy 2.0 async + asyncpg")]
-        MG[("MongoDB<br/>append-only audit_log<br/>PHI-safe, indexed")]
-        RD[("Redis<br/>JWT jti-denylist<br/>cache · future locks")]
+        ID["Identity<br/>users · RS256 signer · JWKS<br/>/internal/users"]
+        ORG["Organization<br/>clinics · departments<br/>/internal/clinics · /departments"]
+        PRV["Provider<br/>providers · specialties<br/>availability templates<br/>/internal/providers"]
+        PAT["Patient<br/>patients (the only PHI)"]
+        SCH["Scheduling (skeleton)<br/>provider_slots + exclusion constraint<br/>health only"]
     end
 
-    subgraph obs["Observability (wired — Phase 1)"]
+    subgraph pg["PostgreSQL — one container, one database + role per service"]
         direction LR
-        JG["Jaeger<br/>traces via OTLP :4317"]
-        PR["Prometheus<br/>scrapes /metrics"]
-        GF["Grafana<br/>dashboards"]
+        D1[("identity_db")]
+        D2[("organization_db")]
+        D3[("provider_db")]
+        D4[("patient_db")]
+        D5[("scheduling_db")]
+    end
+
+    subgraph shared["Shared infrastructure (not service databases)"]
+        direction LR
+        MG[("MongoDB<br/>audit_log<br/>PHI-safe")]
+        RD[("Redis<br/>jti denylist<br/>rate-limit counters")]
+    end
+
+    subgraph obs["Observability — wired"]
+        direction LR
+        JG["Jaeger<br/>OTLP :4317"]
+        PR["Prometheus<br/>one job per service"]
+        GF["Grafana"]
     end
 
     subgraph scaffold["Scaffolding only — wired in Phase 2/3"]
         direction LR
-        KF["Kafka + Schema Registry<br/>(KRaft) — Phase 3 event backbone"]
-        RMQ["RabbitMQ<br/>Celery broker — Phase 3"]
-        TMP["Temporal (+ UI)<br/>booking sagas — Phase 2"]
+        KF["Kafka + Schema Registry"]
+        RMQ["RabbitMQ (Celery broker)"]
+        TMP["Temporal (+ UI)"]
     end
 
-    clients -->|HTTPS + Bearer JWT| MW
-    MW --> sec
-    sec --> routers
-    routers -->|read/write| PG
-    routers -->|audit every mutation| MG
-    sec -->|revocation check| RD
-    api -.->|spans| JG
-    PR -->|scrape| api
+    clients -->|HTTPS + Bearer JWT| GW
+    GW --> ID & ORG & PRV & PAT
+    ID --> D1
+    ORG --> D2
+    PRV --> D3
+    PAT --> D4
+    SCH --> D5
+    svc -->|audit every mutation| MG
+    GW -->|rate-limit counters| RD
+    svc -->|denylist check| RD
+    ID -.->|JWKS, fetched + cached| svc
+    PRV -.->|reference check| ORG
+    PAT -.->|reference check| ORG
+    ID -.->|reference check| ORG
+    PRV -.->|reference check| ID
+    PAT -.->|reference check| ID
+    svc -.->|spans| JG
+    PR -->|scrape| svc
     GF --> PR
-    api -.->|not yet wired| scaffold
+    svc -.->|not yet wired| scaffold
 
     classDef wired fill:#e6f4ea,stroke:#34a853,color:#0b3d1f;
     classDef pending fill:#fef7e0,stroke:#f9ab00,color:#5b4300,stroke-dasharray:5 4;
-    class PG,MG,RD,JG,PR,GF wired;
+    class GW,ID,ORG,PRV,PAT,SCH,D1,D2,D3,D4,D5,MG,RD,JG,PR,GF wired;
     class KF,RMQ,TMP pending;
 ```
 
+Dashed service-to-service arrows are the synchronous reference checks (section 4); the Scheduling
+service makes none yet.
+
 ---
 
-## 2. Request Flow — the end-to-end tracer
+## 2. Service Breakdown
 
-This is the "thinnest path through every layer" proven in Plan 03 (the Wave 3 tracer). Every later
-route reuses this exact spine.
+| Service | Owns | Database | Internal endpoints (not routed by the gateway) | Calls out to |
+|---|---|---|---|---|
+| **API Gateway** | Edge routing, per-IP rate limiting, path-safety checks | none | — | all five services' public routes (proxy); Redis (limits) |
+| **Identity** | Accounts (`users`: credentials, role, `clinic_id`), register/login/refresh/logout, RS256 token issuance, JWKS, Redis denylist writes, 60 s service tokens | `identity_db` | `GET /internal/users/{id}` | Organization (validate `users.clinic_id`); Redis; MongoDB (audit) |
+| **Organization** | Clinics, departments (soft-delete, clinic-scoped) | `organization_db` | `GET /internal/clinics/{id}`, `GET /internal/departments/{id}` | Identity JWKS (cached); Redis; MongoDB |
+| **Provider** | Providers, specialties, provider↔specialty links, weekly availability templates | `provider_db` | `GET /internal/providers/{id}` | Organization (department), Identity (user); Identity JWKS; Redis; MongoDB |
+| **Patient** | Patient profiles — the only service holding PHI | `patient_db` | — | Organization (clinic), Identity (user); Identity JWKS; Redis; MongoDB |
+| **Scheduling (skeleton)** | `provider_slots` and `ex_provider_slots_no_overlap`; health endpoint only | `scheduling_db` | — | none yet (Phase 2 will validate `provider_id` against Provider) |
+
+Every service also verifies tokens locally from Identity's cached JWKS and checks the shared Redis
+denylist. Shared code (`libs/`) is infrastructure only — token verification and JWKS client, audit
+writer, observability setup, DB/session helpers — and never shares domain models. Each service
+declares its own SQLAlchemy `DeclarativeBase` and its own Alembic migrations with a fresh baseline.
+
+Isolation is asserted by tests: no service imports another, no foreign key crosses a service, PHI
+columns exist only in Patient, the private key is loaded only by Identity, and each service's
+database role is refused by every other service's database.
+
+---
+
+## 3. Request Flow — through the gateway
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as Client
-    participant API as FastAPI
-    participant SEC as Security (JWT/RBAC)
-    participant RD as Redis (denylist)
-    participant PG as PostgreSQL
+    participant GW as Gateway
+    participant RD as Redis
+    participant SVC as Owning service
+    participant PG as Service database
     participant MG as MongoDB (audit)
-    participant JG as Jaeger (OTel)
 
-    U->>API: POST /api/auth/login (email, password)
-    API->>PG: fetch user by email
-    API->>API: bcrypt verify (constant-time even if user absent)
-    API-->>U: 200 { access_token, refresh_token }
-
-    U->>API: GET protected route (Authorization: Bearer <access>)
-    API->>SEC: validate token
-    SEC->>SEC: verify signature + claims (sub, role, clinic_id, jti)
-    SEC->>RD: is jti denylisted?
-    RD-->>SEC: no
-    SEC->>SEC: require_role(...) — RBAC gate
-    API->>PG: read / write domain data
-    API->>MG: append audit_log entry (actor, action, resource, trace_id) — PHI-free
-    API-->>U: 200 (+ PHI-safe structured log line carrying trace_id)
-    API-->>JG: export span (OTLP)
-
-    Note over U,API: Logout / revoke → jti added to Redis denylist (auto-expires at token TTL)
+    U->>GW: POST /api/providers (Bearer access token)
+    GW->>GW: path safety check (no dot segments, encoded / \ NUL)
+    GW->>GW: route table lookup (no /internal prefix exists)
+    GW->>RD: INCR rate-limit counter (fixed 60 s window)
+    alt Redis unreachable
+        RD--xGW: error
+        GW->>GW: fail OPEN (warning log + counter)
+    else over budget
+        GW-->>U: 429 + Retry-After
+    end
+    GW->>SVC: forward (hop-by-hop headers stripped, traceparent added)
+    SVC->>SVC: verify RS256 locally · denylist · require_role · clinic scope
+    SVC->>PG: read / write (one commit per request)
+    SVC->>MG: append audit_log (field names only)
+    SVC-->>GW: response
+    GW-->>U: response (503 if upstream unreachable, 504 if it timed out)
 ```
+
+The gateway does **not** verify JWTs: each service verifies for itself, so no service trusts the edge.
+The gateway never retries (a retried POST could double-apply a write) and never aggregates
+responses (reads return ids only; clients combine them).
 
 ---
 
-## 3. Data Model (PostgreSQL)
+## 4. Reference-check Flow — fail closed (D-05)
 
-Key decision: **`users` and `patients` are separate tables** (`patients.user_id` is nullable) so a
-front-desk-created patient profile need not own a login account (PPL-01), while self-registration
-still works (IAM-01). Availability is stored as **weekly templates**; `provider_slots` is created
-**empty** but carries a **live GiST exclusion constraint** so Phase 2's booking saga inherits a
-table on which double-booking is physically impossible. All operational entities carry
-`is_active` / `deactivated_at` for **soft-delete** (no hard deletes — records stay auditable).
+At write time the owning service is asked whether a referenced record exists. Example: creating a
+provider under a department.
 
 ```mermaid
-erDiagram
-    USERS ||--o| PATIENTS : "may own (nullable)"
-    USERS ||--o| PROVIDERS : "may own (nullable)"
-    CLINICS ||--o{ DEPARTMENTS : contains
-    CLINICS ||--o{ PROVIDERS : "scopes (ORG-03)"
-    DEPARTMENTS ||--o{ PROVIDERS : "assigned to"
-    PROVIDERS }o--o{ SPECIALTIES : has
-    PROVIDERS ||--o{ AVAILABILITY_TEMPLATES : "weekly windows"
-    PROVIDERS ||--o{ PROVIDER_SLOTS : "empty in P1; GiST no-overlap"
+sequenceDiagram
+    autonumber
+    participant U as Client (admin)
+    participant PRV as Provider
+    participant ORG as Organization
+    participant PG as provider_db
 
-    USERS {
-        uuid id PK
-        string email UK
-        string password_hash
-        enum role "patient|front_desk|provider|admin"
-        bool is_active
-    }
-    PATIENTS {
-        uuid id PK
-        uuid user_id FK "nullable"
-        uuid clinic_id FK
-        bool is_active
-        timestamptz deactivated_at
-    }
-    PROVIDERS {
-        uuid id PK
-        uuid user_id FK "nullable"
-        uuid clinic_id FK
-        uuid department_id FK
-        bool is_active
-    }
-    PROVIDER_SLOTS {
-        uuid id PK
-        uuid provider_id FK
-        tstzrange window "EXCLUDE USING gist (provider_id =, window &&) WHERE status<>'cancelled'"
-        string status
-    }
-    AVAILABILITY_TEMPLATES {
-        uuid id PK
-        uuid provider_id FK
-        int day_of_week "0-6"
-        time start_time
-        time end_time
-    }
-    CLINICS { uuid id PK
-        string name
-        bool is_active }
-    DEPARTMENTS { uuid id PK
-        uuid clinic_id FK
-        string name }
-    SPECIALTIES { uuid id PK
-        string name }
+    U->>PRV: POST /api/providers { department_id, ... }
+    PRV->>ORG: GET /internal/departments/{id} (caller's JWT forwarded)
+    Note over PRV,ORG: up to 3 attempts, backoff, GET and transport errors only
+    alt department active
+        ORG-->>PRV: 200 { id, clinic_id, is_active: true }
+        PRV->>PG: INSERT provider (department_id plain UUID, no FK)
+        PRV-->>U: 201
+    else missing or inactive
+        ORG-->>PRV: 404 / inactive
+        PRV-->>U: 422 (nothing written)
+    else owner unreachable, or answers 401/403/5xx
+        PRV-->>U: 503 (nothing written)
+    end
 ```
+
+| Reference | Owner called | Outcome when missing/inactive | Outcome when owner cannot answer |
+|---|---|---|---|
+| `users.clinic_id` | Organization | 422 | 503 |
+| `patients.clinic_id` | Organization | 422 | 503 |
+| `patients.user_id` | Identity | 422 | 503 |
+| `providers.department_id`, `availability_templates.department_id` | Organization | 422 | 503 |
+| `providers.user_id` | Identity | 422 | 503 |
+
+A 401/403/5xx from the owner is deliberately a 503, never a 422, so an authentication
+misconfiguration between services is not mistaken for a missing record. Deactivating a referenced
+record **never cascades** (D-06): existing references keep their ids and only new writes pointing at
+an inactive target are refused. There is no reverse call and no distributed transaction. Kafka,
+the outbox and event-fed local copies that would remove this availability coupling are Phase 3 (D-08).
 
 ---
 
-## 4. Technology Stack
+## 5. Token Verification Flow — RS256 + JWKS
 
-| Concern | Technology | Role in Phase 1 |
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Client
+    participant ID as Identity
+    participant SVC as Any service
+    participant RD as Redis
+
+    U->>ID: POST /api/auth/login (via gateway)
+    ID->>ID: sign access + refresh JWT with the RSA private key (kid smarthealth-identity-1)
+    ID-->>U: { access_token, refresh_token }
+
+    U->>SVC: request + Bearer access token
+    alt JWKS cache empty / older than 300 s / unknown kid (30 s backoff)
+        SVC->>ID: GET /.well-known/jwks.json
+        ID-->>SVC: public keys
+    end
+    SVC->>SVC: verify signature by kid, algorithm, claims (sub, role, clinic_id, jti, type)
+    SVC->>RD: is jti denylisted?
+    alt Redis unreachable
+        SVC-->>U: 503 (fail closed)
+    else denylisted
+        SVC-->>U: 401
+    end
+    SVC-->>U: continue to RBAC and handler
+
+    Note over U,ID: Logout → Identity adds the jti to the Redis denylist (TTL = remaining token life)
+```
+
+Only Identity holds the private key: it is generated by `scripts/generate_jwt_keypair.py`, gitignored,
+and delivered to the Identity container alone as a Compose secret; Identity refuses to start without
+it. Internal calls with no user context use a 60 s service token minted by Identity. Service tokens
+currently carry no `aud` claim (recorded gap). Key rotation is supported through `kid` but has not been
+exercised.
+
+---
+
+## 6. Connected-trace Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GW as Gateway
+    participant PRV as Provider
+    participant ORG as Organization
+    participant ID as Identity
+    participant JG as Jaeger (OTLP)
+
+    Note over GW: server span, W3C traceparent
+    GW->>PRV: forward with traceparent (httpx client span)
+    PRV->>ORG: reference check with traceparent (httpx client span)
+    PRV->>ID: JWKS fetch on cache miss (httpx client span)
+    GW-->>JG: spans (service smarthealth-gateway)
+    PRV-->>JG: spans (smarthealth-provider)
+    ORG-->>JG: spans (smarthealth-organization)
+    ID-->>JG: spans (smarthealth-identity)
+```
+
+One request is one trace across services. A provider create was observed as a single trace spanning
+the gateway, Provider, Organization and (JWKS fetch) Identity, confirmed through Jaeger's HTTP query
+API; nobody has yet looked at it in the Jaeger UI. Every service has its own OpenTelemetry service
+name and its own Prometheus scrape job; the gateway serves `/metrics` only on an internal listener
+(:9100, not published). Logs are structlog JSON carrying `trace_id`/`span_id` and identifiers only.
+
+---
+
+## 7. Known limitations and unverified items
+
+Recorded in `.planning/phases/01.1-microservice-re-architecture/deferred-items.md` and the Phase 1.1 summaries:
+
+- Gateway buffers whole request bodies with no size cap (the limiter bounds count, not size).
+- One shared Redis holds the denylist and the rate-limit counters (outage: limiter fails open,
+  verification fails closed with 503; a flush would drop revocations).
+- Service tokens carry no `aud` claim. Application containers run as root.
+- Not verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty
+  volume, a person viewing the trace in the Jaeger UI.
+- Assumptions awaiting mentor confirmation: the provider → department → clinic scope chain relies
+  on write-time validation (ORG-03); overlapping availability templates remain allowed (PPL-03);
+  clients combining services may briefly see stale cross-service state (PPL-04).
+
+---
+
+## 8. Technology Stack
+
+| Concern | Technology | Role |
 |---|---|---|
-| API framework | FastAPI + Pydantic v2 (gunicorn / uvicorn workers) | HTTP surface, validation |
-| System of record | PostgreSQL 15 · SQLAlchemy 2.0 async · asyncpg · Alembic | Durable relational state + migrations |
-| Audit trail | MongoDB 8 (async PyMongo) | Append-only, PHI-safe `audit_log` |
-| Cache / revocation | Redis 8 | JWT `jti`-denylist; cache; future slot locks |
-| AuthN / AuthZ | python-jose (JWT) · bcrypt · custom RBAC | Access+refresh tokens, 4-role RBAC |
-| Tracing | OpenTelemetry SDK → OTLP → Jaeger | Distributed traces, `trace_id` in logs |
-| Metrics | Prometheus + Grafana | `/metrics` scrape + dashboards |
-| Logging | structlog (JSON, PHI-safe) | Correlated logs (trace/span IDs) |
+| API framework | FastAPI + Pydantic v2 (gunicorn / uvicorn workers) | Gateway and every service |
+| System of record | PostgreSQL 15 · SQLAlchemy 2.0 async · asyncpg · Alembic | One database per service, migrations per service |
+| Audit trail | MongoDB 8 (async PyMongo) | One shared, append-only, PHI-safe `audit_log` |
+| Cache / revocation / limits | Redis 8 | jti denylist; gateway rate-limit counters |
+| AuthN / AuthZ | python-jose (RS256 + JWKS) · bcrypt · custom RBAC | Access + refresh tokens, 4-role RBAC |
+| Service-to-service | httpx · tenacity | Reference checks, bounded GET retries |
+| Tracing | OpenTelemetry SDK → OTLP → Jaeger | Connected traces, `trace_id` in logs |
+| Metrics | Prometheus + Grafana | One scrape job per service; dashboards Phase 3 |
 | **Scaffolding (P2/P3)** | Kafka + Schema Registry, RabbitMQ, Temporal | Event backbone, workers, booking sagas |
 
-### Local ports (Docker Compose)
+### Local ports (Docker Compose defaults; overridable in `infra/.env`)
 
 | Service | Host port | Service | Host port |
 |---|---|---|---|
-| API (Swagger `/docs`) | 8000 | Temporal | 7233 |
+| **API Gateway (the only application port)** | 8000 | Temporal | 7233 |
 | PostgreSQL | 5433 → 5432 | Temporal UI | 8080 |
 | MongoDB | 27017 | Jaeger UI | 16686 |
-| Redis | 6380 → 6379 | Prometheus | 9090 |
-| RabbitMQ / mgmt | 5672 / 15672 | Grafana | 3001 → 3000 |
+| Redis | 6379 | Prometheus | 9090 |
+| RabbitMQ / mgmt | 5672 / 15672 | Grafana | 3000 |
 | Kafka | 9092 | Schema Registry | 8081 |
+
+Identity, Organization, Provider, Patient and Scheduling publish no host port; they are reachable only
+on the Compose network, through the gateway.
 
 ---
 
-## 5. Key Design Decisions
+## 9. Key Design Decisions
 
 | Decision | Choice | Why |
 |---|---|---|
-| Auth & session | Access (~15m) + refresh (~7d) JWT; Redis `jti`-denylist revocation | Real logout/revocation (IAM-03); short access TTL bounds a leaked token; no new infra (Redis already mandated) |
-| Slot model | Weekly templates now; empty `provider_slots` with live GiST exclusion constraint | Phase 1 stays config-only; Phase 2 inherits a proven double-booking invariant |
-| Identity vs profile | Separate `users` / `patients` (nullable `patients.user_id`) | Satisfies both self-registration (IAM-01) and staff-created no-login profiles (PPL-01) |
-| Deletion | Soft-delete (`is_active` / `deactivated_at`), never hard delete | Healthcare records must remain auditable and retained |
-| PHI safety | Field-name-only audit; structlog PHI redaction; tests assert no PHI in logs | HIPAA — no PHI in logs or traces |
-| Async everywhere | SQLAlchemy 2.0 async + asyncpg; async PyMongo; `redis.asyncio` | Sustains concurrent load without blocking the event loop |
+| Service cut | Six services, database each (D-01) | Mentor review asked for true microservices; clear bounded contexts; PHI confined to Patient. Costs: network hops, availability coupling, no distributed transactions |
+| Token model | RS256 + JWKS; Redis jti-denylist | Only Identity can mint tokens; services verify without calling Identity; real logout |
+| Gateway | Thin FastAPI proxy, per-IP Redis limits, fail-open, no JWT check at the edge | Most reviewable; defence in depth; availability over rate protection |
+| Cross-service integrity | Synchronous owner check at write time (D-05), 422/503, no cascade (D-06) | No Kafka/outbox until Phase 3 (D-08); simplest correct option |
+| Reads | Ids only (D-07) | No enrichment calls; clients combine |
+| Slot model | Weekly templates in Provider; empty `provider_slots` with live GiST exclusion constraint in Scheduling (D-03) | Phase 2 inherits a proven double-booking invariant without moving a table |
+| Identity vs profile | Accounts in Identity; profiles in Patient/Provider linked by plain `user_id` (D-04) | Self-registration and staff-created no-login profiles; PHI out of Identity |
+| Audit | Shared library writing one shared `audit_log` (D-02) | Dedicated Audit service is Phase 3; call signature kept stable |
+| Deletion | Soft-delete, never hard delete | Healthcare records must remain auditable and retained |
+| PHI safety | Field-name-only audit; structlog redaction; tests assert no PHI in logs | No PHI in logs or traces |
 
-See [`architecture-dashboard.html`](./architecture-dashboard.html) for the interactive decision record,
-and [`architecture.html`](./architecture.html) for a standalone diagram view.
+See [`architecture-dashboard.html`](./architecture-dashboard.html) for the interactive decision record
+(alternatives and tradeoffs per decision), [`architecture.html`](./architecture.html) for a standalone
+diagram view, and [`erd.md`](./erd.md) for the per-service schemas.

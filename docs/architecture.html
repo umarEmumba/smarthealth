@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SmartHealth — Architecture (Phase 1)</title>
+<title>SmartHealth — Architecture (Phase 1.1)</title>
 <style>
   :root{
     --bg:#0f1720; --panel:#16212e; --ink:#e7edf3; --muted:#9fb0c0;
@@ -45,11 +45,15 @@
   .tag.w{background:rgba(52,168,83,.16);color:var(--wired-bd);border:1px solid var(--wired-bd)}
   .tag.p{background:rgba(249,171,0,.14);color:var(--pend-bd);border:1px solid var(--pend-bd)}
   .seq{white-space:pre;overflow-x:auto;background:#111b26;border:1px solid var(--line);
-    border-radius:10px;padding:16px;color:#cfe0f0;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    border-radius:10px;padding:16px;margin:10px 0 0;color:#cfe0f0;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .seq-title{margin:16px 0 0;font-size:14px;font-weight:600;color:var(--ink)}
+  .note{color:var(--muted);font-size:13px;margin:10px 0 0}
   table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13.5px}
-  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   th{color:var(--muted);font-weight:600}
   code{background:#0d1620;border:1px solid var(--line);border-radius:5px;padding:.5px 5px;font-size:12.5px}
+  ul{margin:8px 0 0;padding-left:20px;color:var(--ink)}
+  li{margin:4px 0;font-size:13.5px}
   footer{margin-top:28px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
   a{color:var(--accent)}
 </style>
@@ -58,11 +62,11 @@
 <div class="wrap">
   <header>
     <h1>SmartHealth — System Architecture</h1>
-    <p>Part A · Phase 1 — Foundation &amp; Core Services (identity/RBAC, audit trail, observability spine)</p>
+    <p>Part A · Phase 1.1 — Microservice re-architecture (gateway + five services, database per service, RS256/JWKS)</p>
   </header>
 
   <div class="legend">
-    <span><i class="dot w"></i> Wired &amp; serving (Phase 1)</span>
+    <span><i class="dot w"></i> Wired &amp; serving</span>
     <span><i class="dot s"></i> Data store</span>
     <span><i class="dot p"></i> Scaffolding only — wired in Phase 2/3</span>
   </div>
@@ -80,48 +84,57 @@
 
   <div class="flow">&#9660;&nbsp; HTTPS + Bearer JWT</div>
 
-  <!-- API -->
+  <!-- Edge -->
   <div class="layer">
-    <h2>API process — FastAPI (gunicorn + uvicorn workers) · :8000 <span class="tag w">wired</span></h2>
-    <div class="row" style="margin-bottom:12px">
-      <div class="box" style="flex-basis:100%"><b>Cross-cutting middleware</b>
-        <small>OpenTelemetry auto-instrumentation · Prometheus <code>/metrics</code> · structlog (PHI-safe, trace_id-correlated)</small></div>
-    </div>
-    <div class="row" style="margin-bottom:12px">
-      <div class="box wired"><b>JWT issue / verify</b><small>access ~15m · refresh ~7d<br>python-jose · claims: sub, role, clinic_id, jti</small></div>
-      <div class="box wired"><b>current_user</b><small>signature + claim check<br>+ Redis denylist lookup</small></div>
-      <div class="box wired"><b>RBAC — require_role</b><small>patient · front_desk · provider · admin<br>+ ownership / clinic-scope checks</small></div>
-    </div>
+    <h2>Edge — API Gateway · :8000, the only published application port <span class="tag w">wired</span></h2>
     <div class="row">
-      <div class="box"><b>/api/auth/*</b><small>register · login · refresh · logout · admin/users</small></div>
-      <div class="box"><b>/api/clinics · /departments</b><small>CRUD + soft-delete</small></div>
-      <div class="box"><b>/api/patients · /providers · /availability</b><small>CRUD + soft-delete (PHI-safe)</small></div>
-      <div class="box"><b>/api/admin/ping</b><small>RBAC probe</small></div>
+      <div class="box wired" style="flex-basis:100%"><b>FastAPI + httpx proxy</b>
+        <small>Route table: <code>/api/auth</code> <code>/api/admin</code> <code>/.well-known/jwks.json</code> → Identity · <code>/api/clinics</code> → Organization · <code>/api/providers</code> → Provider · <code>/api/patients</code> → Patient.
+        <code>/internal/*</code> and unsafe paths answer 404. Per-IP fixed-window limits in Redis (auth 20/min, default 300/min), <b style="display:inline">fail-open</b> on a Redis outage, visibly. 503/504 on upstream failure. Does <b style="display:inline">not</b> verify JWTs and does <b style="display:inline">not</b> aggregate responses.</small></div>
     </div>
   </div>
 
   <div class="flow">&#9660;</div>
 
-  <!-- Data stores -->
+  <!-- Services -->
   <div class="layer">
-    <h2>Data stores <span class="tag w">wired</span></h2>
+    <h2>Services — FastAPI (gunicorn + uvicorn workers), no host ports <span class="tag w">wired</span></h2>
     <div class="row">
-      <div class="box store"><b>PostgreSQL — system of record</b>
-        <small>SQLAlchemy 2.0 async + asyncpg · Alembic<br>users/patients split · empty <code>provider_slots</code> w/ live GiST no-overlap constraint</small></div>
-      <div class="box store"><b>MongoDB — audit trail</b>
-        <small>append-only <code>audit_log</code> · indexed<br>PHI-free: actor · action · resource · trace_id</small></div>
-      <div class="box store"><b>Redis</b>
-        <small>JWT <code>jti</code>-denylist (revocation, auto-expires)<br>cache · future slot locks</small></div>
+      <div class="box wired"><b>Identity</b><small>accounts · register/login/refresh/logout · RS256 signing · JWKS · denylist writer · service tokens · <code>/internal/users</code></small></div>
+      <div class="box wired"><b>Organization</b><small>clinics · departments · <code>/internal/clinics</code> · <code>/internal/departments</code></small></div>
+      <div class="box wired"><b>Provider</b><small>providers · specialties · availability templates · <code>/internal/providers</code></small></div>
+      <div class="box wired"><b>Patient</b><small>patient profiles — the only PHI</small></div>
+      <div class="box wired"><b>Scheduling (skeleton)</b><small><code>provider_slots</code> + exclusion constraint · health only, no <code>/api</code> routes</small></div>
+    </div>
+    <p class="note">Every service verifies RS256 tokens locally from Identity's cached JWKS and checks the shared Redis denylist. Synchronous reference checks (dashed in the markdown diagram): Identity → Organization (clinic) · Patient → Organization (clinic), Identity (user) · Provider → Organization (department), Identity (user).</p>
+  </div>
+
+  <div class="flow">&#9660;</div>
+
+  <!-- Data -->
+  <div class="layer">
+    <h2>Data — one PostgreSQL database and role per service <span class="tag w">wired</span></h2>
+    <div class="row">
+      <div class="box store"><b>identity_db</b><small><code>users</code></small></div>
+      <div class="box store"><b>organization_db</b><small><code>clinics</code> · <code>departments</code></small></div>
+      <div class="box store"><b>provider_db</b><small><code>providers</code> · <code>specialties</code> · <code>provider_specialties</code> · <code>availability_templates</code></small></div>
+      <div class="box store"><b>patient_db</b><small><code>patients</code> (PHI)</small></div>
+      <div class="box store"><b>scheduling_db</b><small><code>provider_slots</code> · GiST no-overlap constraint · empty until Phase 2</small></div>
+    </div>
+    <p class="note">One Postgres container locally; each role can connect only to its own database (PUBLIC revoked); created by the idempotent <code>db-init</code> job. No foreign key crosses a service.</p>
+    <div class="row" style="margin-top:12px">
+      <div class="box store"><b>MongoDB — shared audit sink</b><small>one append-only <code>audit_log</code>, written by every service through the shared library · field names only, never PHI values</small></div>
+      <div class="box store"><b>Redis — shared</b><small>JWT <code>jti</code> denylist (Identity writes, all read) + gateway rate-limit counters · one instance, a recorded risk</small></div>
     </div>
   </div>
 
   <!-- Observability -->
   <div class="layer">
-    <h2>Observability <span class="tag w">wired</span></h2>
+    <h2>Observability <span class="tag w">tracing + metrics wired</span></h2>
     <div class="row">
-      <div class="box wired"><b>Jaeger</b><small>distributed traces via OTLP :4317 · UI :16686</small></div>
-      <div class="box wired"><b>Prometheus</b><small>scrapes API <code>/metrics</code> · :9090</small></div>
-      <div class="box wired"><b>Grafana</b><small>operational dashboards · :3001</small></div>
+      <div class="box wired"><b>Jaeger</b><small>connected traces across services via OTLP :4317 · UI :16686</small></div>
+      <div class="box wired"><b>Prometheus</b><small>one scrape job per service · gateway <code>/metrics</code> only on an internal listener · :9090</small></div>
+      <div class="box"><b>Grafana</b><small>container runs; dashboards not built yet (Phase 3)</small></div>
     </div>
   </div>
 
@@ -129,28 +142,82 @@
   <div class="layer">
     <h2>Event &amp; orchestration — scaffolding only <span class="tag p">Phase 2/3</span></h2>
     <div class="row">
-      <div class="box pending"><b>Temporal (+ UI)</b><small>booking / cancel / reschedule sagas — <b>Phase 2</b></small></div>
-      <div class="box pending"><b>Kafka + Schema Registry</b><small>KRaft · event backbone — <b>Phase 3</b></small></div>
+      <div class="box pending"><b>Temporal (+ UI)</b><small>booking / cancel / reschedule sagas — <b>Phase 2</b>, in Scheduling</small></div>
+      <div class="box pending"><b>Kafka + Schema Registry</b><small>KRaft · event backbone, outbox, event-fed local copies — <b>Phase 3</b></small></div>
       <div class="box pending"><b>RabbitMQ</b><small>Celery broker · background jobs — <b>Phase 3</b></small></div>
     </div>
   </div>
 
-  <!-- Request flow -->
+  <!-- Service breakdown -->
   <div class="layer">
-    <h2>End-to-end request flow — the tracer</h2>
-    <div class="seq">Client ──login──▶ FastAPI ──▶ PostgreSQL (fetch user)
-                     │  bcrypt verify (constant-time even if user absent)
-                     ◀── { access_token, refresh_token }
+    <h2>Service breakdown</h2>
+    <table>
+      <tr><th>Service</th><th>Owns</th><th>Database</th><th>Internal endpoints</th><th>Calls out to</th></tr>
+      <tr><td>API Gateway</td><td>Routing, rate limits, path safety</td><td>none</td><td>—</td><td>All services (proxy), Redis</td></tr>
+      <tr><td>Identity</td><td>Accounts, token issuance, JWKS, denylist writes</td><td><code>identity_db</code></td><td><code>GET /internal/users/{id}</code></td><td>Organization (clinic)</td></tr>
+      <tr><td>Organization</td><td>Clinics, departments</td><td><code>organization_db</code></td><td><code>GET /internal/clinics/{id}</code>, <code>/internal/departments/{id}</code></td><td>—</td></tr>
+      <tr><td>Provider</td><td>Providers, specialties, availability templates</td><td><code>provider_db</code></td><td><code>GET /internal/providers/{id}</code></td><td>Organization (department), Identity (user)</td></tr>
+      <tr><td>Patient</td><td>Patient profiles (PHI)</td><td><code>patient_db</code></td><td>—</td><td>Organization (clinic), Identity (user)</td></tr>
+      <tr><td>Scheduling</td><td><code>provider_slots</code> + constraint</td><td><code>scheduling_db</code></td><td>—</td><td>none yet (Phase 2: Provider)</td></tr>
+    </table>
+    <p class="note">All services also fetch Identity's JWKS (cached) and use Redis and MongoDB.</p>
+  </div>
 
-Client ──Bearer access──▶ FastAPI
-                     ├─▶ Security: verify signature + claims
-                     ├─▶ Redis: jti denylisted?  ──▶ no
-                     ├─▶ RBAC: require_role(...) + ownership/clinic-scope
-                     ├─▶ PostgreSQL: read / write domain data
-                     ├─▶ MongoDB: append audit_log (PHI-free, trace_id)
-                     ├─▶ structlog: PHI-safe line carrying trace_id
-                     └─▶ Jaeger: export OTel span
-Logout / revoke  ──▶ add jti to Redis denylist (auto-expires at token TTL)</div>
+  <!-- Flows -->
+  <div class="layer">
+    <h2>Flows</h2>
+
+    <div class="seq-title">1 · Gateway request flow</div>
+    <div class="seq">Client ──Bearer access token──▶ Gateway
+                     ├─ path safety: no dot segments, encoded / \ NUL      ──▶ else 404
+                     ├─ route table (no /internal prefix exists)           ──▶ no match: 404
+                     ├─ Redis: fixed-window counter (auth 20/min, other 300/min)
+                     │      over budget ──▶ 429 + Retry-After
+                     │      Redis down  ──▶ fail OPEN (warning log + counter)
+                     └─ forward to owning service (hop-by-hop stripped, traceparent added)
+                                      ├─ verify RS256 locally · denylist · RBAC · clinic scope
+                                      ├─ service database: read / write, one commit
+                                      └─ MongoDB: append audit_log (field names only)
+            upstream unreachable ──▶ 503     upstream timed out ──▶ 504
+            no JWT check and no retries at the edge; reads return ids only</div>
+
+    <div class="seq-title">2 · Reference-check flow (D-05) — fail closed</div>
+    <div class="seq">Client ──POST /api/providers { department_id }──▶ Gateway ──▶ Provider
+Provider ──GET /internal/departments/{id} (caller's JWT forwarded)──▶ Organization
+          up to 3 attempts, backoff, GET and transport errors only
+     200 active                   ──▶ INSERT provider (department_id is a plain UUID) ──▶ 201
+     missing or inactive          ──▶ 422, nothing written
+     owner unreachable / 401 / 403 / 5xx ──▶ 503, nothing written
+Deactivation never cascades (D-06). Kafka / outbox / event-fed copies: Phase 3 (D-08).</div>
+
+    <div class="seq-title">3 · Token verification via JWKS</div>
+    <div class="seq">Identity: login ──▶ sign access + refresh JWT (RSA private key, kid smarthealth-identity-1)
+Any service: request + Bearer token
+     JWKS cache empty / older than 300 s / unknown kid (30 s backoff) ──▶ GET /.well-known/jwks.json
+     verify signature by kid, algorithm and claims locally
+     Redis: jti denylisted? ──▶ yes: 401   Redis unreachable: 503 (fail closed)
+     ──▶ RBAC ──▶ handler
+Only Identity holds the private key (Compose secret, gitignored file). Service tokens: 60 s, no aud claim (recorded gap).</div>
+
+    <div class="seq-title">4 · Connected trace</div>
+    <div class="seq">Gateway (server span, W3C traceparent)
+   └─▶ Provider (httpx client span)
+          ├─▶ Organization  (reference check, client span)
+          └─▶ Identity      (JWKS fetch on cache miss, client span)
+Spans exported over OTLP to Jaeger; one OpenTelemetry service name and one Prometheus job per service.
+Observed as one trace via Jaeger's query API; not yet viewed in the Jaeger UI.</div>
+  </div>
+
+  <!-- Limitations -->
+  <div class="layer">
+    <h2>Known limitations and unverified items</h2>
+    <ul>
+      <li>Gateway buffers whole request bodies with <b>no size cap</b> (the limiter bounds request count, not size).</li>
+      <li>One <b>shared Redis</b> holds the denylist and rate-limit counters: an outage fails the limiter open and token verification closed (503); a flush would drop revocations.</li>
+      <li>Service tokens carry <b>no <code>aud</code> claim</b>; application containers <b>run as root</b>.</li>
+      <li><b>Not verified:</b> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the trace in the Jaeger UI. Key rotation is supported through <code>kid</code> but not exercised.</li>
+      <li>Assumptions awaiting mentor confirmation: the provider → department → clinic scope chain relies on write-time validation (ORG-03); overlapping availability templates remain allowed (PPL-03); clients combining services may briefly see stale cross-service state (PPL-04).</li>
+    </ul>
   </div>
 
   <!-- Decisions -->
@@ -158,20 +225,24 @@ Logout / revoke  ──▶ add jti to Redis denylist (auto-expires at token TTL)
     <h2>Key design decisions</h2>
     <table>
       <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
-      <tr><td>Auth &amp; session</td><td>Access+refresh JWT, Redis jti-denylist</td><td>Real revocation (IAM-03); short TTL bounds leaked tokens; no new infra</td></tr>
-      <tr><td>Slot model</td><td>Weekly templates; empty slots + live GiST exclusion constraint</td><td>P1 config-only; P2 inherits a proven no-double-booking invariant</td></tr>
-      <tr><td>Identity vs profile</td><td>Separate users / patients (nullable link)</td><td>Self-registration (IAM-01) + staff-created no-login profiles (PPL-01)</td></tr>
+      <tr><td>Service cut</td><td>Six services, database each (D-01)</td><td>Mentor review asked for true microservices; clear bounded contexts; PHI confined to Patient. Costs: network hops, availability coupling, no distributed transactions</td></tr>
+      <tr><td>Token model</td><td>RS256 + JWKS; Redis jti-denylist</td><td>Only Identity can mint tokens; services verify without calling Identity; real logout</td></tr>
+      <tr><td>Gateway</td><td>Thin FastAPI proxy, per-IP Redis limits, fail-open, no JWT check at the edge</td><td>Most reviewable; defence in depth; availability over rate protection</td></tr>
+      <tr><td>Cross-service integrity</td><td>Synchronous owner check at write time, 422/503, no cascade</td><td>No Kafka/outbox until Phase 3 (D-08); simplest correct option</td></tr>
+      <tr><td>Slot model</td><td>Templates in Provider; empty <code>provider_slots</code> with live GiST constraint in Scheduling (D-03)</td><td>Phase 2 inherits a proven double-booking invariant without moving a table</td></tr>
+      <tr><td>Identity vs profile</td><td>Accounts in Identity; profiles in Patient/Provider by plain <code>user_id</code> (D-04)</td><td>Self-registration and no-login staff-created profiles; PHI out of Identity</td></tr>
+      <tr><td>Audit</td><td>Shared library, one shared <code>audit_log</code> (D-02)</td><td>Dedicated Audit service is Phase 3; call signature kept stable</td></tr>
       <tr><td>Deletion</td><td>Soft-delete (is_active / deactivated_at)</td><td>Records stay auditable &amp; retained — no hard deletes</td></tr>
-      <tr><td>PHI safety</td><td>Field-name-only audit; structlog redaction</td><td>HIPAA — no PHI in logs or traces</td></tr>
-      <tr><td>Concurrency</td><td>Async ORM + asyncpg, async Mongo/Redis</td><td>Sustains concurrent load without blocking the event loop</td></tr>
+      <tr><td>PHI safety</td><td>Field-name-only audit; structlog redaction</td><td>No PHI in logs or traces</td></tr>
     </table>
   </div>
 
   <footer>
     Self-contained diagram — no external assets. Companion docs:
     <a href="architecture.md">architecture.md</a> (Mermaid, GitHub-rendered) ·
+    <a href="erd.html">erd.html</a> (per-service schemas) ·
     <a href="architecture-dashboard.html">architecture-dashboard.html</a> (interactive decision record).
-    Ports reflect the local Docker Compose mapping.
+    Ports reflect the Docker Compose defaults; only the gateway publishes an application port.
   </footer>
 </div>
 </body>
