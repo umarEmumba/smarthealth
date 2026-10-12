@@ -22,6 +22,8 @@ local-dev placeholder values only (see `.env.example`).
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import importlib
 import os
 import tempfile
@@ -108,6 +110,31 @@ def harness_apps() -> dict[str, FastAPI]:
     return apps
 
 
+class _NetworkHopTransport(httpx.AsyncBaseTransport):
+    """Wrap an in-process ASGI transport so each call behaves like a real
+    network hop with respect to context propagation.
+
+    Over a real network the callee is a different process: it inherits nothing
+    from the caller's `contextvars` (in particular not the active OpenTelemetry
+    span), and learns the caller's trace ONLY from the `traceparent` header.
+    Awaiting the callee's ASGI app directly would share the caller's context
+    and make a trace look connected even when no header was ever sent, so each
+    call runs in its own task with an EMPTY context (plan 01.1-04, roadmap SC4).
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        task = asyncio.get_running_loop().create_task(
+            self._inner.handle_async_request(request), context=contextvars.Context()
+        )
+        return await task
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 @pytest_asyncio.fixture
 async def mesh() -> AsyncIterator[httpx.AsyncClient]:
     """One `httpx.AsyncClient` whose `mounts` map every harness service's
@@ -117,7 +144,8 @@ async def mesh() -> AsyncIterator[httpx.AsyncClient]:
     """
     apps = harness_apps()
     mounts: dict[str, httpx.AsyncBaseTransport] = {
-        service_base_url(name): ASGITransport(app=app) for name, app in apps.items()
+        service_base_url(name): _NetworkHopTransport(ASGITransport(app=app))
+        for name, app in apps.items()
     }
     async with httpx.AsyncClient(mounts=mounts) as http:
         for app in apps.values():
