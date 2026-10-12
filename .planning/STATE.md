@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-08-PLAN.md
-last_updated: "2026-10-12T10:09:53.274Z"
+stopped_at: Completed 01.1-09-PLAN.md
+last_updated: "2026-10-12T10:42:58.748Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: 5962bddddb5757f4f49d701b55c3e31a5cfdc132
+state_head: 1b17c4d1c468c8525b954a56f4af334f13243465
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 15
+  completed_plans: 16
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 9 of 10
+Plan: 10 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -73,6 +73,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01.1 P06 | 11 min | 2 tasks | 20 files |
 | Phase 01.1 P07 | 20 min | 3 tasks | 27 files |
 | Phase 01.1 P08 | 75min | 2 tasks | 30 files |
+| Phase 01.1 P09 | 27 min | 2 tasks | 22 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,9 @@ Recent decisions affecting current work:
 - [Phase 01.1]: Plan 01.1-08: application containers run as root (Phase 1 parity) because the bind-mounted key secret would be unreadable to a non-root user; harden later with explicit secret uid/mode
 - [Phase 01.1]: Plan 01.1-08: Postgres max_connections raised to 300 in Compose (Temporal ~40 idle connections plus per-worker pools exhausted the default 100)
 - [Phase 01.1]: Plan 01.1-08: get_internal_http_client is async def (sync dependencies run in a worker thread with no running loop)
+- [Phase 01.1]: Plan 01.1-09: isolation invariants scan live code via ast (docstrings may mention HS256); role isolation is proven against live Postgres with the refusal reason pinned
+- [Phase 01.1]: Plan 01.1-09: gateway /metrics is served only on an internal :9100 listener decided by the ASGI server scope, 404 on the published :8000; Prometheus scrapes gateway:9100
+- [Phase 01.1]: Plan 01.1-09: gateway body-size cap, shared-Redis and service-token aud gap deferred to deferred-items.md; .env.example edit blocked by harness, variable table in the 01.1-09 SUMMARY
 
 ### Pending Todos
 
@@ -152,6 +156,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T10:09:53.233Z
-Stopped at: Completed 01.1-08-PLAN.md
+Last session: 2026-10-12T10:42:58.712Z
+Stopped at: Completed 01.1-09-PLAN.md
 Resume file: None
