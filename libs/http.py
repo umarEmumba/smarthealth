@@ -16,9 +16,11 @@ The default client is loop-aware for the same reason the DB helpers are: an
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 
 import httpx
 from fastapi import Request
+from opentelemetry.propagate import inject
 
 from libs.config import shared_settings
 
@@ -45,3 +47,21 @@ def get_internal_http_client(request: Request) -> httpx.AsyncClient:
     if injected is not None:
         return injected
     return _get_default_client()
+
+
+def outgoing_headers(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Headers for an outgoing internal call: a COPY of `extra` plus the active
+    span's W3C trace context.
+
+    Trace context crosses every service boundary through the OpenTelemetry
+    propagator API (`inject` writes `traceparent`, and `tracestate` when
+    present) — never a hand-built header string — so the callee's server span
+    joins the caller's trace (roadmap SC4). With no active span nothing is added.
+
+    Only trace/span identifiers travel. No OpenTelemetry baggage is ever set
+    anywhere in this codebase, so no PHI, token content or other data can ride
+    along (STRIDE T-01.1-19).
+    """
+    headers: dict[str, str] = dict(extra) if extra else {}
+    inject(headers)
+    return headers

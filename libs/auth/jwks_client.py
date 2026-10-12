@@ -32,6 +32,7 @@ import httpx
 
 from libs.auth.verification import JWT_ALGORITHM, KeysUnavailable, TokenError
 from libs.config import SharedSettings
+from libs.http import outgoing_headers
 from libs.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -105,7 +106,7 @@ class JwksClient:
         self._last_attempt = self._clock()
         self.fetch_count += 1
         try:
-            response = await http.get(self._jwks_url)
+            response = await http.get(self._jwks_url, headers=outgoing_headers())
             response.raise_for_status()
             document = response.json()
         except (httpx.HTTPError, ValueError) as exc:

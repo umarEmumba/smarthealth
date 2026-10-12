@@ -24,6 +24,7 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
+from libs.http import outgoing_headers
 from libs.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -49,6 +50,14 @@ HOP_BY_HOP_HEADERS: frozenset[str] = frozenset(
     }
 )
 
+# Request headers the gateway never forwards as sent: `accept-encoding` is
+# dropped so httpx advertises only the encodings it can itself decode (we
+# return decoded bytes and strip content-encoding); the W3C trace headers are
+# replaced by the gateway span's own context (see `_forward_headers`).
+_REPLACED_REQUEST_HEADERS: frozenset[str] = frozenset(
+    {"accept-encoding", "traceparent", "tracestate"}
+)
+
 # Response-only: httpx has already decoded the upstream body, so the encoding
 # header no longer describes the bytes we hand back.
 _RESPONSE_STRIP = HOP_BY_HOP_HEADERS | {"content-encoding"}
@@ -64,20 +73,25 @@ def _connection_listed(request: Request) -> set[str]:
 
 
 def _forward_headers(request: Request) -> list[tuple[str, str]]:
+    """Upstream request headers: the client's (minus hop-by-hop), the gateway's
+    own forwarding headers, and the gateway span's trace context.
+
+    Any inbound `traceparent` / `tracestate` is dropped first and re-injected
+    from the CURRENT span, so the gateway's server span is the parent of the
+    upstream server span and a client cannot splice a foreign parent in."""
     dropped = HOP_BY_HOP_HEADERS | _connection_listed(request)
     headers: list[tuple[str, str]] = []
     for raw_name, raw_value in request.headers.raw:
         name = raw_name.decode("latin-1")
         lowered = name.lower()
-        # `accept-encoding` is dropped so httpx advertises only the encodings it
-        # can itself decode (we return decoded bytes and strip content-encoding).
-        if lowered in dropped or lowered == "accept-encoding":
+        if lowered in dropped or lowered in _REPLACED_REQUEST_HEADERS:
             continue
         headers.append((name, raw_value.decode("latin-1")))
 
     if request.client is not None:
         headers.append(("x-forwarded-for", request.client.host))
     headers.append(("x-forwarded-proto", request.url.scheme))
+    headers.extend(outgoing_headers().items())
     return headers
 
 

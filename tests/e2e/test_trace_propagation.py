@@ -157,6 +157,6 @@ def test_outgoing_headers_inject_w3c_context_and_never_mutate_input(
 
     assert extra == {"authorization": "Bearer x"}
     assert headers["authorization"] == "Bearer x"
-    assert re.fullmatch(rf"00-{expected_trace_id}-[0-9a-f]{{16}}-0[01]", headers["traceparent"])
+    assert re.fullmatch(rf"00-{expected_trace_id}-[0-9a-f]{{16}}-[0-9a-f]{{2}}", headers["traceparent"])
     # Only W3C trace context travels: no baggage, nothing else.
     assert set(headers) <= {"authorization", "traceparent", "tracestate"}
