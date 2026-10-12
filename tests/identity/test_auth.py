@@ -1,10 +1,13 @@
-"""End-to-end auth tracer tests (Plan 01-03, Task 1).
+"""End-to-end auth tests (Phase 1 Plan 01-03 Task 1, relocated by plan 01.1-02).
 
-Integration tests against the live FastAPI app (via the `client` fixture,
-now targeting the real `smarthealth.main:app`) and live Postgres/Mongo/Redis
+Integration tests against the extracted Identity service (via the `client`
+fixture, which mounts `services.identity.app:app`) and live Postgres/Mongo/Redis
 containers. Proves the full slice: register -> login -> RBAC-scoped request
--> audit written -> PHI-safe log/trace, plus logout revocation, alg:none
-rejection, and duplicate-email 409.
+-> audit written -> PHI-safe log/trace, plus logout revocation, alg:none and
+symmetric-algorithm forgery rejection, and duplicate-email 409.
+
+Token claim assertions verify the RS256 signature against Identity's public key
+(`verify_identity_token`); there is no shared secret to decode with any more.
 
 Every test uses a unique, synthetic email (uuid-suffixed) so repeated runs
 never collide with a previous run's leftover `users` row (no cleanup fixture
@@ -14,14 +17,20 @@ established pattern of test-local cleanup where needed).
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import time
 import uuid
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from httpx import AsyncClient
-from jose import jwt as jose_jwt
+from jose import jwk
 
-from smarthealth.config import settings
-from tests.conftest import bootstrap_admin_and_login, unique_email
+from services.identity.security.keys import get_signing_key
+from tests.conftest import bootstrap_admin_and_login, unique_email, verify_identity_token
 
 
 def _unique_email(prefix: str = "user") -> str:
@@ -109,11 +118,7 @@ async def test_public_register_ignores_caller_supplied_role_and_forces_patient(
         "/api/auth/login", json={"email": email, "password": "correct-horse-battery"}
     )
     assert login_resp.status_code == 200, login_resp.text
-    claims = jose_jwt.decode(
-        login_resp.json()["access_token"],
-        settings.jwt_secret,
-        algorithms=[settings.jwt_algorithm],
-    )
+    claims = verify_identity_token(login_resp.json()["access_token"])
     assert claims["role"] == "patient"
 
     # The forged-role account must be rejected by an admin-only route.
@@ -158,9 +163,7 @@ async def test_staff_creation_route_requires_admin_and_honors_role(
 @pytest.mark.integration
 async def test_access_token_claim_shape(client: AsyncClient) -> None:
     _, tokens = await _register_and_login(client, role="front_desk")
-    claims = jose_jwt.decode(
-        tokens["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm]
-    )
+    claims = verify_identity_token(tokens["access_token"])
     assert set(["sub", "role", "clinic_id", "jti", "type"]).issubset(claims.keys())
     assert claims["type"] == "access"
     assert claims["role"] == "front_desk"
@@ -169,9 +172,7 @@ async def test_access_token_claim_shape(client: AsyncClient) -> None:
 @pytest.mark.integration
 async def test_refresh_token_claim_shape_is_minimal(client: AsyncClient) -> None:
     _, tokens = await _register_and_login(client, role="provider")
-    claims = jose_jwt.decode(
-        tokens["refresh_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm]
-    )
+    claims = verify_identity_token(tokens["refresh_token"])
     assert claims["type"] == "refresh"
     assert "sub" in claims and "jti" in claims
     # Locked contract: refresh carries ONLY sub/jti/type/exp/iat — no role/clinic.
@@ -294,17 +295,14 @@ async def test_refresh_rejects_access_token_used_as_refresh(client: AsyncClient)
 @pytest.mark.integration
 async def test_decode_token_rejects_alg_none_forgery(client: AsyncClient) -> None:
     """A token forged with alg:none (or any algorithm not on the pinned
-    allowlist) must be rejected — decode_token pins algorithms=[jwt_algorithm]
-    explicitly rather than trusting the token header's own `alg`.
+    allowlist) must be rejected — the shared verifier pins RS256 explicitly
+    rather than trusting the token header's own `alg`.
 
     python-jose's own `jws.sign` refuses to encode with algorithm="none"
     (it isn't in `ALGORITHMS.SUPPORTED`), so the forged token is built
     manually — base64url header + payload + an empty signature segment —
     exactly the classic alg:none attack shape a real attacker would send.
     """
-    import base64
-    import json
-
     def _b64url(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -320,6 +318,49 @@ async def test_decode_token_rejects_alg_none_forgery(client: AsyncClient) -> Non
         f"{_b64url(json.dumps(header).encode())}."
         f"{_b64url(json.dumps(claims).encode())}."
     )
+
+    resp = await client.get(
+        "/api/admin/ping", headers={"Authorization": f"Bearer {forged_token}"}
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.integration
+async def test_symmetric_algorithm_forgery_rejected(client: AsyncClient) -> None:
+    """Algorithm-confusion attack: an admin-shaped token HMAC-signed with
+    Identity's PUBLIC key PEM as the shared secret (the public key is, by
+    design, world-readable via the JWKS) must be rejected 401 — the verifier
+    pins RS256 and never lets the token's own `alg` header pick the algorithm.
+
+    The forged token is built by hand: python-jose itself refuses to HMAC with
+    a PEM, and a real attacker would not use python-jose.
+    """
+    signing_key = get_signing_key()
+
+    public_pem = jwk.construct(signing_key.public_jwk, algorithm="RS256").to_pem()
+    assert serialization.load_pem_public_key(public_pem) is not None  # really the public half
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    now = int(time.time())
+    claims = {
+        "sub": str(uuid.uuid4()),
+        "role": "admin",
+        "clinic_id": None,
+        "jti": "forged-hmac-jti",
+        "type": "access",
+        "iat": now,
+        "exp": now + 900,
+    }
+    header = _b64url(
+        json.dumps({"alg": "HS256", "typ": "JWT", "kid": signing_key.kid}).encode()
+    )
+    payload = _b64url(json.dumps(claims).encode())
+    signature = _b64url(
+        hmac.new(public_pem, f"{header}.{payload}".encode(), hashlib.sha256).digest()
+    )
+    forged_token = f"{header}.{payload}.{signature}"
 
     resp = await client.get(
         "/api/admin/ping", headers={"Authorization": f"Bearer {forged_token}"}

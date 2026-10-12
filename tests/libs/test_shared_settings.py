@@ -26,11 +26,13 @@ def test_identity_ignores_a_stale_unprefixed_database_url(monkeypatch: pytest.Mo
     assert "wrong" not in IdentitySettings().database_url
 
 
-def test_shared_settings_has_no_database_url_or_jwt_secret() -> None:
+def test_shared_settings_has_no_database_url_or_shared_signing_secret() -> None:
     fields = set(SharedSettings.model_fields)
     assert "database_url" not in fields
     assert not {name for name in fields if name.startswith("jwt_")}
-    assert not {name for name in IdentitySettings.model_fields if name in {"jwt_secret", "jwt_algorithm"}}
+    assert not {
+        name for name in IdentitySettings.model_fields if "secret" in name or "algorithm" in name
+    }
 
 
 def test_jwks_url_derives_from_identity_service_url() -> None:

@@ -1,4 +1,4 @@
-"""Unit tests for `libs/auth/passwords.py` (WR-03 constant-time login support).
+"""Unit tests for `services/identity/security/passwords.py` (WR-03 constant-time login support).
 
 No live containers required — pure unit tests against the bcrypt wrapper
 functions.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import bcrypt
 
-from libs.auth.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from services.identity.security.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 
 
 def test_hash_and_verify_round_trip() -> None:

@@ -4,6 +4,11 @@ Integration tests (`@pytest.mark.integration`) require the live Postgres and
 MongoDB containers from infra/docker-compose.yml — run via
 `pytest tests/test_models.py -x` with the stack up, or
 `pytest tests/ -x -k "not integration"` to skip them.
+
+PARKED (excluded from collection): `test_audit_indexes_created` moved to
+tests/libs/test_audit_indexes.py (plan 01.1-02). The exclusion-constraint test
+moves with Scheduling (plan 01.1-08) and the day_of_week test with Provider
+(plan 01.1-07).
 """
 
 from __future__ import annotations
@@ -12,12 +17,10 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from pymongo import AsyncMongoClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from libs.audit.mongo_indexes import AUDIT_COLLECTION_NAME, ensure_audit_indexes
 from services.identity.repository.models import (
     AvailabilityTemplate,
     Clinic,
@@ -71,40 +74,6 @@ async def test_exclusion_constraint_live(db_session: AsyncSession) -> None:
         async with db_session.begin_nested():
             db_session.add(overlapping_slot)
             await db_session.flush()
-
-
-@pytest.mark.integration
-async def test_audit_indexes_created(mongo_client: AsyncMongoClient) -> None:
-    """ensure_audit_indexes creates the three query indexes idempotently.
-
-    ensure_audit_indexes writes to settings.mongo_db_name (the app's real
-    configured database, not a hardcoded test override) — so this test reads
-    the indexes back from that same database and cleans up the collection
-    itself afterwards (the mongo_client fixture's teardown only drops
-    `{mongo_db_name}_test`, a different database).
-    """
-    collection = mongo_client[settings.mongo_db_name][AUDIT_COLLECTION_NAME]
-
-    try:
-        # First call creates the indexes.
-        names_first = await ensure_audit_indexes(mongo_client)
-        assert set(names_first) == {
-            "ix_audit_entity_type_entity_id_timestamp",
-            "ix_audit_actor_id_timestamp",
-            "ix_audit_clinic_id_timestamp",
-        }
-
-        # Second call must not raise (idempotent by index name).
-        names_second = await ensure_audit_indexes(mongo_client)
-        assert set(names_second) == set(names_first)
-
-        index_cursor = await collection.list_indexes()
-        existing = {doc["name"] async for doc in index_cursor}
-        assert "ix_audit_entity_type_entity_id_timestamp" in existing
-        assert "ix_audit_actor_id_timestamp" in existing
-        assert "ix_audit_clinic_id_timestamp" in existing
-    finally:
-        await collection.drop()
 
 
 def test_availability_template_day_of_week_check_declared() -> None:

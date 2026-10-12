@@ -1,7 +1,7 @@
 """Tests for `scripts/bootstrap_admin.py` (WR-07 re-review fix).
 
 Integration tests against the live Postgres/Mongo containers (same pattern
-as `tests/test_auth.py`'s `bootstrap_admin_and_login` helper) — proves the
+as `tests/conftest.py`'s `bootstrap_admin_and_login` helper, against identity_db) — proves the
 script's core idempotency contract: running the bootstrap twice with the
 same email/password creates at most one admin account and never raises or
 duplicates on the second call.
@@ -19,9 +19,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from scripts.bootstrap_admin import bootstrap_admin
-from services.identity.domain.enums import Role
+from libs.auth.roles import Role
+from services.identity.config import settings as identity_settings
 from services.identity.repository.models import User
-from smarthealth.config import settings
 from tests.conftest import unique_email
 
 
@@ -32,7 +32,7 @@ async def test_bootstrap_admin_is_idempotent_and_never_duplicates() -> None:
     proves the "at most one admin ever, safe to re-run on every deploy"
     contract, independent of how many admins pre-exist from other tests.
     """
-    engine = create_async_engine(settings.database_url)
+    engine = create_async_engine(identity_settings.database_url)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
 
     async def _admin_count() -> int:
@@ -88,7 +88,7 @@ async def test_bootstrap_admin_created_user_can_log_in(client) -> None:  # noqa:
     from sqlalchemy.ext.asyncio import async_sessionmaker as _async_sessionmaker
     from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
 
-    engine = _create_async_engine(settings.database_url)
+    engine = _create_async_engine(identity_settings.database_url)
     session_factory = _async_sessionmaker(bind=engine, expire_on_commit=False)
     async with session_factory() as session:
         existing_admin = await session.execute(
