@@ -10,13 +10,17 @@ nothing downstream does. Every later service plan replicates this shape.
 
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 from httpx import AsyncClient
 from jose import jwt
+from redis.asyncio import Redis
 
 from libs.auth.jwks_client import JwksClient
 from libs.auth.verification import ACCESS_ONLY, decode_token
+from libs.config import shared_settings
 from tests.conftest import (
     bootstrap_admin_and_login,
     service_base_url,
@@ -112,3 +116,23 @@ async def test_refresh_claims_stay_minimal(client: AsyncClient) -> None:
     assert set(claims) == {"sub", "jti", "type", "iat", "exp"}
     assert "role" not in claims
     assert "clinic_id" not in claims
+
+
+async def test_denylist_ttl_matches_remaining_token_lifetime(client: AsyncClient) -> None:
+    # IAM-03 adjacency edge: a revoked token must stay rejected until it would
+    # have expired anyway — so the denylist entry's TTL equals its remaining life.
+    tokens = await bootstrap_admin_and_login(client)
+    claims = verify_identity_token(tokens["access_token"])
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    assert (await client.post("/api/auth/logout", headers=headers)).status_code == 204
+
+    redis = Redis.from_url(shared_settings.redis_url, decode_responses=True)
+    try:
+        ttl = await redis.ttl(f"revoked:{claims['jti']}")
+    finally:
+        await redis.aclose()
+
+    remaining = claims["exp"] - time.time()
+    assert 0 < ttl <= 15 * 60
+    assert abs(ttl - remaining) <= 5
