@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-01-PLAN.md
-last_updated: "2026-10-12T06:56:53.116Z"
+stopped_at: Completed 01.1-02-PLAN.md
+last_updated: "2026-10-12T07:05:44.970Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: c532973a045eef7b745a23cc96ceede0a4ae7a1e
+state_head: bce465fc56598e8e7f20757e2b6bfe04549d9b24
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 8
+  completed_plans: 9
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -66,6 +66,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P06 | 3min | 2 tasks | 1 files |
 | Phase 01 P07 | 40min | 4 tasks | 15 files |
 | Phase 01.1 P01 | 19min | 2 tasks | 59 files |
+| Phase 01.1 P02 | 9 min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -99,6 +100,8 @@ Recent decisions affecting current work:
 - [Phase 01.1]: [Phase 01.1] (01.1-01) SharedSettings binds aliased fields by alias only (validate_by_name=False): pydantic-settings 2.15.0 populate_by_name=True also reads the bare field-name env var, which leaked a stale DATABASE_URL into IdentitySettings.database_url
 - [Phase 01.1]: [Phase 01.1] (01.1-01) JwksClient: miss-backoff applies to unknown-kid and stale-TTL refreshes alike, an empty/garbled JWKS is a failed refresh (cache kept), stale keys are served when Identity is down; get_current_user returns 401 for missing creds and fails closed with 503 if Redis/JWKS unavailable
 - [Phase 01.1]: [Phase 01.1] (01.1-01) Database-per-service bootstrap is an idempotent db-init compose job (not initdb.d) so it runs on existing volumes; legacy single database left untouched. Stray empty users/alembic_version objects exist in legacy smarthealth DB from a pre-fix migration run awaiting user cleanup
+- [Phase 01.1]: Duplicate-email registration race closed via users.email unique constraint + IntegrityError -> rollback -> 409 + failure audit (no app lock)
+- [Phase 01.1]: HS256-with-public-key forgery test is hand-built (hmac) because python-jose refuses to HMAC with a PEM
 
 ### Pending Todos
 
@@ -125,6 +128,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T06:56:53.082Z
-Stopped at: Completed 01.1-01-PLAN.md
+Last session: 2026-10-12T07:05:44.938Z
+Stopped at: Completed 01.1-02-PLAN.md
 Resume file: None
