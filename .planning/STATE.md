@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-05-PLAN.md
-last_updated: "2026-10-12T08:07:54.973Z"
+stopped_at: Completed 01.1-06-PLAN.md
+last_updated: "2026-10-12T08:21:58.310Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: 66ba19db4fe39fbba80e9d015cdded958856b4c0
+state_head: 4b479c51ff240342163a90d5790c30126ab4029c
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 12
+  completed_plans: 13
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 6 of 10
+Plan: 7 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -70,6 +70,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01.1 P03 | 17 min | 2 tasks | 33 files |
 | Phase 01.1 P04 | 30 min | 3 tasks | 13 files |
 | Phase 01.1 P05 | 14 min | 2 tasks | 12 files |
+| Phase 01.1 P06 | 11 min | 2 tasks | 20 files |
 
 ## Accumulated Context
 
@@ -113,6 +114,8 @@ Recent decisions affecting current work:
 - [Phase 01.1]: 01.1-05: a 401/403/5xx or unreadable answer from an owning service is a 503, never a 422, so auth misconfiguration is not mistaken for a missing reference — Reference checks must fail closed (D-05); only a clean 404 or is_active=false means the reference is invalid
 - [Phase 01.1]: 01.1-05: service tokens (type=service, sub=service:identity, 60s) are accepted only by require_internal_caller; public routes reject them — Anonymous registration has no user token to forward to Organization; the token is never returned to a client
 - [Phase 01.1]: 01.1-05: Identity validates users.clinic_id before the duplicate-email check on both account-creation paths — A bad clinic_id must not be usable to learn whether an email is registered; nothing is written on refusal
+- [Phase 01.1]: 01.1-06: a second patient profile for an already-linked account is a 409 (unique constraint arbiter, rollback, failure audit) instead of an unhandled unique violation
+- [Phase 01.1]: 01.1-06: Patient validates clinic_id (Organization) then user_id (Identity) in one helper before the insert; internal calls are GET-only with ids in the URL, proven by the recording mesh
 
 ### Pending Todos
 
@@ -140,6 +143,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T08:07:54.937Z
-Stopped at: Completed 01.1-05-PLAN.md
+Last session: 2026-10-12T08:21:58.274Z
+Stopped at: Completed 01.1-06-PLAN.md
 Resume file: None
