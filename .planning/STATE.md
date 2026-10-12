@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-02-PLAN.md
-last_updated: "2026-10-12T07:05:44.970Z"
+stopped_at: Completed 01.1-03-PLAN.md
+last_updated: "2026-10-12T07:23:50.359Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: bce465fc56598e8e7f20757e2b6bfe04549d9b24
+state_head: 07504d0cb6fa0af98c4d8eb311c893f52378af7a
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 9
+  completed_plans: 10
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -67,6 +67,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P07 | 40min | 4 tasks | 15 files |
 | Phase 01.1 P01 | 19min | 2 tasks | 59 files |
 | Phase 01.1 P02 | 9 min | 2 tasks | 13 files |
+| Phase 01.1 P03 | 17 min | 2 tasks | 33 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,9 @@ Recent decisions affecting current work:
 - [Phase 01.1]: [Phase 01.1] (01.1-01) Database-per-service bootstrap is an idempotent db-init compose job (not initdb.d) so it runs on existing volumes; legacy single database left untouched. Stray empty users/alembic_version objects exist in legacy smarthealth DB from a pre-fix migration run awaiting user cleanup
 - [Phase 01.1]: Duplicate-email registration race closed via users.email unique constraint + IntegrityError -> rollback -> 409 + failure audit (no app lock)
 - [Phase 01.1]: HS256-with-public-key forgery test is hand-built (hmac) because python-jose refuses to HMAC with a PEM
+- [Phase 01.1]: Gateway exposes no OpenAPI/docs of its own: every path outside the route table (including /openapi.json and /docs) is a plain 404
+- [Phase 01.1]: Gateway proxy drops Connection-listed and client accept-encoding headers, appends response headers (Set-Cookie survives), and never retries an upstream call (a retried POST could double-apply)
+- [Phase 01.1]: Internal lookups report inactive rows as is_active=false and return one identical 404 for missing and out-of-clinic-scope ids; require_internal_caller carries its own ACCESS_ONLY decode so plan 01.1-05 can widen to service tokens
 
 ### Pending Todos
 
@@ -128,6 +132,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T07:05:44.938Z
-Stopped at: Completed 01.1-02-PLAN.md
+Last session: 2026-10-12T07:23:50.326Z
+Stopped at: Completed 01.1-03-PLAN.md
 Resume file: None
