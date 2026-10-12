@@ -25,7 +25,10 @@ dependencies = [
     "opentelemetry-sdk==1.44.0",
     "opentelemetry-exporter-otlp==1.44.0",
     "opentelemetry-instrumentation-fastapi==0.65b0",
+    # Human-vetted in plan 01.1-04 Task 2 (blocking-human gate); exact pins only.
+    "opentelemetry-instrumentation-httpx==0.65b0",
     "prometheus-fastapi-instrumentator==8.1.0",
+    "tenacity==9.1.4",
 ]
 
 [project.optional-dependencies]

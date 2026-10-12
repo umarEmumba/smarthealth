@@ -60,6 +60,13 @@ def _ensure_test_signing_key() -> None:
 
 _ensure_test_signing_key()
 
+# The gateway rate-limits per client IP. The functional suite fires far more
+# requests than production budgets allow from one address, so lift both budgets
+# BEFORE any settings object is built; tests/gateway/test_ratelimit.py passes its
+# own small budgets explicitly.
+os.environ.setdefault("GATEWAY_RATE_LIMIT_DEFAULT_PER_MINUTE", "100000")
+os.environ.setdefault("GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE", "100000")
+
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402

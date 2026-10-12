@@ -21,12 +21,15 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from libs.health import build_health_router
 from libs.http import get_internal_http_client
-from libs.observability.logging import configure_logging
+from libs.observability.logging import configure_logging, get_logger
 from libs.observability.otel import setup_tracing
 from services.gateway.config import GatewaySettings
 from services.gateway.config import settings as default_settings
 from services.gateway.proxy import forward
+from services.gateway.ratelimit import check_rate_limit, get_rate_limit_redis, rate_limit_group
 from services.gateway.routing import is_safe_path, resolve_upstream
+
+log = get_logger(__name__)
 
 _NOT_FOUND = {"detail": "not found"}
 _PROXIED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
@@ -49,6 +52,32 @@ async def gateway_entry(request: Request) -> Response:
     if resolved is None:
         return JSONResponse(status_code=404, content=_NOT_FOUND)
     upstream_name, base_url = resolved
+
+    # Edge rate limit (per client IP, atomic Redis window). Runs after the path
+    # checks so junk paths are not counted, and before forward so a limited
+    # request never reaches an upstream. /health and /metrics are answered by
+    # their own routes above the catch-all and are never limited. The key uses
+    # the socket peer only; X-Forwarded-For from a client is never trusted here.
+    group = rate_limit_group(request.url.path)
+    limit = (
+        settings.gateway_rate_limit_auth_per_minute
+        if group == "auth"
+        else settings.gateway_rate_limit_default_per_minute
+    )
+    client_ip = request.client.host if request.client is not None else "unknown"
+    decision = await check_rate_limit(
+        get_rate_limit_redis(settings.redis_url),
+        group=group,
+        client_ip=client_ip,
+        limit=limit,
+    )
+    if not decision.allowed:
+        log.warning("gateway.ratelimit.rejected", group=group, path=request.url.path)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "rate limit exceeded"},
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
 
     return await forward(
         request,

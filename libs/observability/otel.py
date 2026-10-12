@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 _TRACER_PROVIDER_CONFIGURED = False
+_HTTPX_INSTRUMENTED = False
 
 
 def configure_tracer_provider(service_name: str = "smarthealth-identity") -> TracerProvider:
@@ -55,8 +56,28 @@ def configure_tracer_provider(service_name: str = "smarthealth-identity") -> Tra
     return provider
 
 
+def instrument_httpx_client_spans() -> None:
+    """Emit a client span for every outgoing httpx call, once per process.
+
+    Idempotent: a process builds one FastAPI app per service (the test harness
+    builds several), and `HTTPXClientInstrumentor().instrument()` on an already
+    instrumented library only warns. No request/response hooks are registered,
+    so no headers or bodies are ever recorded on a span (STRIDE T-01.1-19).
+    """
+    global _HTTPX_INSTRUMENTED  # noqa: PLW0603
+
+    if _HTTPX_INSTRUMENTED:
+        return
+
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: PLC0415
+
+    HTTPXClientInstrumentor().instrument()
+    _HTTPX_INSTRUMENTED = True
+
+
 def setup_tracing(app: FastAPI, service_name: str = "smarthealth-identity") -> None:
-    """Configure the tracer provider and auto-instrument the FastAPI app.
+    """Configure the tracer provider and auto-instrument the FastAPI app and
+    outgoing httpx calls.
 
     Body capture is deliberately NOT enabled — only default span attributes
     (method, route, status code) are recorded, never request/response
@@ -66,6 +87,7 @@ def setup_tracing(app: FastAPI, service_name: str = "smarthealth-identity") -> N
 
     configure_tracer_provider(service_name)
     FastAPIInstrumentor.instrument_app(app)
+    instrument_httpx_client_spans()
 
 
 def get_tracer(name: str = "smarthealth-identity") -> trace.Tracer:

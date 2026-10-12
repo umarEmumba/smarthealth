@@ -16,5 +16,11 @@ class GatewaySettings(SharedSettings):
     # a 504 at the edge instead of tying the gateway worker up indefinitely.
     gateway_upstream_timeout_seconds: float = 10.0
 
+    # Per-client-IP fixed-window budgets (requests per minute). Credential
+    # endpoints (login/register/refresh) share the stricter "auth" budget.
+    # Env: GATEWAY_RATE_LIMIT_DEFAULT_PER_MINUTE / GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE.
+    gateway_rate_limit_default_per_minute: int = 300
+    gateway_rate_limit_auth_per_minute: int = 20
+
 
 settings = GatewaySettings()
