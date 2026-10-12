@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SmartHealth — Entity-Relationship Diagram (Phase 1)</title>
+<title>SmartHealth — Entity-Relationship Diagrams (Phase 1.1)</title>
 <style>
   :root{
     --bg:#0f1720; --panel:#16212e; --ink:#e7edf3; --muted:#9fb0c0; --line:#2b3a4a;
-    --accent:#4f9cf9; --pk:#f9ab00; --fk:#4f9cf9; --uk:#a385f0; --phi:#ff7597;
+    --accent:#4f9cf9; --pk:#f9ab00; --fk:#4f9cf9; --uk:#a385f0; --phi:#ff7597; --ref:#5fd0c4;
     --head:#1d2b3a;
   }
   *{box-sizing:border-box}
@@ -18,12 +18,17 @@
   header p{margin:0;color:var(--muted)}
   .legend{display:flex;gap:18px;flex-wrap:wrap;margin:20px 0 6px;font-size:13px;color:var(--muted)}
   .legend span{display:inline-flex;align-items:center;gap:6px}
-  .badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;letter-spacing:.4px}
+  .badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;letter-spacing:.4px;font-style:normal}
   .b-pk{background:rgba(249,171,0,.16);color:var(--pk);border:1px solid var(--pk)}
   .b-fk{background:rgba(79,156,249,.16);color:var(--fk);border:1px solid var(--fk)}
   .b-uk{background:rgba(163,133,240,.16);color:var(--uk);border:1px solid var(--uk)}
   .b-phi{background:rgba(255,117,151,.14);color:var(--phi);border:1px solid var(--phi)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px}
+  .b-ref{background:rgba(95,208,196,.12);color:var(--ref);border:1px dashed var(--ref)}
+  .schema{background:rgba(22,33,46,.55);border:1px solid var(--line);border-radius:12px;padding:14px 16px 18px;margin-top:20px}
+  .schema > h2{margin:0;font-size:15px;letter-spacing:.4px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .schema > h2 em{font-style:normal;font-size:12px;color:var(--muted);font-weight:500}
+  .schema > p{margin:4px 0 0;color:var(--muted);font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:14px}
   .entity{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
   .entity > h3{margin:0;background:var(--head);padding:10px 14px;font-size:14px;letter-spacing:.5px;
     border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
@@ -39,8 +44,9 @@
   .empty > h3{background:#241f10}
   .rel,.cons{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-top:18px}
   .rel h2,.cons h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:1.3px;color:var(--muted)}
-  .rel ul{margin:0;padding-left:18px;columns:2;column-gap:32px}
+  .rel ul{margin:0;padding-left:18px}
   .rel li{margin:4px 0;font-size:13.5px}
+  .rel .dashed{color:var(--ref)}
   .cons table{font-size:13px}
   .cons th,.cons td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
   .cons th{color:var(--muted)}
@@ -48,168 +54,203 @@
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   footer{margin-top:26px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
   a{color:var(--accent)}
-  @media(max-width:640px){.rel ul{columns:1}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>SmartHealth — Entity-Relationship Diagram</h1>
-    <p>PostgreSQL system of record · Phase 1 · 9 tables + 1 association (from <span class="mono">models.py</span>)</p>
+    <h1>SmartHealth — Entity-Relationship Diagrams</h1>
+    <p>One PostgreSQL schema per service · Phase 1.1 · 5 databases, 9 tables (one is the provider ↔ specialty association) · no foreign key crosses a service</p>
   </header>
 
   <div class="legend">
     <span><i class="badge b-pk">PK</i> primary key</span>
-    <span><i class="badge b-fk">FK</i> foreign key</span>
+    <span><i class="badge b-fk">FK</i> foreign key (within one service only)</span>
     <span><i class="badge b-uk">UK</i> unique</span>
+    <span><i class="badge b-ref">REF</i> dashed id-only link to another service (plain UUID, no FK)</span>
     <span><i class="badge b-phi">PHI</i> never logged/audited</span>
-    <span>dashed = empty in Phase 1</span>
+    <span>dashed card = empty until Phase 2</span>
   </div>
 
-  <div class="grid">
-
-    <div class="entity">
-      <h3>clinics <em>soft-delete</em></h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
-        <tr><td class="col">timezone</td><td class="type">varchar(64)</td><td class="keys"></td></tr>
-        <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
-        <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-      </table>
+  <!-- identity_db -->
+  <div class="schema">
+    <h2>identity_db <em>Identity · role identity_svc · baseline identity_0001_accounts</em></h2>
+    <p>Accounts only: credentials, role and clinic scope. No profile data.</p>
+    <div class="grid">
+      <div class="entity">
+        <h3>users</h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">email</td><td class="type">varchar(320)</td><td class="keys"><i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">hashed_password</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
+          <tr><td class="col">role</td><td class="type">varchar(32)</td><td class="keys"></td></tr>
+          <tr><td class="col">clinic_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">CHECK role ∈ patient · provider · front_desk · admin<br>clinic_id → organization_db.clinics, validated via owner API (D-05)</td></tr>
+        </table>
+      </div>
     </div>
+  </div>
 
-    <div class="entity">
-      <h3>departments <em>soft-delete</em></h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
-        <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
-        <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-      </table>
+  <!-- organization_db -->
+  <div class="schema">
+    <h2>organization_db <em>Organization · role organization_svc · baseline organization_0001_org_hierarchy</em></h2>
+    <p>The only hierarchy foreign key that survives: both tables are in the same database.</p>
+    <div class="grid">
+      <div class="entity">
+        <h3>clinics <em>soft-delete</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
+          <tr><td class="col">timezone</td><td class="type">varchar(64)</td><td class="keys"></td></tr>
+          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
+          <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+        </table>
+      </div>
+      <div class="entity">
+        <h3>departments <em>soft-delete</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
+          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
+          <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+        </table>
+      </div>
     </div>
+  </div>
 
-    <div class="entity">
-      <h3>users</h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">email</td><td class="type">varchar(320)</td><td class="keys"><i class="badge b-uk">UK</i></td></tr>
-        <tr><td class="col">hashed_password</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
-        <tr><td class="col">role</td><td class="type">varchar(32)</td><td class="keys"></td></tr>
-        <tr><td class="col">clinic_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td colspan="3" class="note">CHECK role ∈ patient · provider · front_desk · admin</td></tr>
-      </table>
+  <!-- provider_db -->
+  <div class="schema">
+    <h2>provider_db <em>Provider · role provider_svc · baseline provider_0001_providers</em></h2>
+    <p>Holds no clinic data: the clinic and its timezone are reachable through the department's Organization reference.</p>
+    <div class="grid">
+      <div class="entity">
+        <h3>providers <em>soft-delete</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">user_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">full_name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
+          <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">user_id → identity_db.users · department_id → organization_db.departments, both validated via owner API (D-05)</td></tr>
+        </table>
+      </div>
+      <div class="entity">
+        <h3>specialties</h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-uk">UK</i></td></tr>
+        </table>
+      </div>
+      <div class="entity">
+        <h3>provider_specialties <em>M:N</em></h3>
+        <table>
+          <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">specialty_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
+        </table>
+      </div>
+      <div class="entity">
+        <h3>availability_templates <em>soft-delete</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">day_of_week</td><td class="type">smallint</td><td class="keys"></td></tr>
+          <tr><td class="col">start_time</td><td class="type">time</td><td class="keys"></td></tr>
+          <tr><td class="col">end_time</td><td class="type">time</td><td class="keys"></td></tr>
+          <tr><td class="col">slot_duration_minutes</td><td class="type">int · d30</td><td class="keys"></td></tr>
+          <tr><td class="col">effective_from</td><td class="type">date</td><td class="keys"></td></tr>
+          <tr><td class="col">effective_to</td><td class="type">date · null</td><td class="keys"></td></tr>
+          <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">CHECK day_of_week BETWEEN 0 AND 6<br>department_id → organization_db.departments, validated at create only (D-05)</td></tr>
+        </table>
+      </div>
     </div>
+  </div>
 
-    <div class="entity">
-      <h3>patients <em>soft-delete</em></h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">user_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-fk">FK</i> <i class="badge b-uk">UK</i></td></tr>
-        <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">full_name</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
-        <tr><td class="col">date_of_birth</td><td class="type">date</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
-        <tr><td class="col">phone</td><td class="type">varchar(32) · null</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
-        <tr><td class="col">address</td><td class="type">text · null</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
-        <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
-        <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-      </table>
+  <!-- patient_db -->
+  <div class="schema">
+    <h2>patient_db <em>Patient · role patient_svc · baseline patient_0001_patients</em></h2>
+    <p>The only database holding patient PHI. PHI never reaches logs, traces, internal-call URLs/headers/bodies, another service or the audit trail.</p>
+    <div class="grid">
+      <div class="entity">
+        <h3>patients <em>soft-delete</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">user_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">full_name</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
+          <tr><td class="col">date_of_birth</td><td class="type">date</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
+          <tr><td class="col">phone</td><td class="type">varchar(32) · null</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
+          <tr><td class="col">address</td><td class="type">text · null</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
+          <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">user_id → identity_db.users · clinic_id → organization_db.clinics, both validated via owner API (D-05)</td></tr>
+        </table>
+      </div>
     </div>
+  </div>
 
-    <div class="entity">
-      <h3>providers <em>soft-delete</em></h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">user_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-fk">FK</i> <i class="badge b-uk">UK</i></td></tr>
-        <tr><td class="col">department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">full_name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
-        <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
-        <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-      </table>
+  <!-- scheduling_db -->
+  <div class="schema">
+    <h2>scheduling_db <em>Scheduling (skeleton) · role scheduling_svc · baseline scheduling_0001_provider_slots</em></h2>
+    <p>Empty until Phase 2; the double-booking constraint is live and proven by an integration test.</p>
+    <div class="grid">
+      <div class="entity empty">
+        <h3>provider_slots <em>empty until Phase 2</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">start_time</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">end_time</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">CHECK status ∈ available·held·booked·cancelled<br>EXCLUDE gist (provider_id =, tstzrange(start,end) &amp;&amp;) WHERE status≠cancelled<br>provider_id → provider_db.providers; validation not wired until Phase 2</td></tr>
+        </table>
+      </div>
     </div>
-
-    <div class="entity">
-      <h3>specialties</h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-uk">UK</i></td></tr>
-      </table>
-    </div>
-
-    <div class="entity">
-      <h3>provider_specialties <em>M:N</em></h3>
-      <table>
-        <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">specialty_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
-      </table>
-    </div>
-
-    <div class="entity">
-      <h3>availability_templates <em>soft-delete</em></h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">day_of_week</td><td class="type">smallint</td><td class="keys"></td></tr>
-        <tr><td class="col">start_time</td><td class="type">time</td><td class="keys"></td></tr>
-        <tr><td class="col">end_time</td><td class="type">time</td><td class="keys"></td></tr>
-        <tr><td class="col">slot_duration_minutes</td><td class="type">int · d30</td><td class="keys"></td></tr>
-        <tr><td class="col">effective_from</td><td class="type">date</td><td class="keys"></td></tr>
-        <tr><td class="col">effective_to</td><td class="type">date · null</td><td class="keys"></td></tr>
-        <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
-        <tr><td colspan="3" class="note">CHECK day_of_week BETWEEN 0 AND 6</td></tr>
-      </table>
-    </div>
-
-    <div class="entity empty">
-      <h3>provider_slots <em>empty in P1</em></h3>
-      <table>
-        <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-        <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-        <tr><td class="col">start_time</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td class="col">end_time</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-        <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-        <tr><td colspan="3" class="note">CHECK status ∈ available·held·booked·cancelled<br>EXCLUDE gist (provider_id =, tstzrange(start,end) &amp;&amp;) WHERE status≠cancelled</td></tr>
-      </table>
-    </div>
-
   </div>
 
   <div class="rel">
-    <h2>Relationships (cardinality)</h2>
+    <h2>Relationships</h2>
     <ul>
-      <li><b>clinics</b> 1 ─▶ ∞ <b>departments</b></li>
-      <li><b>clinics</b> 1 ─▶ ∞ <b>users</b> (nullable scope)</li>
-      <li><b>clinics</b> 1 ─▶ ∞ <b>patients</b></li>
-      <li><b>users</b> 1 ─▶ 0..1 <b>patients</b> (nullable, unique)</li>
-      <li><b>users</b> 1 ─▶ 0..1 <b>providers</b> (nullable, unique)</li>
-      <li><b>departments</b> 1 ─▶ ∞ <b>providers</b></li>
-      <li><b>departments</b> 1 ─▶ ∞ <b>availability_templates</b></li>
-      <li><b>providers</b> 1 ─▶ ∞ <b>availability_templates</b></li>
-      <li><b>providers</b> 1 ─▶ ∞ <b>provider_slots</b></li>
-      <li><b>providers</b> ∞ ◀─▶ ∞ <b>specialties</b> (via provider_specialties)</li>
+      <li><b>clinics</b> 1 ─▶ ∞ <b>departments</b> (FK, organization_db)</li>
+      <li><b>providers</b> 1 ─▶ ∞ <b>availability_templates</b> (FK, provider_db)</li>
+      <li><b>providers</b> ∞ ◀─▶ ∞ <b>specialties</b> (via provider_specialties, provider_db)</li>
     </ul>
+  </div>
+
+  <div class="rel">
+    <h2>Cross-service references — dashed, id-only, <span class="dashed">validated via owner API (D-05)</span></h2>
+    <ul>
+      <li class="dashed"><b>identity_db.users.clinic_id</b> ┄▶ organization_db.clinics</li>
+      <li class="dashed"><b>patient_db.patients.clinic_id</b> ┄▶ organization_db.clinics</li>
+      <li class="dashed"><b>patient_db.patients.user_id</b> ┄▶ identity_db.users (nullable, unique)</li>
+      <li class="dashed"><b>provider_db.providers.user_id</b> ┄▶ identity_db.users (nullable, unique)</li>
+      <li class="dashed"><b>provider_db.providers.department_id</b> ┄▶ organization_db.departments</li>
+      <li class="dashed"><b>provider_db.availability_templates.department_id</b> ┄▶ organization_db.departments (create only)</li>
+      <li class="dashed"><b>scheduling_db.provider_slots.provider_id</b> ┄▶ provider_db.providers (validation: Phase 2)</li>
+    </ul>
+    <p class="note">Checked at write time only: missing or inactive → 422; owner cannot answer → 503; nothing written either way. Deactivation never cascades (D-06). Reads return ids only (D-07).</p>
   </div>
 
   <div class="cons">
     <h2>Load-bearing constraints</h2>
     <table>
       <tr><th>Table</th><th>Constraint</th><th>Guarantees</th></tr>
-      <tr><td class="mono">provider_slots</td><td class="mono">EXCLUDE USING gist (provider_id =, tstzrange(start,end) &amp;&amp;) WHERE status≠cancelled</td><td>Double-booking physically impossible at the storage layer (needs <code>btree_gist</code>)</td></tr>
-      <tr><td class="mono">users</td><td class="mono">CHECK role ∈ {patient,provider,front_desk,admin}</td><td>RBAC vocabulary enforced in the DB</td></tr>
-      <tr><td class="mono">availability_templates</td><td class="mono">CHECK day_of_week 0..6</td><td>Valid weekday only</td></tr>
-      <tr><td class="mono">patients / providers</td><td class="mono">user_id UNIQUE, NULLABLE</td><td>Profile may have no login (PPL-01); a login maps to ≤1 profile</td></tr>
+      <tr><td class="mono">scheduling_db.provider_slots</td><td class="mono">EXCLUDE USING gist (provider_id =, tstzrange(start,end) &amp;&amp;) WHERE status≠cancelled</td><td>Double-booking physically impossible at the storage layer (needs <code>btree_gist</code>)</td></tr>
+      <tr><td class="mono">identity_db.users</td><td class="mono">CHECK role ∈ {patient,provider,front_desk,admin}; UNIQUE(email)</td><td>RBAC vocabulary enforced in the DB; no duplicate accounts</td></tr>
+      <tr><td class="mono">provider_db.availability_templates</td><td class="mono">CHECK day_of_week 0..6</td><td>Valid weekday only</td></tr>
+      <tr><td class="mono">patients / providers</td><td class="mono">user_id UNIQUE, NULLABLE</td><td>Profile may have no login (PPL-01); an account maps to at most one profile (a second link is a 409)</td></tr>
+      <tr><td class="mono">provider_db.specialties</td><td class="mono">UNIQUE(name)</td><td>No duplicate specialties, even under concurrent creation</td></tr>
+      <tr><td class="mono">organization_db.departments</td><td class="mono">FK clinic_id → clinics.id</td><td>No orphaned department (intra-service)</td></tr>
     </table>
   </div>
 
   <footer>
-    Self-contained — no external assets. Source of truth: <span class="mono">services/identity/repository/models.py</span> + Alembic <span class="mono">0001</span>/<span class="mono">0002</span>.
+    Self-contained — no external assets. Source of truth: <span class="mono">services/&lt;service&gt;/repository/models.py</span> + each service's Alembic baseline.
+    The Phase 1 single <span class="mono">smarthealth</span> database is untouched and not migrated.
     Companion: <a href="erd.md">erd.md</a> (Mermaid) · <a href="architecture.html">architecture.html</a> · <a href="architecture.md">architecture.md</a>.
   </footer>
 </div>
