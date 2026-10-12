@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: "01.1"
-current_phase_name: microservice-re-architecture
-status: Ready to discuss/plan
-stopped_at: Phase 01.1 context gathered
-last_updated: "2026-09-30T14:23:39.114Z"
-last_activity: 2026-09-10
-last_activity_desc: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
-state_head: 597fe959807aeecb4ed69290c4371b82adbdc72c
+current_phase: "1.1"
+current_phase_name: Microservice Re-architecture
+status: executing
+stopped_at: Completed 01.1-01-PLAN.md
+last_updated: "2026-10-12T06:56:53.116Z"
+last_activity: 2026-10-12
+last_activity_desc: Phase 1.1 execution started
+state_head: c532973a045eef7b745a23cc96ceede0a4ae7a1e
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 7
+  completed_plans: 8
   percent: 25
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-09)
 
 **Core value:** Booking, updating, and completing an appointment is reliable and consistent under load — partial failures never corrupt scheduling state, and every operational data model stays accurate, durable, and queryable.
-**Current focus:** Phase 01 — Foundation + Core Services
+**Current focus:** Phase 1.1 — Microservice Re-architecture
 
 ## Current Position
 
-Phase: 01.1 (microservice-re-architecture) — READY TO EXECUTE
-Plan: Not started
-Status: Ready to discuss/plan
-Last activity: 2026-09-10 — Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
+Phase: 1.1 (Microservice Re-architecture) — EXECUTING
+Plan: 2 of 10
+Status: Ready to execute
+Last activity: 2026-10-12 — Phase 1.1 execution started
 
 Progress: [███░░░░░░░] 25%
 
@@ -65,6 +65,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01 P05 | 35min | 3 tasks | 9 files |
 | Phase 01 P06 | 3min | 2 tasks | 1 files |
 | Phase 01 P07 | 40min | 4 tasks | 15 files |
+| Phase 01.1 P01 | 19min | 2 tasks | 59 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,10 @@ Recent decisions affecting current work:
 - [Phase 01]: [Phase 01] (01-07 gap-closure) Provider `specialties` on PATCH REPLACES the full set (not append/merge) when supplied — consistent PATCH field-level semantics, reuses the create-path get-or-create-by-name logic
 - [Phase 01]: [Phase 01] (01-07 gap-closure) Availability PATCH validates the RESULTING window (existing values merged with the partial update), not just the supplied fields in isolation — a single-field PATCH can never silently create an inverted start/end or effective_from>effective_to window
 - [Phase 01]: [Phase 01] (01-07 gap-closure) No hard deletes anywhere in the codebase — every "delete" is a status flip (is_active=false + deactivated_at=now()); migration 0002 added these columns to all five Phase-1 resource tables with a verified upgrade/downgrade round-trip
+- [Phase 01.1]: [Phase 01.1] (01.1-01) All services write to the ONE shared audit_log collection in the shared Mongo database (MONGO_DB_NAME); audit is cross-cutting infra owned by the future Audit service (D-02), not a per-service database
+- [Phase 01.1]: [Phase 01.1] (01.1-01) SharedSettings binds aliased fields by alias only (validate_by_name=False): pydantic-settings 2.15.0 populate_by_name=True also reads the bare field-name env var, which leaked a stale DATABASE_URL into IdentitySettings.database_url
+- [Phase 01.1]: [Phase 01.1] (01.1-01) JwksClient: miss-backoff applies to unknown-kid and stale-TTL refreshes alike, an empty/garbled JWKS is a failed refresh (cache kept), stale keys are served when Identity is down; get_current_user returns 401 for missing creds and fails closed with 503 if Redis/JWKS unavailable
+- [Phase 01.1]: [Phase 01.1] (01.1-01) Database-per-service bootstrap is an idempotent db-init compose job (not initdb.d) so it runs on existing volumes; legacy single database left untouched. Stray empty users/alembic_version objects exist in legacy smarthealth DB from a pre-fix migration run awaiting user cleanup
 
 ### Pending Todos
 
@@ -120,6 +125,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-30T11:09:16.339Z
-Stopped at: Phase 01.1 context gathered
-Resume file: .planning/phases/01.1-microservice-re-architecture/01.1-CONTEXT.md
+Last session: 2026-10-12T06:56:53.082Z
+Stopped at: Completed 01.1-01-PLAN.md
+Resume file: None
