@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
@@ -92,7 +93,28 @@ async def register(
         clinic_id=payload.clinic_id,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Lost the check-then-insert race: a concurrent registration committed
+        # the same email between our SELECT and INSERT. The users.email unique
+        # constraint is the real guard — map it to the same 409 + failure audit
+        # the sequential duplicate path produces, never a 500 (T-01.1-09).
+        await db.rollback()
+        await write_audit(
+            mongo,
+            actor_id="anonymous",
+            actor_role="anonymous",
+            action="user.create",
+            entity_type="user",
+            entity_id="unknown",
+            clinic_id=str(payload.clinic_id) if payload.clinic_id else None,
+            outcome="failure",
+        )
+        log.info("auth.register.duplicate_email_race", email_domain=payload.email.split("@")[-1])
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email already registered"
+        ) from exc
     await db.refresh(user)
 
     await write_audit(
@@ -160,7 +182,29 @@ async def create_staff_user(
         clinic_id=payload.clinic_id,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Same race as public registration (see `register`): the unique
+        # constraint on users.email decides, and the loser gets a 409.
+        await db.rollback()
+        await write_audit(
+            mongo,
+            actor_id=admin.sub,
+            actor_role=admin.role.value,
+            action="user.create",
+            entity_type="user",
+            entity_id="unknown",
+            clinic_id=str(payload.clinic_id) if payload.clinic_id else None,
+            outcome="failure",
+        )
+        log.info(
+            "auth.create_staff_user.duplicate_email_race",
+            email_domain=payload.email.split("@")[-1],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email already registered"
+        ) from exc
     await db.refresh(user)
 
     await write_audit(
