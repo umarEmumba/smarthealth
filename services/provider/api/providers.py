@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 import httpx
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
@@ -41,6 +42,7 @@ from libs.service_client import (
     UpstreamServiceUnavailable,
     reference_error_detail,
     validate_department,
+    validate_user,
 )
 from services.provider.db import get_db
 from services.provider.domain.schemas import ProviderUpdate
@@ -107,10 +109,11 @@ async def _validate_references_or_refuse(
 ) -> None:
     """D-05: check the cross-service references BEFORE any write.
 
-    `department_id` belongs to Organization. A missing/inactive target is a 422,
-    an owner that cannot answer cleanly is a 503; either way the refusal is
-    audited as a failure and nothing has been written yet, so there is never a
-    half-created provider. The calls carry the id only.
+    `department_id` belongs to Organization and, when supplied, `user_id` belongs
+    to Identity. A missing/inactive target is a 422, an owner that cannot answer
+    cleanly is a 503; either way the refusal is audited as a failure and nothing
+    has been written yet, so there is never a half-created provider. The calls
+    carry the id only.
     """
     try:
         await validate_department(http, payload.department_id, bearer_token=user.raw_token)
@@ -125,6 +128,21 @@ async def _validate_references_or_refuse(
             detail="organization service unavailable",
         ) from exc
 
+    if payload.user_id is None:
+        return
+    try:
+        await validate_user(http, payload.user_id, bearer_token=user.raw_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_create_refused(mongo, user)
+        log.info("provider.create.user_rejected", department_id=str(payload.department_id))
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_create_refused(mongo, user)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="identity service unavailable",
+        ) from exc
+
 
 @router.post("", response_model=ProviderOut, status_code=status.HTTP_201_CREATED)
 async def create_provider(
@@ -136,13 +154,27 @@ async def create_provider(
 ) -> ProviderOut:
     await _validate_references_or_refuse(http, mongo, user, payload)
 
-    provider = await provider_repo.create_provider(
-        db,
-        department_id=payload.department_id,
-        full_name=payload.full_name,
-        specialty_names=payload.specialties,
-        user_id=payload.user_id,
-    )
+    try:
+        provider = await provider_repo.create_provider(
+            db,
+            department_id=payload.department_id,
+            full_name=payload.full_name,
+            specialty_names=payload.specialties,
+            user_id=payload.user_id,
+        )
+    except IntegrityError as exc:
+        # The only constraint a validated create can trip is the one-profile-per-
+        # account unique on user_id (two creates racing for the same account); the
+        # database constraint is the arbiter, not an application lock.
+        await db.rollback()
+        if payload.user_id is None:
+            raise
+        await _audit_create_refused(mongo, user)
+        log.info("provider.create.account_already_linked")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="account is already linked to a provider profile",
+        ) from exc
 
     await write_audit(
         mongo,
