@@ -80,13 +80,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # no
 
 from libs.config import shared_settings  # noqa: E402
 
-# Phase 1's monolith tests are parked here until the plan that owns each
-# service relocates them to tests/<service>/ (excluded from collection).
-collect_ignore = ["legacy_monolith"]
-
 # Services whose ASGI apps are mounted into the in-process mesh, and the one
 # the `client` fixture talks to (the gateway, once it exists).
-HARNESS_SERVICES: tuple[str, ...] = ("identity", "organization", "patient", "provider", "gateway")
+HARNESS_SERVICES: tuple[str, ...] = (
+    "identity",
+    "organization",
+    "patient",
+    "provider",
+    "scheduling",
+    "gateway",
+)
 ENTRY_SERVICE = "gateway"
 
 
