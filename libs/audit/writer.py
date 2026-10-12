@@ -33,8 +33,8 @@ from typing import Literal
 
 from pymongo import AsyncMongoClient
 
+from libs.config import shared_settings
 from libs.observability.otel import current_trace_id
-from smarthealth.config import settings
 
 AUDIT_COLLECTION_NAME = "audit_log"
 
@@ -60,7 +60,11 @@ async def write_audit(
 
     `changed_fields` must be field NAMES ONLY — never pass PHI values here.
     """
-    db = mongo_client[settings.mongo_db_name]
+    # Every service writes to the ONE shared `audit_log` collection in the
+    # shared Mongo database (`MONGO_DB_NAME`): the audit trail is cross-cutting
+    # infrastructure owned by the future Audit service (D-02), not a service
+    # database, and actor/clinic queries span services.
+    db = mongo_client[shared_settings.mongo_db_name]
     collection = db[AUDIT_COLLECTION_NAME]
 
     document = {

@@ -24,10 +24,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
+from libs.auth.current_user import AuthenticatedUser, get_current_user
 from libs.auth.denylist import revoke_token
-from libs.auth.jwt import TokenError, create_access_token, create_refresh_token, decode_token
+from libs.auth.rbac import require_role
+from libs.auth.roles import Role
+from libs.auth.verification import ACCESS_ONLY, REFRESH_ONLY, TokenError, decode_token
+from libs.db.mongo import get_mongo
+from libs.db.redis import get_redis
 from libs.observability.logging import get_logger
-from services.identity.domain.enums import Role
+from services.identity.db import get_db
 from services.identity.domain.schemas import (
     LoginRequest,
     LoginResponse,
@@ -38,9 +43,12 @@ from services.identity.domain.schemas import (
     UserOut,
 )
 from services.identity.repository.models import User
-from services.identity.security.current_user import AuthenticatedUser, get_current_user, get_redis
-from services.identity.security.rbac import require_role
-from smarthealth.db import get_db, get_mongo
+from services.identity.security.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from services.identity.security.signing import (
+    create_access_token,
+    create_refresh_token,
+    local_key_resolver,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -60,8 +68,6 @@ async def register(
     escalate. Elevated-role account creation is handled by the
     authenticated-admin-only `create_staff_user` route below.
     """
-    from libs.auth.passwords import hash_password  # noqa: PLC0415
-
     existing = await db.execute(select(User).where(User.email == payload.email))
     if existing.scalar_one_or_none() is not None:
         await write_audit(
@@ -127,8 +133,6 @@ async def create_staff_user(
     reach it (`require_role(Role.ADMIN)`), so the role is no longer
     attacker-controlled.
     """
-    from libs.auth.passwords import hash_password  # noqa: PLC0415
-
     existing = await db.execute(select(User).where(User.email == payload.email))
     if existing.scalar_one_or_none() is not None:
         await write_audit(
@@ -191,8 +195,6 @@ async def login(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> LoginResponse:
-    from libs.auth.passwords import DUMMY_PASSWORD_HASH, verify_password  # noqa: PLC0415
-
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
@@ -254,7 +256,9 @@ async def refresh(
     db: AsyncSession = Depends(get_db),
 ) -> TokenPair:
     try:
-        claims = decode_token(payload.refresh_token, expected_type="refresh")
+        claims = await decode_token(
+            payload.refresh_token, expected_types=REFRESH_ONLY, resolver=local_key_resolver()
+        )
     except TokenError as exc:
         log.info("auth.refresh.invalid_token")
         raise HTTPException(
@@ -293,7 +297,9 @@ async def logout(
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> None:
     try:
-        claims = decode_token(user.raw_token, expected_type="access")
+        claims = await decode_token(
+            user.raw_token, expected_types=ACCESS_ONLY, resolver=local_key_resolver()
+        )
     except TokenError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token") from exc
 

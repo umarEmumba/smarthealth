@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
 
-from smarthealth.config import settings
+from libs.config import shared_settings
 
 AUDIT_COLLECTION_NAME = "audit_log"
 
@@ -28,7 +28,7 @@ async def ensure_audit_indexes(mongo_client: AsyncMongoClient) -> list[str]:
     Returns the list of index names that exist after this call (as reported
     by `create_indexes`), so callers/tests can assert on it.
     """
-    db = mongo_client[settings.mongo_db_name]
+    db = mongo_client[shared_settings.mongo_db_name]
     collection = db[AUDIT_COLLECTION_NAME]
 
     index_specs = [

@@ -24,6 +24,31 @@ services:
       retries: 10
       start_period: 10s
 
+  # One-shot, idempotent database-per-service bootstrap (D-01): creates a
+  # role + database per service and revokes PUBLIC access. A job (not
+  # /docker-entrypoint-initdb.d) because init scripts only run on an EMPTY data
+  # directory and would silently do nothing on an existing volume. Safe to
+  # re-run; leaves the legacy single database untouched.
+  db-init:
+    image: postgres:15-trixie
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-smarthealth}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-changeme-local-dev-only}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:-changeme-identity-local-dev-only}
+      ORGANIZATION_DB_PASSWORD: ${ORGANIZATION_DB_PASSWORD:-changeme-organization-local-dev-only}
+      PROVIDER_DB_PASSWORD: ${PROVIDER_DB_PASSWORD:-changeme-provider-local-dev-only}
+      PATIENT_DB_PASSWORD: ${PATIENT_DB_PASSWORD:-changeme-patient-local-dev-only}
+      SCHEDULING_DB_PASSWORD: ${SCHEDULING_DB_PASSWORD:-changeme-scheduling-local-dev-only}
+    volumes:
+      - ./postgres-init:/postgres-init:ro
+    entrypoint: ["bash", "/postgres-init/create-service-databases.sh"]
+    restart: "no"
+
   mongo:
     image: mongo:8.0
     environment:

@@ -39,11 +39,14 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests that require live Postgres/Mongo/Redis containers",
+    "e2e: marks tests that require the full docker compose stack",
 ]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["smarthealth", "libs", "services", "services.identity"]
+# Package discovery (not an explicit list) so each per-service Docker build
+# context installs only the packages it actually copies in (plan 01.1-08).
+[tool.setuptools.packages.find]
+include = ["libs*", "services*"]

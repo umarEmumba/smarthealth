@@ -9,7 +9,7 @@ values (patient name/dob/contact). See
 .planning/phases/01-foundation-core-services/01-RESEARCH.md's PHI-Safe
 Structured Logging section, which applies equally to span attributes.
 
-Exports via OTLP (gRPC) to `settings.otlp_endpoint` — never the legacy
+Exports via OTLP (gRPC) to `shared_settings.otlp_endpoint` — never the legacy
 `opentelemetry-exporter-jaeger` package (forbidden per CLAUDE.md; Jaeger
 ingests OTLP natively).
 """
@@ -24,7 +24,7 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from smarthealth.config import settings
+from libs.config import shared_settings
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -47,7 +47,7 @@ def configure_tracer_provider(service_name: str = "smarthealth-identity") -> Tra
 
     resource = Resource.create({SERVICE_NAME: service_name})
     provider = TracerProvider(resource=resource)
-    exporter = OTLPSpanExporter(endpoint=settings.otlp_endpoint, insecure=True)
+    exporter = OTLPSpanExporter(endpoint=shared_settings.otlp_endpoint, insecure=True)
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
