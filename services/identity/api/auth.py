@@ -15,8 +15,10 @@ audit coverage on denied attempts, not only successes).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
@@ -32,7 +34,14 @@ from libs.auth.roles import Role
 from libs.auth.verification import ACCESS_ONLY, REFRESH_ONLY, TokenError, decode_token
 from libs.db.mongo import get_mongo
 from libs.db.redis import get_redis
+from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
+from libs.service_client import (
+    ReferencedResourceInvalid,
+    UpstreamServiceUnavailable,
+    reference_error_detail,
+    validate_clinic,
+)
 from services.identity.db import get_db
 from services.identity.domain.schemas import (
     LoginRequest,
@@ -54,6 +63,54 @@ from services.identity.security.signing import (
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 log = get_logger(__name__)
+
+
+async def _validate_clinic_or_refuse(
+    http: httpx.AsyncClient,
+    mongo: AsyncMongoClient,
+    *,
+    clinic_id: uuid.UUID,
+    bearer_token: str,
+    actor_id: str,
+    actor_role: str,
+) -> None:
+    """D-05: users.clinic_id must reference an existing, active Organization clinic.
+
+    Runs BEFORE any users row is inserted and fails closed: a missing or
+    inactive clinic is a 422, an Organization that cannot answer is a 503, and in
+    both cases the refusal is audited as a failed user.create and nothing is written.
+    """
+    try:
+        await validate_clinic(http, clinic_id, bearer_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_user_create_failure(
+            mongo, actor_id=actor_id, actor_role=actor_role, clinic_id=clinic_id
+        )
+        # Literal 422: Starlette renamed the 422 constant, and the number is the contract.
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_user_create_failure(
+            mongo, actor_id=actor_id, actor_role=actor_role, clinic_id=clinic_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="organization service unavailable",
+        ) from exc
+
+
+async def _audit_user_create_failure(
+    mongo: AsyncMongoClient, *, actor_id: str, actor_role: str, clinic_id: uuid.UUID
+) -> None:
+    await write_audit(
+        mongo,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="user.create",
+        entity_type="user",
+        entity_id="unknown",
+        clinic_id=str(clinic_id),
+        outcome="failure",
+    )
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -147,6 +204,7 @@ async def create_staff_user(
     admin: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> UserOut:
     """Admin-only staff/provider/admin account creation (CR-01).
 
@@ -154,7 +212,20 @@ async def create_staff_user(
     `role` — but only an already-authenticated `Role.ADMIN` caller can
     reach it (`require_role(Role.ADMIN)`), so the role is no longer
     attacker-controlled.
+
+    When `clinic_id` is supplied it is validated against Organization first (D-05),
+    forwarding the admin's own token; no clinic_id means no cross-service call.
     """
+    if payload.clinic_id is not None:
+        await _validate_clinic_or_refuse(
+            http,
+            mongo,
+            clinic_id=payload.clinic_id,
+            bearer_token=admin.raw_token,
+            actor_id=admin.sub,
+            actor_role=admin.role.value,
+        )
+
     existing = await db.execute(select(User).where(User.email == payload.email))
     if existing.scalar_one_or_none() is not None:
         await write_audit(
