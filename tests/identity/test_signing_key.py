@@ -151,7 +151,11 @@ async def test_health_router_reports_503_when_database_is_unreachable() -> None:
 
 
 @pytest.mark.integration
-async def test_health_endpoint_reports_ok(client: AsyncClient) -> None:
-    response = await client.get("/health")
+async def test_health_endpoint_reports_ok(mesh: AsyncClient) -> None:
+    # The gateway answers its OWN /health, so Identity's health is read straight
+    # from Identity over the in-process mesh (not through the gateway).
+    from tests.conftest import service_base_url  # noqa: PLC0415
+
+    response = await mesh.get(f"{service_base_url('identity')}/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "identity"}

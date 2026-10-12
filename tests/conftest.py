@@ -76,8 +76,8 @@ collect_ignore = ["legacy_monolith"]
 
 # Services whose ASGI apps are mounted into the in-process mesh, and the one
 # the `client` fixture talks to (the gateway, once it exists).
-HARNESS_SERVICES: tuple[str, ...] = ("identity",)
-ENTRY_SERVICE = "identity"
+HARNESS_SERVICES: tuple[str, ...] = ("identity", "organization", "gateway")
+ENTRY_SERVICE = "gateway"
 
 
 def pytest_configure(config: pytest.Config) -> None:

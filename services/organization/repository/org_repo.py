@@ -18,7 +18,7 @@ from datetime import datetime, timezone as dt_timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.identity.repository.models import Clinic, Department
+from services.organization.repository.models import Clinic, Department
 
 
 async def create_clinic(db: AsyncSession, *, name: str, timezone: str) -> Clinic:
