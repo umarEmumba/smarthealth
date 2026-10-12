@@ -12,7 +12,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
 - [x] **Phase 1: Foundation + Core Services** - Infra skeleton, identity/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, and dashboard v1 (completed 2026-09-09)
-- [ ] **Phase 1.1: Microservice Re-architecture** (INSERTED) - Split the Phase 1 monolith into independently deployable services with their own databases, an API gateway, and RS256/JWKS token verification (week-1 mentor feedback)
+- [x] **Phase 1.1: Microservice Re-architecture** (INSERTED) - Split the Phase 1 monolith into independently deployable services with their own databases, an API gateway, and RS256/JWKS token verification (week-1 mentor feedback) (completed 2026-10-12)
 - [ ] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check
 - [ ] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout
 
@@ -75,7 +75,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   4. Shared `libs/` is limited to infrastructure code (token verification, audit client, OTel/logging) and never shares domain models. Audit entries stay PHI-safe, and every service's traces carry a shared trace context across service-to-service calls.
   5. `docker compose up` starts every service plus the infrastructure with passing health checks. The existing Phase 1 test scenarios pass through the gateway, and the dashboard shows the updated service-map diagram and the rationale for the microservices move.
 
-**Plans:** 10/10 plans executed (sequential waves — shared working tree and shared live test infrastructure)
+**Plans:** 10/10 plans complete (sequential waves — shared working tree and shared live test infrastructure)
 
 **Wave 1**
 
