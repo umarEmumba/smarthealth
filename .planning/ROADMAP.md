@@ -75,7 +75,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   4. Shared `libs/` is limited to infrastructure code (token verification, audit client, OTel/logging) and never shares domain models. Audit entries stay PHI-safe, and every service's traces carry a shared trace context across service-to-service calls.
   5. `docker compose up` starts every service plus the infrastructure with passing health checks. The existing Phase 1 test scenarios pass through the gateway, and the dashboard shows the updated service-map diagram and the rationale for the microservices move.
 
-**Plans:** 4/10 plans executed (sequential waves — shared working tree and shared live test infrastructure)
+**Plans:** 5/10 plans executed (sequential waves — shared working tree and shared live test infrastructure)
 
 **Wave 1**
 
@@ -95,7 +95,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 01.1-05-PLAN.md — D-05 reference-check client, users.clinic_id validation, service tokens, Identity /internal/users (IAM-01/03/04, ORG-03)
+- [x] 01.1-05-PLAN.md — D-05 reference-check client, users.clinic_id validation, service tokens, Identity /internal/users (IAM-01/03/04, ORG-03)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 

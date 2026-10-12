@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-04-PLAN.md
-last_updated: "2026-10-12T07:50:57.719Z"
+stopped_at: Completed 01.1-05-PLAN.md
+last_updated: "2026-10-12T08:07:54.973Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: 07357cd28f7d1bbcd632b18036b228e0412ed0a9
+state_head: 66ba19db4fe39fbba80e9d015cdded958856b4c0
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 11
+  completed_plans: 12
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 5 of 10
+Plan: 6 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -69,6 +69,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01.1 P02 | 9 min | 2 tasks | 13 files |
 | Phase 01.1 P03 | 17 min | 2 tasks | 33 files |
 | Phase 01.1 P04 | 30 min | 3 tasks | 13 files |
+| Phase 01.1 P05 | 14 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -109,6 +110,9 @@ Recent decisions affecting current work:
 - [Phase 01.1]: Internal lookups report inactive rows as is_active=false and return one identical 404 for missing and out-of-clinic-scope ids; require_internal_caller carries its own ACCESS_ONLY decode so plan 01.1-05 can widen to service tokens
 - [Phase 01.1]: 01.1-04: Gateway rate limiter fails OPEN on Redis outage (visibly: warning log + gateway_ratelimit_fail_open_total); limiter keys on socket peer address only, X-Forwarded-For never trusted
 - [Phase 01.1]: 01.1-04: tenacity==9.1.4 and opentelemetry-instrumentation-httpx==0.65b0 pinned after human approval ('Approved, both'); test harness mesh hops run in empty contextvars Context so traces connect only via traceparent headers
+- [Phase 01.1]: 01.1-05: a 401/403/5xx or unreadable answer from an owning service is a 503, never a 422, so auth misconfiguration is not mistaken for a missing reference — Reference checks must fail closed (D-05); only a clean 404 or is_active=false means the reference is invalid
+- [Phase 01.1]: 01.1-05: service tokens (type=service, sub=service:identity, 60s) are accepted only by require_internal_caller; public routes reject them — Anonymous registration has no user token to forward to Organization; the token is never returned to a client
+- [Phase 01.1]: 01.1-05: Identity validates users.clinic_id before the duplicate-email check on both account-creation paths — A bad clinic_id must not be usable to learn whether an email is registered; nothing is written on refusal
 
 ### Pending Todos
 
@@ -136,6 +140,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T07:50:57.686Z
-Stopped at: Completed 01.1-04-PLAN.md
+Last session: 2026-10-12T08:07:54.937Z
+Stopped at: Completed 01.1-05-PLAN.md
 Resume file: None
