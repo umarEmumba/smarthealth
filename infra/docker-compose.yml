@@ -42,6 +42,12 @@ x-app-depends-on: &app-depends-on
 services:
   postgres:
     image: postgres:15-trixie
+    # One server hosts the five service databases AND Temporal's two. Temporal
+    # alone holds ~40 connections at idle and each application worker keeps its
+    # own SQLAlchemy pool (default 5 + 10 overflow), so the stock limit of 100 is
+    # exhausted by a normal local run (TooManyConnectionsError). 300 leaves
+    # headroom without changing any data.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-smarthealth}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-local-dev-only}
