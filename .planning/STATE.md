@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-07-PLAN.md
-last_updated: "2026-10-12T08:44:39.711Z"
+stopped_at: Completed 01.1-08-PLAN.md
+last_updated: "2026-10-12T10:09:53.274Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: f1a9c663dcf2421bf5e039ecac4e04f71c5555c5
+state_head: 5962bddddb5757f4f49d701b55c3e31a5cfdc132
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 14
+  completed_plans: 15
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 8 of 10
+Plan: 9 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -72,6 +72,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01.1 P05 | 14 min | 2 tasks | 12 files |
 | Phase 01.1 P06 | 11 min | 2 tasks | 20 files |
 | Phase 01.1 P07 | 20 min | 3 tasks | 27 files |
+| Phase 01.1 P08 | 75min | 2 tasks | 30 files |
 
 ## Accumulated Context
 
@@ -120,6 +121,10 @@ Recent decisions affecting current work:
 - [Phase 01.1]: 01.1-07: Missing or inactive department on provider create is 422 (D-05 supersedes the Phase 1 404); duplicate provider account link is 409 with providers.user_id UNIQUE as arbiter
 - [Phase 01.1]: 01.1-07: Specialty get-or-create uses INSERT ON CONFLICT DO NOTHING plus SELECT (race-free, no mid-request commit); availability department reference validated at create only so a deactivated department never blocks PATCH/list/deactivate (D-06)
 - [Phase 01.1]: 01.1-07: GET /internal/providers/{id} serves ADMIN and service tokens only, returns id/department_id/is_active, applies no clinic scope (Provider holds no clinic data)
+- [Phase 01.1]: Plan 01.1-08: provider_slots and its exclusion constraint live in Scheduling's scheduling_db (no FK on provider_id); Phase 2 never moves the table
+- [Phase 01.1]: Plan 01.1-08: application containers run as root (Phase 1 parity) because the bind-mounted key secret would be unreadable to a non-root user; harden later with explicit secret uid/mode
+- [Phase 01.1]: Plan 01.1-08: Postgres max_connections raised to 300 in Compose (Temporal ~40 idle connections plus per-worker pools exhausted the default 100)
+- [Phase 01.1]: Plan 01.1-08: get_internal_http_client is async def (sync dependencies run in a worker thread with no running loop)
 
 ### Pending Todos
 
@@ -147,6 +152,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T08:44:39.674Z
-Stopped at: Completed 01.1-07-PLAN.md
+Last session: 2026-10-12T10:09:53.233Z
+Stopped at: Completed 01.1-08-PLAN.md
 Resume file: None
