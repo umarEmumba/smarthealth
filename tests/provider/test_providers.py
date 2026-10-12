@@ -10,7 +10,7 @@ import pytest
 from httpx import AsyncClient
 from pymongo import AsyncMongoClient
 
-from smarthealth.config import settings
+from libs.config import shared_settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
 
 
@@ -153,9 +153,14 @@ async def test_provider_scoped_to_department(client: AsyncClient) -> None:
 
 
 @pytest.mark.integration
-async def test_provider_under_missing_department_404(client: AsyncClient) -> None:
-    """Creating a provider under a non-existent department id returns 404
-    with no orphan row, mirroring `org_repo.create_department`'s pattern.
+async def test_provider_under_missing_department_422(client: AsyncClient) -> None:
+    """Creating a provider under a department Organization does not know is a
+    422 "department not found" with no orphan row.
+
+    Phase 1 answered 404 here because the department lived in the same database;
+    per locked decision D-05 the department is now owned by another service and is
+    validated synchronously at write time, so a missing reference is a 422 (a
+    reference problem in the request body), not a 404 on this resource.
     """
     admin_tokens = await _register_and_login(client, role="admin")
     missing_department_id = str(uuid.uuid4())
@@ -169,7 +174,8 @@ async def test_provider_under_missing_department_404(client: AsyncClient) -> Non
         },
         headers=_auth_header(admin_tokens),
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == "department not found"
 
 
 @pytest.mark.integration
@@ -356,7 +362,7 @@ async def test_provider_update_and_deactivate_audited(
     )
     assert deactivate_resp.status_code == 200, deactivate_resp.text
 
-    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    collection = mongo_client[shared_settings.mongo_db_name]["audit_log"]
     update_doc = await collection.find_one({"action": "provider.update", "entity_id": provider_id})
     assert update_doc is not None
     assert update_doc["outcome"] == "success"
