@@ -355,7 +355,7 @@
     <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary.</p>
     <div class="meta-row">
       <span>Milestone <b>Part A — Core Platform</b></span>
-      <span>Dashboard <b>v1 · Phase 1</b></span>
+      <span>Dashboard <b>v2 · Phase 1.1</b></span>
       <span>Core value <b>reliable scheduling, no corrupted state</b></span>
     </div>
   </div>
@@ -397,40 +397,66 @@
   <!-- ARCHITECTURE -->
   <section id="architecture">
     <div class="sec-head"><span class="sec-num">02</span><h2>System architecture</h2></div>
-    <p class="sec-sub">Phase 1 delivers a working, wired vertical slice: FastAPI + PostgreSQL (system of record) + MongoDB (audit trail) + Redis (cache + auth-revocation), fully implemented and tested. Temporal, Kafka + Schema Registry, Celery + RabbitMQ, and the Prometheus/Grafana/Jaeger observability stack are running in Docker Compose with passing health checks (OBS-04) but are <strong>not yet wired into application code</strong> — that integration is Phase 2 (Temporal saga, billing/notification jobs) and Phase 3 (Kafka outbox, full observability). The diagram below marks each layer <span class="chip high" style="display:inline">wired</span> or <span class="chip med" style="display:inline">scaffolding only</span> accordingly.</p>
+    <p class="sec-sub">Phase 1.1 re-delivers the Phase 1 monolith as <strong>six independently deployable services</strong> after the week-1 mentor review: one API Gateway at the edge and five FastAPI services (Identity, Organization, Provider, Patient, Scheduling skeleton), each with its own PostgreSQL database and database role. Tokens are RS256 and every service verifies them locally against Identity's JWKS. MongoDB (<code>audit_log</code>) and Redis are shared cross-cutting infrastructure, not service databases. Temporal, Kafka + Schema Registry and Celery + RabbitMQ are still running in Docker Compose with passing health checks (OBS-04) but are <strong>not yet wired into application code</strong> &mdash; that integration is Phase 2 (Temporal saga, billing/notification jobs) and Phase 3 (Kafka outbox, dedicated Audit service). Each layer is marked <span class="chip high" style="display:inline">wired</span> or <span class="chip med" style="display:inline">scaffolding only</span>.</p>
     <div class="diagram">
 
       <div class="layer">
         <div class="layer-label">Clients</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Patient / Front-desk / Provider / Admin</div><div class="n-role">Role-scoped API consumers (patient, provider, front-desk, admin).</div></div>
+          <div class="node"><div class="n-name">Patient / Front-desk / Provider / Admin</div><div class="n-role">Role-scoped API consumers (patient, provider, front-desk, admin). They only ever talk to the gateway.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">API &amp; Auth &mdash; wired, Phase 1</div>
+        <div class="layer-label">Edge &mdash; wired, Phase 1.1</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">API service</div><div class="n-tech">FastAPI</div><div class="n-role">Request validation (Pydantic), authentication, RBAC enforcement, OpenAPI surface.</div></div>
-          <div class="node accent"><div class="n-name">Auth &amp; RBAC</div><div class="n-tech">Access + refresh JWT (python-jose, HS256)</div><div class="n-role">Access token (~15min: sub/role/clinic_id/jti) validated on every protected request; refresh token (~7days: sub/jti only) re-derives role/clinic from the current DB row. <code>require_role(*roles)</code> server-side guard on every mutating route.</div></div>
+          <div class="node accent"><div class="n-name">API Gateway</div><div class="n-tech">FastAPI + httpx proxy &middot; the only published application port</div><div class="n-role">Route table: <code>/api/auth</code>, <code>/api/admin</code>, <code>/.well-known/jwks.json</code> &rarr; Identity; <code>/api/clinics</code> &rarr; Organization; <code>/api/providers</code> &rarr; Provider; <code>/api/patients</code> &rarr; Patient. <code>/internal/*</code> and unsafe paths (dot segments, encoded slashes, NUL) answer 404 &mdash; there is no internal route to block. Per-IP fixed-window rate limits in Redis (auth endpoints 20/min, everything else 300/min) that <strong>fail open</strong> on a Redis outage, visibly (warning log + counter). Upstream failures map to 503/504. It does <strong>not</strong> verify JWTs and does <strong>not</strong> aggregate responses.</div></div>
         </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Services &mdash; wired, Phase 1.1</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">Identity</div><div class="n-tech">FastAPI &middot; RS256 signer</div><div class="n-role">Accounts (credentials, role, clinic_id), register/login/refresh/logout, token issuance, the JWKS endpoint, the Redis denylist writer, 60 s service tokens, <code>/internal/users</code>. The only holder of the private key.</div></div>
+          <div class="node accent"><div class="n-name">Organization</div><div class="n-tech">FastAPI</div><div class="n-role">Clinics and departments (soft-delete, clinic-scoped), <code>/internal/clinics</code> and <code>/internal/departments</code> lookups.</div></div>
+          <div class="node accent"><div class="n-name">Provider</div><div class="n-tech">FastAPI</div><div class="n-role">Providers, specialties, weekly availability templates, <code>/internal/providers</code>. Holds no clinic data.</div></div>
+          <div class="node accent"><div class="n-name">Patient</div><div class="n-tech">FastAPI</div><div class="n-role">Patient profiles &mdash; the <strong>only</strong> service and database that hold patient PHI.</div></div>
+          <div class="node accent"><div class="n-name">Scheduling (skeleton)</div><div class="n-tech">FastAPI &middot; health only</div><div class="n-role"><code>provider_slots</code> and the <code>ex_provider_slots_no_overlap</code> exclusion constraint. No <code>/api</code> routes yet; Phase 2 adds appointments, waitlist and the saga here.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Cross-service contracts &mdash; wired, Phase 1.1</div>
+        <div class="nodes">
+          <div class="node accent" style="flex-basis:100%"><div class="n-name">Three contracts hold the services together</div><div class="n-role"><strong>1. Token verification:</strong> every service verifies the RS256 signature itself from a cached JWKS (<code>kid</code>-selected, 300 s TTL, 30 s backoff on an unknown <code>kid</code>) and checks the shared Redis denylist; no per-request call to Identity. <strong>2. Synchronous reference checks (D-05):</strong> at write time the owning service is asked with a GET to its <code>/internal</code> endpoint, forwarding the caller's JWT &mdash; Identity&rarr;Organization (clinic), Patient&rarr;Organization (clinic) and Patient&rarr;Identity (user), Provider&rarr;Organization (department) and Provider&rarr;Identity (user). Missing or inactive &rarr; 422; owner unreachable or erroring &rarr; 503 with nothing written; no cascade on deactivation. <strong>3. Trace propagation:</strong> W3C <code>traceparent</code> on every hop (OpenTelemetry propagator + httpx client spans) so one request is one connected trace.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Data &mdash; one database per service &mdash; wired, Phase 1.1</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">identity_db</div><div class="n-tech">PostgreSQL &middot; role identity_svc</div><div class="n-role"><code>users</code></div></div>
+          <div class="node accent"><div class="n-name">organization_db</div><div class="n-tech">PostgreSQL &middot; role organization_svc</div><div class="n-role"><code>clinics</code>, <code>departments</code></div></div>
+          <div class="node accent"><div class="n-name">provider_db</div><div class="n-tech">PostgreSQL &middot; role provider_svc</div><div class="n-role"><code>providers</code>, <code>specialties</code>, <code>provider_specialties</code>, <code>availability_templates</code></div></div>
+          <div class="node accent"><div class="n-name">patient_db</div><div class="n-tech">PostgreSQL &middot; role patient_svc</div><div class="n-role"><code>patients</code> (PHI columns live only here)</div></div>
+          <div class="node accent"><div class="n-name">scheduling_db</div><div class="n-tech">PostgreSQL &middot; role scheduling_svc</div><div class="n-role"><code>provider_slots</code> + GiST exclusion constraint (<code>btree_gist</code>); empty until Phase 2</div></div>
+        </div>
+        <div class="nodes" style="margin-top:10px">
+          <div class="node accent"><div class="n-name">Shared audit sink</div><div class="n-tech">MongoDB</div><div class="n-role">One append-only <code>audit_log</code> collection written by every service through the shared <code>libs/audit</code> writer; field names only, never PHI values. A dedicated Audit service is Phase 3.</div></div>
+          <div class="node accent"><div class="n-name">Shared Redis</div><div class="n-tech">Redis</div><div class="n-role">JWT jti denylist (Identity writes, every service reads) and the gateway's rate-limit counters &mdash; one instance, a recorded risk (see below).</div></div>
+        </div>
+        <div class="n-role" style="margin-top:10px;color:var(--muted);font-size:12.5px">One Postgres container hosts all five databases (and Temporal's two). Each role can connect only to its own database; <code>PUBLIC</code> connect is revoked; the idempotent <code>db-init</code> job creates them. No foreign key crosses a service: cross-service references are plain UUIDs.</div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
         <div class="layer-label">Orchestration &mdash; scaffolding only, not yet wired (Phase 2)</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>)</div><div class="n-role">Container runs and reports healthy; no workflow/activity code exists yet. Will own booking, cancel/reschedule, and visit-lifecycle sagas from Phase 2 onward.</div></div>
-        </div>
-      </div>
-      <div class="flow-arrow">&#9662;</div>
-
-      <div class="layer">
-        <div class="layer-label">Data stores &mdash; wired, Phase 1</div>
-        <div class="nodes">
-          <div class="node accent"><div class="n-name">System of record</div><div class="n-tech">PostgreSQL</div><div class="n-role">users, patients, providers, specialties, clinics, departments, availability_templates, and an <strong>empty</strong> provider_slots table carrying a live GiST exclusion constraint (designed and proven now, populated by Phase 2's slot-generation job).</div></div>
-          <div class="node accent"><div class="n-name">Operational documents</div><div class="n-tech">MongoDB</div><div class="n-role">Append-only <code>audit_log</code> collection — every mutating action, success and failure, field names only (never PHI values). Indexed by entity, actor, and clinic.</div></div>
-          <div class="node accent"><div class="n-name">Cache &amp; auth revocation</div><div class="n-tech">Redis</div><div class="n-role">jti-denylist for JWT revocation (<code>revoked:{jti}</code>, TTL = remaining token life) — the live Phase 1 use. Hot-read caching and slot-reservation locks are Phase 2 additions once booking exists.</div></div>
+          <div class="node"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>)</div><div class="n-role">Container runs and reports healthy; no workflow/activity code exists yet. Will own booking, cancel/reschedule, and visit-lifecycle sagas from Phase 2 onward, living in the Scheduling service.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
@@ -438,24 +464,25 @@
       <div class="layer">
         <div class="layer-label">Messaging &amp; background work &mdash; scaffolding only, not yet wired (Phase 2/3)</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry</div><div class="n-role">Containers healthy, no producer/consumer code yet. Transactional-outbox-fed domain events are Phase 3 scope.</div></div>
+          <div class="node"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry</div><div class="n-role">Containers healthy, no producer/consumer code yet. Transactional-outbox-fed domain events &mdash; and the event-fed local copies that will replace today's synchronous reference checks &mdash; are Phase 3 scope.</div></div>
           <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Containers healthy, no tasks defined yet. Notifications/reminders/follow-ups are Phase 2/3 scope.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Observability (cross-cutting) &mdash; scaffolding only, not yet wired (Phase 3)</div>
+        <div class="layer-label">Observability (cross-cutting) &mdash; tracing and metrics wired per service, dashboards Phase 3</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">Containers healthy; prometheus-fastapi-instrumentator exposes <code>/metrics</code>, dashboards not yet built (Phase 3, OBS-01..03).</div></div>
-          <div class="node"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry</div><div class="n-role">OTel FastAPI auto-instrumentation is wired and exports OTLP toward Jaeger with graceful degradation if Jaeger is down (confirmed in Plan 03); full connected HTTP&rarr;Temporal&rarr;Kafka&rarr;Celery trace is Phase 3 scope. Body capture is disabled.</div></div>
-          <div class="node accent"><div class="n-name">Logs</div><div class="n-tech">structlog JSON</div><div class="n-role">Wired, Phase 1: every log line carries trace_id/span_id; identifiers only, no PHI field values — enforced by a dedicated test, not just convention.</div></div>
+          <div class="node accent"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">One Prometheus scrape job per service (six <code>smarthealth-&lt;service&gt;</code> jobs; all reported up when checked against the live stack). The gateway serves <code>/metrics</code> only on an internal listener (:9100, never published). Grafana dashboards are not yet built (Phase 3, OBS-01..03).</div></div>
+          <div class="node accent"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry (OTLP)</div><div class="n-role">Traces are now connected across services: a provider create produced one trace spanning gateway, provider, organization and (JWKS fetch) identity, confirmed through Jaeger's query API. Body capture is disabled. Connected HTTP&rarr;Temporal&rarr;Kafka&rarr;Celery tracing is Phase 3 scope.</div></div>
+          <div class="node accent"><div class="n-name">Logs</div><div class="n-tech">structlog JSON</div><div class="n-role">Every log line carries trace_id/span_id; identifiers only, no PHI field values &mdash; enforced by a dedicated test, not just convention.</div></div>
         </div>
       </div>
 
     </div>
-    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
-    <div class="callout"><b>Modeling assumption &mdash; users vs. patients:</b> <code>users</code> (login/auth identity: email, password hash, role) and <code>patients</code> (operational profile: name, DOB, contact info) are deliberately <strong>separate tables</strong>, with <code>patients.user_id</code> nullable. This lets front-desk/admin create a patient record with no login (walk-in, phone-booked) while still supporting self-registering patient accounts (IAM-01) — one model can't satisfy both without this split.</div>
+    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL &mdash; now in the database of the service that owns it; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
+    <div class="callout"><b>Modeling assumption &mdash; accounts vs. profiles (D-04):</b> login accounts live in <strong>Identity</strong> (<code>users</code>: email, password hash, role, clinic_id); operational profiles live in <strong>Patient</strong> and <strong>Provider</strong>. A profile stores <code>user_id</code> as a plain nullable UUID (no foreign key), validated against Identity at write time. This lets front-desk/admin create a patient with no login (walk-in, phone-booked) while self-registering patient accounts (IAM-01) still work, and it keeps PHI out of Identity and credentials out of Patient and Provider. Creating a profile never creates the account.</div>
+    <div class="callout"><b>Open deferrals and recorded risks at the close of Phase 1.1</b> (none of these is hidden; all are in <code>deferred-items.md</code> and the Phase 1.1 summaries): <strong>(1)</strong> the gateway buffers whole request bodies with no size cap &mdash; the rate limiter bounds request count, not size; <strong>(2)</strong> one shared Redis holds both the denylist and rate-limit counters &mdash; a Redis outage fails the limiter open and token verification closed (503), and a flush would drop revocations; <strong>(3)</strong> service tokens carry no <code>aud</code> claim, so a verified service token could in principle be replayed to another internal endpoint within its 60 s life; <strong>(4)</strong> application containers run as root; <strong>(5)</strong> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, and a human look at the Jaeger UI have not been verified; <strong>(6)</strong> three flagged assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain holds only through write-time validation (ORG-03), overlapping availability templates remain allowed (PPL-03), and a client combining services may briefly see stale cross-service state (PPL-04). Nothing here is claimed as production-hardened.</div>
   </section>
 
   <!-- DECISIONS -->
@@ -469,6 +496,16 @@
     </div>
 
     <div class="grid">
+
+      <div class="card">
+        <div class="card-top"><h3>Monolith &rarr; microservices</h3><span class="chip high">high</span></div>
+        <div class="chosen">Full cut &mdash; six independently deployable services, one database each</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Keep the Phase 1 modular monolith &middot; lean cut with a merged Provider Directory (Organization + Provider in one service) &middot; full cut (chosen)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The week-1 mentor review asked for a <em>true</em> microservice architecture, so Phase 1.1 re-delivers the working monolith as gateway + Identity + Organization + Provider + Patient + Scheduling (D-01). The boundaries are clear bounded contexts &mdash; the Organization/Provider split was a deliberate preference for finer boundaries over fewer calls. It buys independent deployment and scaling per service, confines PHI to one service and one database (Patient), and a compromised non-Identity service can no longer mint tokens because only Identity holds the signing key. Phase 1 behaviour was carried over and re-tested, with one deliberate change: a provider under a missing department now returns 422 (was 404) per D-05.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">The costs are real and accepted: <strong>extra network hops</strong> on every write that crosses a boundary; <strong>availability coupling</strong> from synchronous checks &mdash; a provider write needs Organization (and Identity) up and otherwise fails closed with 503; <strong>no distributed transactions and no cascading deactivation</strong> (D-06), so deactivating a clinic leaves existing references in place and only blocks new ones; clients must combine id-only reads themselves (D-07) because no service enriches another's data; and about six more containers to run locally. Eventual-consistency work that would remove the coupling (event-fed local copies) is deferred to Phase 3 (D-08).</span></p>
+        <p class="kv"><span class="k">Reversibility</span><span class="v muted">Costly &mdash; merging or splitting services later means moving tables between service databases and rewriting the internal calls between them.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Verification status</span><span class="v muted">Behaviour is covered by in-process suites across all services plus a real-stack smoke test through the published gateway port. Not yet verified: how the synchronous checks behave when a real container goes down mid-request, a cold start from an empty volume, and a person viewing the connected trace in the Jaeger UI.</span></p>
+      </div>
 
       <div class="card">
         <div class="card-top"><h3>Workflow orchestration</h3><span class="chip high">high</span></div>
@@ -719,7 +756,7 @@
 
 <footer>
   <div class="wrap">
-    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v1 · Phase 1</code></span>
+    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v2 · Phase 1.1</code></span>
     <span>Source of truth: <code>docs/architecture-dashboard.html</code> · updated per phase</span>
   </div>
 </footer>
