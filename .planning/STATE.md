@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "1.1"
 current_phase_name: Microservice Re-architecture
 status: executing
-stopped_at: Completed 01.1-03-PLAN.md
-last_updated: "2026-10-12T07:23:50.359Z"
+stopped_at: Completed 01.1-04-PLAN.md
+last_updated: "2026-10-12T07:50:57.719Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 1.1 execution started
-state_head: 07504d0cb6fa0af98c4d8eb311c893f52378af7a
+state_head: 07357cd28f7d1bbcd632b18036b228e0412ed0a9
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 17
-  completed_plans: 10
+  completed_plans: 11
   percent: 25
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 1.1 (Microservice Re-architecture) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
 Status: Ready to execute
 Last activity: 2026-10-12 — Phase 1.1 execution started
 
@@ -68,6 +68,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 01.1 P01 | 19min | 2 tasks | 59 files |
 | Phase 01.1 P02 | 9 min | 2 tasks | 13 files |
 | Phase 01.1 P03 | 17 min | 2 tasks | 33 files |
+| Phase 01.1 P04 | 30 min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,8 @@ Recent decisions affecting current work:
 - [Phase 01.1]: Gateway exposes no OpenAPI/docs of its own: every path outside the route table (including /openapi.json and /docs) is a plain 404
 - [Phase 01.1]: Gateway proxy drops Connection-listed and client accept-encoding headers, appends response headers (Set-Cookie survives), and never retries an upstream call (a retried POST could double-apply)
 - [Phase 01.1]: Internal lookups report inactive rows as is_active=false and return one identical 404 for missing and out-of-clinic-scope ids; require_internal_caller carries its own ACCESS_ONLY decode so plan 01.1-05 can widen to service tokens
+- [Phase 01.1]: 01.1-04: Gateway rate limiter fails OPEN on Redis outage (visibly: warning log + gateway_ratelimit_fail_open_total); limiter keys on socket peer address only, X-Forwarded-For never trusted
+- [Phase 01.1]: 01.1-04: tenacity==9.1.4 and opentelemetry-instrumentation-httpx==0.65b0 pinned after human approval ('Approved, both'); test harness mesh hops run in empty contextvars Context so traces connect only via traceparent headers
 
 ### Pending Todos
 
@@ -116,6 +119,7 @@ None yet.
 - Phase 2 planning: Temporal SDK↔server version compatibility has no official strict matrix per research (ARCHITECTURE.md/SUMMARY.md) — re-verify against docs.temporal.io/develop/python/versioning before locking a submission version.
 - Phase 3 planning: Outbox relay mechanism (Debezium CDC vs. custom polling publisher) is an open architectural tradeoff per research — decide explicitly and document in the Architecture & Decision dashboard, not a default assumption.
 - Phase 1 planning: Decide auto-setup vs. production-shaped Temporal deployment (temporalio/auto-setup vs. temporalio/server + schema-setup) even though Temporal isn't wired until Phase 2 — affects the Phase 1 Docker Compose skeleton.
+- Deferred from 01.1-04: gateway request-body size cap (proxy.forward buffers whole body) and unauthenticated /metrics on public ingress (plan 01.1-09)
 
 ### Roadmap Evolution
 
@@ -132,6 +136,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T07:23:50.326Z
-Stopped at: Completed 01.1-03-PLAN.md
+Last session: 2026-10-12T07:50:57.686Z
+Stopped at: Completed 01.1-04-PLAN.md
 Resume file: None
