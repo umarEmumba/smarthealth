@@ -279,7 +279,8 @@ Recorded in `.planning/phases/01.1-microservice-re-architecture/deferred-items.m
   verification fails closed with 503; a flush would drop revocations).
 - Service tokens carry no `aud` claim. Application containers run as root.
 - Not verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty
-  volume, a person viewing the trace in the Jaeger UI.
+  volume, a person viewing the trace in the Jaeger UI, and the `scripts/bootstrap_admin.py`
+  admin-creation branch (tests only cover the no-op path because the harness always has an admin).
 - Assumptions awaiting mentor confirmation: the provider → department → clinic scope chain relies
   on write-time validation (ORG-03); overlapping availability templates remain allowed (PPL-03);
   clients combining services may briefly see stale cross-service state (PPL-04).

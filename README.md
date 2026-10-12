@@ -274,3 +274,6 @@ Recorded risks and deferrals at the close of Phase 1.1 (details in
   holds only through write-time validation (ORG-03); overlapping availability templates remain
   allowed (PPL-03); a client combining services may briefly see stale cross-service state (PPL-04).
 - Key rotation is supported through `kid` but has not been exercised.
+- The `scripts/bootstrap_admin.py` admin-creation branch (new admin row plus the `user.bootstrap`
+  audit entry) is untested: the test harness always has an admin in `identity_db`, so only the
+  no-op and missing-input paths are covered. Run it once against a fresh `identity_db` to confirm.

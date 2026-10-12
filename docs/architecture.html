@@ -215,7 +215,7 @@ Observed as one trace via Jaeger's query API; not yet viewed in the Jaeger UI.</
       <li>Gateway buffers whole request bodies with <b>no size cap</b> (the limiter bounds request count, not size).</li>
       <li>One <b>shared Redis</b> holds the denylist and rate-limit counters: an outage fails the limiter open and token verification closed (503); a flush would drop revocations.</li>
       <li>Service tokens carry <b>no <code>aud</code> claim</b>; application containers <b>run as root</b>.</li>
-      <li><b>Not verified:</b> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the trace in the Jaeger UI. Key rotation is supported through <code>kid</code> but not exercised.</li>
+      <li><b>Not verified:</b> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the trace in the Jaeger UI, and the <code>scripts/bootstrap_admin.py</code> admin-creation branch (tests only cover the no-op path because the harness always has an admin). Key rotation is supported through <code>kid</code> but not exercised.</li>
       <li>Assumptions awaiting mentor confirmation: the provider → department → clinic scope chain relies on write-time validation (ORG-03); overlapping availability templates remain allowed (PPL-03); clients combining services may briefly see stale cross-service state (PPL-04).</li>
     </ul>
   </div>
