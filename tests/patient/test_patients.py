@@ -18,8 +18,8 @@ import structlog
 from httpx import AsyncClient
 from pymongo import AsyncMongoClient
 
+from libs.config import shared_settings
 from libs.observability.logging import add_trace_context
-from smarthealth.config import settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
 
 SYNTHETIC_PHI_NAME = "Zzyzx Testpatient Synthetic"
@@ -238,7 +238,7 @@ async def test_no_phi_in_patient_audit_or_logs(
     assert resp.status_code == 201, resp.text
     patient_id = resp.json()["id"]
 
-    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    collection = mongo_client[shared_settings.mongo_db_name]["audit_log"]
     try:
         doc = await collection.find_one({"action": "patient.create", "entity_id": patient_id})
         assert doc is not None
@@ -450,7 +450,7 @@ async def test_patient_update_and_deactivate_audited_and_phi_safe(
     )
     assert deactivate_resp.status_code == 200, deactivate_resp.text
 
-    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    collection = mongo_client[shared_settings.mongo_db_name]["audit_log"]
     try:
         update_doc = await collection.find_one(
             {"action": "patient.update", "entity_id": patient_id}
