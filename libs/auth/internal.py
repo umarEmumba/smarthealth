@@ -8,10 +8,14 @@ of that isolation.
 
 `require_internal_caller(*allowed_roles)` verifies the bearer token locally
 (RS256 via the app's key resolver, never a call to Identity), checks the shared
-Redis denylist, and enforces a per-endpoint role allowlist. Today it accepts
-user ACCESS tokens only (`ACCESS_ONLY`); plan 01.1-05 widens the accepted
-types to `INTERNAL_CALLER_TYPES` so a service token can be used when a call has
-no user context — `InternalCaller.kind` already distinguishes the two.
+Redis denylist, and enforces a per-endpoint role allowlist. It accepts a
+forwarded user ACCESS token or a SERVICE token (`INTERNAL_CALLER_TYPES`); the
+latter is used when a call has no user context (e.g. anonymous registration
+validating a clinic) and is signed by Identity with `type=service` and
+`sub=service:<name>`. `InternalCaller.kind` distinguishes the two; the role
+allowlist applies to user callers only (a service caller has no role). Public
+routes keep using `get_current_user`, which accepts access tokens only, so a
+service token can never authenticate a public request.
 
 `clinic_scope_permits` is the clinic-scope rule: an out-of-scope target is
 treated by endpoints exactly like a missing one (same 404), so existence cannot
@@ -34,7 +38,14 @@ from redis.exceptions import RedisError
 from libs.auth.current_user import get_key_resolver
 from libs.auth.denylist import is_revoked
 from libs.auth.roles import Role
-from libs.auth.verification import ACCESS_ONLY, KeyResolver, KeysUnavailable, TokenError, decode_token
+from libs.auth.verification import (
+    INTERNAL_CALLER_TYPES,
+    SERVICE_TOKEN_TYPE,
+    KeyResolver,
+    KeysUnavailable,
+    TokenError,
+    decode_token,
+)
 from libs.db.redis import get_redis
 from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
@@ -46,6 +57,8 @@ log = get_logger(__name__)
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 _UNAUTHORIZED = {"WWW-Authenticate": "Bearer"}
+
+SERVICE_SUBJECT_PREFIX = "service:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +91,7 @@ def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCalle
 
         try:
             claims = await decode_token(
-                token, expected_types=ACCESS_ONLY, resolver=resolver, http=http
+                token, expected_types=INTERNAL_CALLER_TYPES, resolver=resolver, http=http
             )
         except TokenError as exc:
             raise HTTPException(
@@ -93,10 +106,14 @@ def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCalle
                 detail="authentication keys unavailable",
             ) from exc
 
+        is_service = claims.get("type") == SERVICE_TOKEN_TYPE
         try:
             jti = claims["jti"]
             sub = claims["sub"]
-            role = Role(claims["role"])
+            # A service token carries no role; a user token must carry a valid one.
+            role = None if is_service else Role(claims["role"])
+            if is_service and not (isinstance(sub, str) and sub.startswith(SERVICE_SUBJECT_PREFIX)):
+                raise ValueError("service token subject must start with 'service:'")
         except (KeyError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -118,6 +135,11 @@ def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCalle
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="token has been revoked",
                 headers=_UNAUTHORIZED,
+            )
+
+        if is_service:
+            return InternalCaller(
+                kind="service", sub=sub, role=None, clinic_id=None, raw_token=token
             )
 
         if role not in allowed_roles:

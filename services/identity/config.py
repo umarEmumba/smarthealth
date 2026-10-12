@@ -30,6 +30,9 @@ class IdentitySettings(SharedSettings):
 
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
+    # Service tokens are for internal calls that have no user context (anonymous
+    # self-registration validating a clinic). Deliberately short-lived.
+    service_token_expire_seconds: int = 60
 
 
 settings = IdentitySettings()

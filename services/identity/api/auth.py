@@ -57,6 +57,7 @@ from services.identity.security.passwords import DUMMY_PASSWORD_HASH, hash_passw
 from services.identity.security.signing import (
     create_access_token,
     create_refresh_token,
+    create_service_token,
     local_key_resolver,
 )
 
@@ -118,6 +119,7 @@ async def register(
     payload: RegisterRequest,
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> UserOut:
     """Public, unauthenticated self-registration.
 
@@ -125,7 +127,21 @@ async def register(
     no `role` field, so there is nothing for an anonymous caller to
     escalate. Elevated-role account creation is handled by the
     authenticated-admin-only `create_staff_user` route below.
+
+    When `clinic_id` is supplied it is validated against Organization first (D-05).
+    There is no user token to forward, so Identity authenticates the check with its
+    own 60-second service token; no clinic_id means no cross-service call.
     """
+    if payload.clinic_id is not None:
+        await _validate_clinic_or_refuse(
+            http,
+            mongo,
+            clinic_id=payload.clinic_id,
+            bearer_token=create_service_token("identity"),
+            actor_id="anonymous",
+            actor_role="anonymous",
+        )
+
     existing = await db.execute(select(User).where(User.email == payload.email))
     if existing.scalar_one_or_none() is not None:
         await write_audit(

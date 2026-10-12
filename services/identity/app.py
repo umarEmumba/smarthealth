@@ -25,6 +25,7 @@ from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
 from services.identity.api.admin_ping import router as admin_ping_router
 from services.identity.api.auth import router as auth_router
+from services.identity.api.internal import router as internal_router
 from services.identity.api.jwks import router as jwks_router
 from services.identity.config import settings
 from services.identity.security.keys import get_signing_key
@@ -48,6 +49,8 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(admin_ping_router)
     app.include_router(jwks_router)
+    # /internal/* is excluded from OpenAPI and has no gateway route (D-04, D-05).
+    app.include_router(internal_router)
 
     app.state.key_resolver = local_key_resolver()
     # None = use the process-default timeout-bounded client; the test harness

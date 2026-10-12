@@ -20,7 +20,13 @@ from typing import Any
 
 from jose import jwt
 
-from libs.auth.verification import ACCESS_TOKEN_TYPE, JWT_ALGORITHM, REFRESH_TOKEN_TYPE, StaticKeyResolver
+from libs.auth.verification import (
+    ACCESS_TOKEN_TYPE,
+    JWT_ALGORITHM,
+    REFRESH_TOKEN_TYPE,
+    SERVICE_TOKEN_TYPE,
+    StaticKeyResolver,
+)
 from services.identity.config import settings
 from services.identity.security.keys import get_signing_key
 
@@ -59,6 +65,26 @@ def create_refresh_token(user_id: str) -> tuple[str, str]:
         "exp": now + timedelta(days=settings.refresh_token_expire_days),
     }
     return _encode(payload), jti
+
+
+def create_service_token(service_name: str) -> str:
+    """Issue a short-lived service token for an internal call with NO user context.
+
+    Claims: `sub=service:<name>`, `type=service`, `jti`, `iat`, `exp` (default 60 s,
+    `service_token_expire_seconds`) — no role, no clinic. Only `require_internal_caller`
+    accepts this type; `get_current_user` accepts access tokens only, so every public
+    route rejects it. It is attached to Identity's own outgoing reference checks and is
+    never returned to any client.
+    """
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": f"service:{service_name}",
+        "type": SERVICE_TOKEN_TYPE,
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.service_token_expire_seconds),
+    }
+    return _encode(payload)
 
 
 def local_key_resolver() -> StaticKeyResolver:
