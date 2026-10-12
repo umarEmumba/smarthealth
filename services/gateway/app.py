@@ -8,6 +8,12 @@ depth, roadmap SC3), so a gateway compromise or misroute never widens access.
 
 `/health` and `/metrics` are registered BEFORE the catch-all so they are
 answered by the gateway itself and never proxied.
+
+`/metrics` is served ONLY on the gateway's internal metrics listener
+(`gateway_metrics_port`, default 9100), which Compose never publishes. On the
+public listener (port 8000, the only published one) the path is a plain 404.
+The decision uses the ASGI `server` scope (the local socket the request arrived
+on), which a client cannot influence — unlike a Host or forwarding header.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from libs.health import build_health_router
@@ -39,6 +46,16 @@ _PROXIED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     yield
+
+
+async def metrics_endpoint(request: Request) -> Response:
+    """Prometheus exposition, answered only on the internal metrics listener."""
+    settings: GatewaySettings = request.app.state.settings
+    server = request.scope.get("server")
+    # Fail closed: no server scope (e.g. a unix socket) or any other port -> 404.
+    if not server or server[1] != settings.gateway_metrics_port:
+        return JSONResponse(status_code=404, content=_NOT_FOUND)
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 async def gateway_entry(request: Request) -> Response:
@@ -110,7 +127,10 @@ def create_app(settings: GatewaySettings | None = None) -> FastAPI:
     setup_tracing(app, service_name="smarthealth-gateway")
 
     # /metrics must exist BEFORE the catch-all, or the catch-all would proxy it.
-    Instrumentator().instrument(app).expose(app, include_in_schema=False)
+    # It is our own route (not Instrumentator.expose) so it can refuse requests
+    # that arrive on the public listener.
+    Instrumentator().instrument(app)
+    app.add_api_route("/metrics", metrics_endpoint, methods=["GET"], include_in_schema=False)
 
     app.add_api_route(
         "/{full_path:path}",

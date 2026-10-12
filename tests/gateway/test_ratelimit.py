@@ -222,7 +222,8 @@ async def test_health_and_metrics_are_not_rate_limited(
     async with make_client() as client:  # type: ignore[attr-defined]
         for _ in range(DEFAULT_LIMIT + 3):
             assert (await client.get("/health")).status_code == 200
-            assert (await client.get("/metrics")).status_code == 200
+            # /metrics only answers on the internal metrics listener port.
+            assert (await client.get("http://gateway:9100/metrics")).status_code == 200
 
 
 # --- fail-open --------------------------------------------------------------

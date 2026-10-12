@@ -3,10 +3,12 @@ global:
 
 # One scrape job per application service (each exposes /metrics on :8000 inside
 # the Compose network and reports its own OTel service name, smarthealth-<service>).
+# The gateway is the exception: it is the only published application port, so its
+# /metrics is served on an internal-only listener (:9100) and is a 404 on :8000.
 scrape_configs:
   - job_name: "smarthealth-gateway"
     static_configs:
-      - targets: ["gateway:8000"]
+      - targets: ["gateway:9100"]
 
   - job_name: "smarthealth-identity"
     static_configs:

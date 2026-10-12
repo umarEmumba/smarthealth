@@ -22,5 +22,10 @@ class GatewaySettings(SharedSettings):
     gateway_rate_limit_default_per_minute: int = 300
     gateway_rate_limit_auth_per_minute: int = 20
 
+    # Port of the internal-only metrics listener (gunicorn binds it next to the
+    # public :8000 listener; Compose never publishes it). /metrics answers only
+    # on this port. Env: GATEWAY_METRICS_PORT.
+    gateway_metrics_port: int = 9100
+
 
 settings = GatewaySettings()

@@ -24,5 +24,7 @@ COPY services/gateway ./services/gateway
 RUN pip install --no-cache-dir .
 
 # gunicorn with the uvicorn worker class per CLAUDE.md; async workers, so the
-# count is NOT the sync-WSGI formula.
-CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 services.gateway.app:app"]
+# count is NOT the sync-WSGI formula. Two listeners, one app: :8000 is the public
+# one (the only port Compose publishes); :9100 serves /metrics to Prometheus on the
+# internal network only. The app decides by the socket a request arrived on.
+CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 -b 0.0.0.0:9100 services.gateway.app:app"]
