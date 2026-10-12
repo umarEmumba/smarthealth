@@ -10,7 +10,7 @@ import pytest
 from httpx import AsyncClient
 from pymongo import AsyncMongoClient
 
-from smarthealth.config import settings
+from libs.config import shared_settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
 
 
@@ -301,6 +301,8 @@ async def test_deactivate_department_idempotent(client: AsyncClient) -> None:
     )
     assert second.status_code == 200
     assert second.json()["is_active"] is False
+    # No-op success: the row comes back unchanged (deactivated_at not re-stamped).
+    assert second.json() == first.json()
 
 
 @pytest.mark.integration
@@ -324,7 +326,7 @@ async def test_department_update_and_deactivate_audited(
     )
     assert deactivate_resp.status_code == 200, deactivate_resp.text
 
-    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    collection = mongo_client[shared_settings.mongo_db_name]["audit_log"]
     update_doc = await collection.find_one(
         {"action": "department.update", "entity_id": department_id}
     )
