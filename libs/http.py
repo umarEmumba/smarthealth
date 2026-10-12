@@ -40,9 +40,14 @@ def _get_default_client() -> httpx.AsyncClient:
     return _default_client
 
 
-def get_internal_http_client(request: Request) -> httpx.AsyncClient:
+async def get_internal_http_client(request: Request) -> httpx.AsyncClient:
     """FastAPI dependency: the injected client if the app carries one,
-    otherwise the process-default timeout-bounded client."""
+    otherwise the process-default timeout-bounded client.
+
+    `async def` on purpose: FastAPI runs a plain `def` dependency in a worker
+    thread, where `asyncio.get_running_loop()` (needed by the loop-aware default
+    client) raises. As a coroutine it runs on the event loop itself. Callers
+    that invoke it directly must `await` it."""
     injected = getattr(request.app.state, "internal_http_client", None)
     if injected is not None:
         return injected

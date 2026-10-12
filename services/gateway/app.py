@@ -83,7 +83,7 @@ async def gateway_entry(request: Request) -> Response:
         request,
         upstream_name=upstream_name,
         base_url=base_url,
-        http=get_internal_http_client(request),
+        http=await get_internal_http_client(request),
         timeout=settings.gateway_upstream_timeout_seconds,
     )
 
