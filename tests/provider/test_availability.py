@@ -9,13 +9,12 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from jose import jwt as jose_jwt
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from pymongo import AsyncMongoClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from services.identity.repository.models import ProviderSlot
-from smarthealth.config import settings
-from tests.conftest import bootstrap_admin_and_login, unique_email
+from libs.config import shared_settings
+from tests.conftest import bootstrap_admin_and_login, unique_email, verify_identity_token
 
 
 async def _register_and_login(client: AsyncClient, *, role: str) -> dict:
@@ -153,13 +152,15 @@ async def test_invalid_window_rejected(client: AsyncClient) -> None:
 
 
 @pytest.mark.integration
-async def test_no_concrete_slots_generated(
-    client: AsyncClient, db_session: AsyncSession
-) -> None:
-    """After creating an availability template, provider_slots remains
-    empty — RESEARCH Decision 2 (templates only, no slot generation this
-    phase).
+async def test_no_concrete_slots_generated(client: AsyncClient) -> None:
+    """Availability configuration never writes concrete bookable slots —
+    RESEARCH Decision 2 (templates only). Provider's schema and database contain
+    no `provider_slots` table at all: concrete slots belong to Scheduling
+    (emptiness on the scheduling side is checked by plan 01.1-08).
     """
+    from services.provider.config import settings as provider_settings  # noqa: PLC0415
+    from services.provider.repository.models import ProviderBase  # noqa: PLC0415
+
     admin_tokens = await _register_and_login(client, role="admin")
     _clinic_id, _department_id, provider_id = await _create_clinic_department_provider(
         client, admin_tokens, clinic_name="No-Slots Clinic"
@@ -172,10 +173,15 @@ async def test_no_concrete_slots_generated(
     )
     assert resp.status_code == 201, resp.text
 
-    result = await db_session.execute(
-        select(ProviderSlot).where(ProviderSlot.provider_id == uuid.UUID(provider_id))
-    )
-    assert result.scalars().all() == []
+    assert "provider_slots" not in ProviderBase.metadata.tables
+
+    engine = create_async_engine(provider_settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            regclass = await conn.scalar(text("select to_regclass('public.provider_slots')::text"))
+    finally:
+        await engine.dispose()
+    assert regclass is None
 
 
 @pytest.mark.integration
@@ -196,10 +202,7 @@ async def test_availability_forbidden_for_front_desk(client: AsyncClient) -> Non
 
 
 def _sub_from_tokens(tokens: dict) -> str:
-    claims = jose_jwt.decode(
-        tokens["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm]
-    )
-    return claims["sub"]
+    return verify_identity_token(tokens["access_token"])["sub"]
 
 
 async def _create_clinic_department_provider_for_user(
@@ -528,7 +531,7 @@ async def test_availability_template_update_and_deactivate_audited(
     )
     assert deactivate_resp.status_code == 200, deactivate_resp.text
 
-    collection = mongo_client[settings.mongo_db_name]["audit_log"]
+    collection = mongo_client[shared_settings.mongo_db_name]["audit_log"]
     update_doc = await collection.find_one(
         {"action": "availability.update", "entity_id": template_id}
     )

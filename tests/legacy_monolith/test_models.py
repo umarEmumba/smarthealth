@@ -6,9 +6,9 @@ MongoDB containers from infra/docker-compose.yml — run via
 `pytest tests/ -x -k "not integration"` to skip them.
 
 PARKED (excluded from collection): `test_audit_indexes_created` moved to
-tests/libs/test_audit_indexes.py (plan 01.1-02). The exclusion-constraint test
-moves with Scheduling (plan 01.1-08) and the day_of_week test with Provider
-(plan 01.1-07).
+tests/libs/test_audit_indexes.py (plan 01.1-02) and the availability-template
+CHECK test moved to tests/provider/test_models.py (plan 01.1-07). Only the
+exclusion-constraint test remains here; it moves with Scheduling (plan 01.1-08).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.identity.repository.models import (
-    AvailabilityTemplate,
     Clinic,
     Department,
     Provider,
@@ -74,20 +73,3 @@ async def test_exclusion_constraint_live(db_session: AsyncSession) -> None:
         async with db_session.begin_nested():
             db_session.add(overlapping_slot)
             await db_session.flush()
-
-
-def test_availability_template_day_of_week_check_declared() -> None:
-    """The day_of_week CHECK (0-6) is declared on the ORM model.
-
-    Pure unit test — no live DB needed. Asserts the CheckConstraint exists
-    in AvailabilityTemplate.__table_args__ so PPL-03's day-of-week domain
-    (Monday=0..Sunday=6) is enforced at the schema level, not left to
-    application-layer trust alone.
-    """
-    check_constraints = [
-        c for c in AvailabilityTemplate.__table__.constraints if hasattr(c, "sqltext")
-    ]
-    assert any(
-        "day_of_week" in str(c.sqltext) and "0" in str(c.sqltext) and "6" in str(c.sqltext)
-        for c in check_constraints
-    ), "AvailabilityTemplate must declare a day_of_week BETWEEN 0 AND 6 CHECK constraint"

@@ -239,3 +239,98 @@ async def test_user_link_when_identity_unreachable_is_503_and_not_written(
     assert resp.status_code == 503, resp.text
     assert resp.json()["detail"] == "identity service unavailable"
     assert await _provider_rows("full_name = :n", {"n": name}) == 0
+
+
+# --- availability templates (the same references, the same no-cascade rule) ----
+
+
+def _template_payload() -> dict:
+    return {
+        "day_of_week": 1,
+        "start_time": "09:00:00",
+        "end_time": "12:00:00",
+        "slot_duration_minutes": 30,
+        "effective_from": "2026-01-05",
+        "effective_to": "2026-12-31",
+    }
+
+
+async def _provider_in_department(client: AsyncClient, admin: dict, department_id: str) -> str:
+    created = await client.post(
+        "/api/providers",
+        json=_provider_body(department_id, _unique_name("Dr. Availability")),
+        headers=_auth(admin),
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+async def _template_rows(provider_id: str) -> int:
+    from services.provider.config import settings as provider_settings  # noqa: PLC0415
+
+    engine = create_async_engine(provider_settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            return await conn.scalar(
+                text("SELECT count(*) FROM availability_templates WHERE provider_id = :p"),
+                {"p": provider_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_new_template_for_inactive_department_rejected_while_existing_ones_work(
+    client: AsyncClient,
+) -> None:
+    """D-06: after the provider's department is deactivated, a NEW template is
+    refused 422 "department is inactive", while listing and PATCHing the
+    templates that already exist still succeed (no cascade, nothing hidden)."""
+    admin = await bootstrap_admin_and_login(client)
+    clinic_id, department_id = await _clinic_and_department(client, admin, "Template Inactive Clinic")
+    provider_id = await _provider_in_department(client, admin, department_id)
+    existing = await client.post(
+        f"/api/providers/{provider_id}/availability", json=_template_payload(), headers=_auth(admin)
+    )
+    assert existing.status_code == 201, existing.text
+    template = existing.json()
+
+    await _deactivate_department(client, admin, clinic_id, department_id)
+
+    refused = await client.post(
+        f"/api/providers/{provider_id}/availability", json=_template_payload(), headers=_auth(admin)
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == "department is inactive"
+    assert await _template_rows(provider_id) == 1
+
+    listed = await client.get(f"/api/providers/{provider_id}/availability", headers=_auth(admin))
+    assert listed.status_code == 200, listed.text
+    assert [t["id"] for t in listed.json()] == [template["id"]]
+    assert listed.json()[0]["department_id"] == department_id
+
+    patched = await client.patch(
+        f"/api/providers/{provider_id}/availability/{template['id']}",
+        json={"slot_duration_minutes": 45},
+        headers=_auth(admin),
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["slot_duration_minutes"] == 45
+
+
+async def test_template_create_when_organization_unreachable_is_503_and_not_written(
+    client: AsyncClient,
+) -> None:
+    admin = await bootstrap_admin_and_login(client)
+    _clinic_id, department_id = await _clinic_and_department(client, admin, "Template Org Down Clinic")
+    provider_id = await _provider_in_department(client, admin, department_id)
+
+    async with degraded_mesh("organization"):
+        resp = await client.post(
+            f"/api/providers/{provider_id}/availability",
+            json=_template_payload(),
+            headers=_auth(admin),
+        )
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "organization service unavailable"
+    assert await _template_rows(provider_id) == 0

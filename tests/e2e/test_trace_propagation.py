@@ -32,6 +32,8 @@ from tests.conftest import bootstrap_admin_and_login, harness_apps
 
 GATEWAY_ROUTE = "/{full_path:path}"
 ORGANIZATION_ROUTE = "/api/clinics"
+PROVIDER_ROUTE = "/api/providers"
+ORGANIZATION_DEPARTMENT_LOOKUP_ROUTE = "/internal/departments/{department_id}"
 IDENTITY_JWKS_ROUTE = "/.well-known/jwks.json"
 
 
@@ -107,6 +109,54 @@ async def test_gateway_request_is_one_connected_trace(
     # of the span that made the call (organization under gateway).
     assert organization.parent is not None
     assert organization.parent.trace_id == gateway.context.trace_id
+
+
+@pytest.mark.integration
+async def test_provider_create_is_one_connected_trace_across_three_services(
+    client: AsyncClient, spans: InMemorySpanExporter
+) -> None:
+    """plan 01.1-07: POST /api/providers through the gateway is ONE trace that
+    spans the gateway, Provider and Organization (Provider's department reference
+    check carries the W3C context through `libs.http.outgoing_headers`)."""
+    tokens = await bootstrap_admin_and_login(client)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    clinic = await client.post(
+        "/api/clinics", json={"name": "Provider Trace Clinic", "timezone": "UTC"}, headers=headers
+    )
+    assert clinic.status_code == 201, clinic.text
+    department = await client.post(
+        f"/api/clinics/{clinic.json()['id']}/departments",
+        json={"name": "Trace Department"},
+        headers=headers,
+    )
+    assert department.status_code == 201, department.text
+    spans.clear()
+
+    created = await client.post(
+        "/api/providers",
+        json={
+            "department_id": department.json()["id"],
+            "full_name": "Dr. Trace Provider",
+            "specialties": ["Trace General"],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+
+    finished = list(spans.get_finished_spans())
+    gateway = _server_span_for(finished, GATEWAY_ROUTE)
+    provider = _server_span_for(finished, PROVIDER_ROUTE)
+    organization = _server_span_for(finished, ORGANIZATION_DEPARTMENT_LOOKUP_ROUTE)
+
+    trace_ids = {gateway.context.trace_id, provider.context.trace_id, organization.context.trace_id}
+    assert len(trace_ids) == 1, f"expected one shared trace_id, got {len(trace_ids)}"
+
+    # Connected, not merely coincident: Provider hangs under the gateway call and
+    # Organization's reference lookup hangs under Provider's request.
+    assert provider.parent is not None
+    assert provider.parent.trace_id == gateway.context.trace_id
+    assert organization.parent is not None
+    assert organization.parent.trace_id == provider.context.trace_id
 
 
 @pytest.mark.integration
