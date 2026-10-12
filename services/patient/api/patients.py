@@ -40,6 +40,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
@@ -55,6 +56,7 @@ from libs.service_client import (
     lookup_clinic,
     reference_error_detail,
     validate_clinic,
+    validate_user,
 )
 from services.patient.db import get_db
 from services.patient.domain.schemas import PatientUpdate
@@ -123,6 +125,47 @@ def _to_out(patient) -> PatientOut:
     )
 
 
+async def _validate_references_or_refuse(
+    http: httpx.AsyncClient,
+    mongo: AsyncMongoClient,
+    user: AuthenticatedUser,
+    payload: PatientCreate,
+) -> None:
+    """D-05: check both cross-service references BEFORE any write.
+
+    `clinic_id` belongs to Organization and, when supplied, `user_id` belongs to
+    Identity. A missing/inactive/out-of-scope target is a 422, an owner that
+    cannot answer cleanly is a 503; either way the refusal is audited as a
+    failure and nothing has been written yet, so there is never a half-created
+    profile. The calls carry the ids only — never a PHI field (T-01.1-25).
+    """
+    try:
+        await validate_clinic(http, payload.clinic_id, bearer_token=user.raw_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_create_refused(mongo, user, payload.clinic_id)
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_create_refused(mongo, user, payload.clinic_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="organization service unavailable",
+        ) from exc
+
+    if payload.user_id is None:
+        return
+    try:
+        await validate_user(http, payload.user_id, bearer_token=user.raw_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_create_refused(mongo, user, payload.clinic_id)
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_create_refused(mongo, user, payload.clinic_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="identity service unavailable",
+        ) from exc
+
+
 async def _audit_create_refused(
     mongo: AsyncMongoClient, user: AuthenticatedUser, clinic_id: uuid.UUID
 ) -> None:
@@ -149,29 +192,30 @@ async def create_patient(
 ) -> PatientOut:
     _assert_clinic_scope(user, payload.clinic_id)
 
-    # D-05: the clinic belongs to Organization. Validate it BEFORE any write so a
-    # refused create leaves no row behind. Only the clinic id leaves this service.
-    try:
-        await validate_clinic(http, payload.clinic_id, bearer_token=user.raw_token)
-    except ReferencedResourceInvalid as exc:
-        await _audit_create_refused(mongo, user, payload.clinic_id)
-        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
-    except UpstreamServiceUnavailable as exc:
-        await _audit_create_refused(mongo, user, payload.clinic_id)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="organization service unavailable",
-        ) from exc
+    await _validate_references_or_refuse(http, mongo, user, payload)
 
-    patient = await patient_repo.create_patient(
-        db,
-        clinic_id=payload.clinic_id,
-        full_name=payload.full_name,
-        date_of_birth=payload.date_of_birth,
-        phone=payload.phone,
-        address=payload.address,
-        user_id=payload.user_id,
-    )
+    try:
+        patient = await patient_repo.create_patient(
+            db,
+            clinic_id=payload.clinic_id,
+            full_name=payload.full_name,
+            date_of_birth=payload.date_of_birth,
+            phone=payload.phone,
+            address=payload.address,
+            user_id=payload.user_id,
+        )
+    except IntegrityError as exc:
+        # The only constraint a validated create can trip is the one-profile-per-
+        # account unique on user_id (two creates racing for the same account).
+        await db.rollback()
+        if payload.user_id is None:
+            raise
+        await _audit_create_refused(mongo, user, payload.clinic_id)
+        log.info("patient.create.account_already_linked", clinic_id=str(payload.clinic_id))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="account is already linked to a patient profile",
+        ) from exc
 
     # PHI-safe: only field NAMES are recorded, never the PHI values above.
     await write_audit(
