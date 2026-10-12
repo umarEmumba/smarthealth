@@ -29,8 +29,9 @@ import os
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Any
+from typing import Any, NamedTuple
 
 
 def _ensure_test_signing_key() -> None:
@@ -142,6 +143,29 @@ class _NetworkHopTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
+class _UnreachableTransport(httpx.AsyncBaseTransport):
+    """Stands in for a service that is down: every call fails with the transport
+    error a refused connection produces, with no real socket and no DNS lookup
+    (an unmounted internal hostname would otherwise try to resolve for real)."""
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused (service excluded from the mesh)", request=request)
+
+
+def _mesh_mounts(excluded: tuple[str, ...] = ()) -> dict[str, httpx.AsyncBaseTransport]:
+    """Base URL -> transport for every harness service; services named in
+    `excluded` are mapped to an unreachable transport instead of their app."""
+    unknown = set(excluded) - set(HARNESS_SERVICES)
+    assert not unknown, f"not harness services: {sorted(unknown)}"
+    mounts: dict[str, httpx.AsyncBaseTransport] = {}
+    for name, app in harness_apps().items():
+        if name in excluded:
+            mounts[service_base_url(name)] = _UnreachableTransport()
+        else:
+            mounts[service_base_url(name)] = _NetworkHopTransport(ASGITransport(app=app))
+    return mounts
+
+
 @pytest_asyncio.fixture
 async def mesh() -> AsyncIterator[httpx.AsyncClient]:
     """One `httpx.AsyncClient` whose `mounts` map every harness service's
@@ -150,11 +174,7 @@ async def mesh() -> AsyncIterator[httpx.AsyncClient]:
     validation) and the entry client share the same in-process network.
     """
     apps = harness_apps()
-    mounts: dict[str, httpx.AsyncBaseTransport] = {
-        service_base_url(name): _NetworkHopTransport(ASGITransport(app=app))
-        for name, app in apps.items()
-    }
-    async with httpx.AsyncClient(mounts=mounts) as http:
+    async with httpx.AsyncClient(mounts=_mesh_mounts()) as http:
         for app in apps.values():
             app.state.internal_http_client = http
         try:
@@ -162,6 +182,58 @@ async def mesh() -> AsyncIterator[httpx.AsyncClient]:
         finally:
             for app in apps.values():
                 app.state.internal_http_client = None
+
+
+@asynccontextmanager
+async def degraded_mesh(
+    *excluded: str, event_hooks: dict[str, list[Any]] | None = None
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A mesh in which the named services are unreachable (plan 01.1-05).
+
+    Mounts every harness app except `excluded` (those hosts refuse connections),
+    assigns it to every app's `state.internal_http_client` for the block, and
+    restores the regular mesh afterwards. Used by owner-unreachable tests to
+    prove a cross-service reference check fails closed (503, nothing written).
+    Requires the `mesh` fixture to be active (the entry client depends on it).
+    """
+    apps = harness_apps()
+    previous = {name: app.state.internal_http_client for name, app in apps.items()}
+    async with httpx.AsyncClient(mounts=_mesh_mounts(excluded), event_hooks=event_hooks) as degraded:
+        for app in apps.values():
+            app.state.internal_http_client = degraded
+        try:
+            yield degraded
+        finally:
+            for name, app in apps.items():
+                app.state.internal_http_client = previous[name]
+
+
+class RequestRecorder(NamedTuple):
+    """Every request sent over the mesh, plus the `event_hooks` dict that records
+    them (pass it to `degraded_mesh(..., event_hooks=...)` to record there too)."""
+
+    requests: list[httpx.Request]
+    event_hooks: dict[str, list[Any]]
+
+    def paths(self, prefix: str = "") -> list[str]:
+        return [r.url.path for r in self.requests if r.url.path.startswith(prefix)]
+
+
+@pytest_asyncio.fixture
+async def request_recorder(mesh: httpx.AsyncClient) -> RequestRecorder:
+    """Records every request the in-process mesh carries (method, URL, headers).
+
+    The hook is appended to the live mesh client, so everything an app sends
+    through `state.internal_http_client` shows up in `requests`.
+    """
+    requests: list[httpx.Request] = []
+
+    async def _record(request: httpx.Request) -> None:
+        requests.append(request)
+
+    event_hooks: dict[str, list[Any]] = {"request": [_record], "response": []}
+    mesh.event_hooks["request"].append(_record)
+    return RequestRecorder(requests=requests, event_hooks=event_hooks)
 
 
 @pytest_asyncio.fixture
