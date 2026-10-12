@@ -508,6 +508,38 @@
       </div>
 
       <div class="card">
+        <div class="card-top"><h3>API gateway</h3><span class="chip high">high</span></div>
+        <div class="chosen">Thin FastAPI + httpx proxy, per-IP Redis rate limits</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Self-hosted Traefik or Nginx &middot; managed/SaaS API gateways &middot; no gateway (clients call each service directly)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">A thin FastAPI proxy is the most reviewable choice: the whole routing knowledge is a short Python route table with tests, in the same stack and language as the services, with no extra configuration dialect to defend. The table maps <code>/api/auth</code>, <code>/api/admin</code> and <code>/.well-known/jwks.json</code> to Identity, <code>/api/clinics</code> to Organization, <code>/api/providers</code> to Provider and <code>/api/patients</code> to Patient &mdash; and deliberately has <strong>no <code>/internal</code> prefix</strong>, so internal lookup endpoints are absent from the edge rather than routed-then-blocked. Unsafe paths (dot segments, encoded slashes, NUL) are refused before routing, hop-by-hop headers are stripped, upstream failures map to 503/504, and the gateway never retries (a retried POST could double-apply a write). Limits are per client IP in fixed one-minute windows &mdash; a stricter 20/min budget for login/register/refresh, 300/min for everything else &mdash; counted by one atomic Lua script, keyed on the socket peer address only (a client-supplied <code>X-Forwarded-For</code> is never trusted). The limiter <strong>deliberately fails open</strong> when Redis is unreachable, never silently: a warning log and the <code>gateway_ratelimit_fail_open_total</code> counter (RESEARCH A1 &mdash; a counter store must not take the whole platform down). The gateway does <strong>not</strong> verify JWTs (every service verifies for itself, so no service trusts the edge) and does <strong>not</strong> aggregate responses (D-07).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Less capable than Traefik/Nginx: it buffers the whole request body with <strong>no size cap yet</strong> (open deferral &mdash; the limiter bounds request count, not size) and does not stream. Fixed windows allow a burst across a window boundary. While Redis is down the edge has no rate protection (fail-open is a chosen availability-over-protection tradeoff). It is a single local ingress and a single point of failure, and if it were ever placed behind another proxy the peer address it limits on would be that proxy&rsquo;s. Its <code>/metrics</code> is served only on an internal listener (:9100, not published).</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Cross-service integrity</h3><span class="chip high">high</span></div>
+        <div class="chosen">Synchronous owner check at write time now; event-fed local copies in Phase 3</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Cross-database foreign keys (not possible across databases) &middot; event-fed local copies of reference data &middot; sagas / distributed transactions</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Once tables live in different databases a foreign key can no longer express "this clinic exists". Kafka and the outbox do not exist until Phase 3 (D-08), so the simplest correct option today is a synchronous GET to the owning service&rsquo;s <code>/internal</code> endpoint at write time (D-05), forwarding the caller&rsquo;s JWT so the callee re-applies RBAC and clinic scope (a 60 s service token is used only where there is no user context). The edges are Identity&rarr;Organization (clinic), Patient&rarr;Organization (clinic) and Patient&rarr;Identity (user), Provider&rarr;Organization (department) and Provider&rarr;Identity (user). A missing or inactive target is <strong>422</strong>; an owner that is unreachable or answers 401/403/5xx is <strong>503</strong> &mdash; so an auth misconfiguration is never mistaken for a missing record &mdash; and in both cases nothing is written (<em>fail closed</em>). Retries are bounded to three attempts with backoff, GET only, transport errors only. Deactivation never cascades (D-06): existing references keep their ids and only new writes pointing at an inactive target are refused. Reads return ids only (D-07); clients combine them.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Writes depend on the owner&rsquo;s availability: a provider write needs Organization and Identity up. Each cross-boundary write pays extra latency. The check happens once, at write time, so a department deactivated afterwards leaves existing providers pointing at it, and a client combining services may briefly see stale state &mdash; both are flagged assumptions awaiting mentor confirmation (ORG-03, PPL-04). Phase 3 removes the availability coupling with event-fed local copies, at the price of an eventual-consistency window. <em>Not yet verified:</em> behaviour against a genuinely failing container (the suites simulate an unreachable owner with a transport that raises ConnectError).</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Database per service</h3><span class="chip high">high</span></div>
+        <div class="chosen">One Postgres container, one database and one role per service</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">One container per database &middot; one shared database with a schema per service &middot; keep the single Phase 1 database</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Isolation is enforced by the server, not by convention: each service role can connect only to its own database (<code>PUBLIC</code> connect is revoked), and a live test shows all 20 cross-role connections refused with &ldquo;permission denied&rdquo;. Invariant tests also assert that no foreign key crosses a service, no service imports another, PHI columns exist only in Patient and the private key is loaded only by Identity. One container keeps local resource use tractable. An idempotent <code>db-init</code> job creates roles and databases (an init script would silently do nothing on an existing volume); each service has its own migrations directory with a fresh Alembic baseline. The legacy <code>smarthealth</code> database is <strong>left untouched and not migrated</strong> &mdash; dev data is treated as disposable (RESEARCH A2) and dropping it is an operator decision. MongoDB <code>audit_log</code> and Redis stay shared as cross-cutting infrastructure, not service databases (D-02).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">One container is one failure domain and one connection budget &mdash; <code>max_connections</code> had to be raised to 300 because Temporal plus six application pools exhausted the default 100 &mdash; so this is the local shape, not production isolation. There are no cross-database joins by design. The shared Mongo and shared Redis remain coupling points (a recorded risk). The legacy database still contains stray empty objects from an early migration run.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Scheduling skeleton now</h3><span class="chip high">high</span></div>
+        <div class="chosen">A health-only Scheduling service that already owns provider_slots</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Create the service only in Phase 2 &middot; keep provider_slots in Provider (or Identity)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v"><code>provider_slots</code>, the <code>btree_gist</code> extension and the <code>ex_provider_slots_no_overlap</code> exclusion constraint were recreated in <code>scheduling_db</code> verbatim from Phase 1 minus the foreign key, so Phase 2 never has to move a table between services (D-03). The constraint is proven live there: overlapping non-cancelled slots for one provider are rejected by Postgres, while a cancelled overlap, another provider and back-to-back slots are accepted; creating availability templates materializes no slots. <code>provider_id</code> is a plain UUID that Phase 2 will validate against Provider&rsquo;s <code>/internal/providers/{id}</code> (D-05).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A service with no public routes costs a container, an image, a migration and a Compose entry for nothing user-visible yet. Phase 2 must add an <code>aud</code> claim to service tokens before Scheduling starts calling Provider (recorded gap), and slot generation must cope with overlapping availability templates, which Phase 1 still allows (PPL-03 flagged assumption).</span></p>
+      </div>
+
+      <div class="card">
         <div class="card-top"><h3>Workflow orchestration</h3><span class="chip high">high</span></div>
         <div class="chosen">Temporal</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains only · hand-rolled DB state machine · AWS Step Functions</span></p>
@@ -518,17 +550,17 @@
 
       <div class="card">
         <div class="card-top"><h3>Auth &amp; session model</h3><span class="chip high">high</span></div>
-        <div class="chosen">Access + refresh JWT, Redis jti-denylist</div>
-        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Access-only JWT (no refresh) · access+refresh with no revocation list · server-side session store only</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Access token (~15min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>type=access</code>) is validated on every protected request; refresh token (~7days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only, no role/clinic claims) re-derives role/clinic from the current DB row on exchange, so a role change takes effect on next refresh, not just next login. Logout writes the access token's <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life, self-expiring) — an access-only or no-revocation-list design can't support a working logout, and Redis is already in the mandated stack so the marginal cost is low.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">One extra Redis round-trip per authenticated request (the denylist EXISTS check); bounded, self-expiring memory use since entries carry the token's own remaining TTL.</span></p>
+        <div class="chosen">RS256 access + refresh JWT, JWKS verification in every service, Redis jti-denylist</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">A shared symmetric secret distributed to every service &middot; per-request token introspection at Identity &middot; opaque tokens &middot; access-only JWT with no refresh or revocation list</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Identity alone holds the RSA private key and signs tokens with <code>kid</code> <code>smarthealth-identity-1</code>; the public key is published at <code>/.well-known/jwks.json</code>. Every service verifies signatures locally against a cached JWKS (300 s TTL, 30 s backoff after an unknown <code>kid</code>), so there is no per-request call to Identity and a compromised non-Identity service cannot forge tokens &mdash; which a shared symmetric secret would allow for any holder. The access token (~15 min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>type=access</code>) is validated on every protected request; the refresh token (~7 days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only) re-derives role and clinic from the current account row, so a role change takes effect on next refresh. Logout writes the <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life) that every service checks, failing closed with 503 if Redis is unreachable. Calls with no user context use 60 s service tokens minted only by Identity. The private key is generated by <code>scripts/generate_jwt_keypair.py</code>, gitignored, and delivered only to the Identity container as a Compose secret; Identity refuses to start without it.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Key-file management: the key must be generated before the first <code>docker compose up</code> and never committed. Rotation is mechanically supported by <code>kid</code> but has <strong>not been exercised</strong>. A service may use a stale JWKS for up to the cache TTL. One Redis round-trip per authenticated request in every service. Service tokens carry no <code>aud</code> claim (recorded gap, to be closed before Phase 2 Scheduling calls Provider).</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Availability &amp; slot model</h3><span class="chip high">high</span></div>
         <div class="chosen">Weekly availability templates now, provider_slots exclusion constraint designed now</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Generate concrete bookable slot rows in Phase 1 (e.g. next 90 days materialized) · free-text working hours (unstructured) · concrete slots only, no template</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">PPL-03 ("configure availability windows") is a configuration requirement, not a booking-generation requirement — a weekly <code>availability_templates</code> row (day_of_week/start_time/end_time/slot_duration/effective dates) satisfies it without deciding a materialization horizon that has no consumer until Phase 2's booking saga exists. <code>provider_slots</code> is created now but left <b>empty</b> — its <code>EXCLUDE USING gist (provider_id WITH =, tstzrange(start_time,end_time) WITH &amp;&amp;) WHERE (status &lt;&gt; 'cancelled')</code> constraint (<code>btree_gist</code> extension) is live and proven by an integration test today, so Phase 2's double-booking guarantee is inherited as a tested invariant, not a Phase-2 to-do under saga-implementation pressure.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">PPL-03 ("configure availability windows") is a configuration requirement, not a booking-generation requirement — a weekly <code>availability_templates</code> row (day_of_week/start_time/end_time/slot_duration/effective dates) satisfies it without deciding a materialization horizon that has no consumer until Phase 2's booking saga exists. <code>provider_slots</code> is created now (since Phase 1.1 in the Scheduling service&rsquo;s own <code>scheduling_db</code>) but left <b>empty</b> &mdash; its <code>EXCLUDE USING gist (provider_id WITH =, tstzrange(start_time,end_time) WITH &amp;&amp;) WHERE (status &lt;&gt; 'cancelled')</code> constraint (<code>btree_gist</code> extension) is live and proven by an integration test today, so Phase 2's double-booking guarantee is inherited as a tested invariant, not a Phase-2 to-do under saga-implementation pressure.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Phase 1 ships no bookable slots yet (by design — nothing consumes them until Phase 2's Temporal saga). The constraint's correctness is proven independent of any booking code, which is the point.</span></p>
       </div>
 
@@ -550,17 +582,17 @@
 
       <div class="card">
         <div class="card-top"><h3>System of record</h3><span class="chip high">high</span></div>
-        <div class="chosen">PostgreSQL</div>
+        <div class="chosen">PostgreSQL &mdash; one database per service</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">MongoDB for everything · MySQL</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant, and the transactional outbox rides the same commit.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Rigid schema vs documents — which is exactly why non-transactional data goes to MongoDB instead.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant (it lives in <code>scheduling_db</code>), and the transactional outbox will ride the same commit inside the owning service&rsquo;s database. Each service owns its tables in its own database (identity_db, organization_db, provider_db, patient_db, scheduling_db) &mdash; see <em>Database per service</em>.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Rigid schema vs documents &mdash; which is exactly why non-transactional data goes to MongoDB instead. With the split, referential integrity across services is no longer enforced by the database; see <em>Cross-service integrity</em>.</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Operational document store</h3><span class="chip high">high</span></div>
         <div class="chosen">MongoDB</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Postgres JSONB · Elasticsearch</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean. Delivered in Phase 1 as an append-only <code>audit_log</code> collection (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean. Delivered in Phase 1 as an append-only <code>audit_log</code> collection, and since Phase 1.1 one shared collection written by every service through the shared audit library (D-02; a dedicated Audit service is Phase 3) (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A second datastore to run. Confirmed in Phase 1 that the append-heavy, no-retention-policy-yet audit use case fits a document model well; JSONB remains a valid simpler alternative if the volume never grows beyond what a single Postgres table would need.</span></p>
       </div>
 
@@ -568,8 +600,8 @@
         <div class="card-top"><h3>Cache &amp; coordination</h3><span class="chip high">high</span></div>
         <div class="chosen">Redis</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">In-process cache · Postgres advisory locks</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Caches hot provider-availability reads during peak booking, stores idempotency keys for the fast dedup path, and provides short-lived locks.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A Redis lock is defense-in-depth, <em>not</em> the correctness backstop — TTL expiry can race. The Postgres constraint is the real guarantee.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Caches hot provider-availability reads during peak booking, stores idempotency keys for the fast dedup path, and provides short-lived locks. Live today: the JWT jti denylist every service reads, and the gateway&rsquo;s per-IP rate-limit counters.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A Redis lock is defense-in-depth, <em>not</em> the correctness backstop — TTL expiry can race. The Postgres constraint is the real guarantee. Today one shared Redis holds both the denylist and the rate-limit counters, so an outage fails the limiter open and token verification closed (503), and a flush would drop revocations &mdash; accepted for local scope; a production split would use separate instances or ACL users.</span></p>
       </div>
 
       <div class="card">
@@ -582,9 +614,11 @@
 
       <div class="card">
         <div class="card-top"><h3>Observability</h3><span class="chip high">high</span></div>
-        <div class="chosen">Prometheus + Grafana · Jaeger · OpenTelemetry</div>
-        <p class="kv"><span class="k">Decision</span><span class="v">Instrument once with OpenTelemetry; export traces to Jaeger over <strong>OTLP</strong> (not the deprecated Jaeger exporter), metrics to Prometheus, visualize in Grafana.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Why it matters</span><span class="v muted">Observability is explicitly graded. The hard part is propagating trace context across async boundaries — see the consistency patterns below.</span></p>
+        <div class="chosen">Prometheus + Grafana &middot; Jaeger &middot; OpenTelemetry</div>
+        <p class="kv"><span class="k">Decision</span><span class="v">Instrument once with OpenTelemetry; export traces to Jaeger over <strong>OTLP</strong> (not the deprecated Jaeger exporter), metrics to Prometheus, visualize in Grafana. Since Phase 1.1 traces connect across services (W3C <code>traceparent</code> on every internal hop) and every service has its own OTel service name and its own Prometheus scrape job.</span></p>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Vendor APM agents &middot; logs-only correlation by request id &middot; the deprecated Jaeger-native exporter</span></p>
+        <p class="kv"><span class="k">Why it matters</span><span class="v muted">Observability is explicitly graded. With six services a request is only debuggable if it is one connected trace; the hard part is propagating context across hops &mdash; see the consistency patterns below.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Every internal hop must propagate W3C context explicitly (an httpx client span plus the propagator), and in-process tests need the propagator path because the ASGI test transport is not instrumented. A connected trace for a provider create was confirmed through Jaeger&rsquo;s query API; nobody has yet looked at it in the Jaeger UI.</span></p>
       </div>
 
     </div>
@@ -719,9 +753,40 @@
     </details>
 
     <details class="qa">
+      <summary>Why are reference checks synchronous instead of event-driven?</summary>
+      <div class="answer">
+        <p>Because the event infrastructure does not exist yet. Kafka and the transactional outbox are Phase 3 scope (D-08), and the simplest correct thing today is to ask the owning service at write time: <code>GET /internal/&hellip;</code>, caller&rsquo;s JWT forwarded, three bounded attempts on transport errors, then 422 if the target is missing or inactive and 503 if the owner cannot answer &mdash; nothing is written either way.</p>
+        <p>The cost is stated plainly: writes depend on the owner&rsquo;s availability. Phase 3 replaces the check with event-fed local copies, which removes that coupling and introduces an eventual-consistency window instead. Deactivation never cascades (D-06) and reads return ids only (D-07).</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What happens when Organization is down during a provider write?</summary>
+      <div class="answer">
+        <p>The Provider service cannot confirm the department, so the request fails closed with <strong>503</strong> after its bounded retries; no provider row is written and the failed attempt is audited. The trace for that request shows the failed Provider&rarr;Organization hop, and the gateway&rsquo;s own timeout mapping would return 504 if the whole call stalled.</p>
+        <p>Honest status: this is covered by in-process tests with a simulated unreachable owner. It has not been exercised against a real container going down mid-request.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How does a service verify a token without calling Identity?</summary>
+      <div class="answer">
+        <p>Tokens are RS256. Each service fetches Identity&rsquo;s public keys from <code>/.well-known/jwks.json</code>, caches them (300 s TTL), picks the key by the token&rsquo;s <code>kid</code>, and verifies the signature and claims locally. An unknown <code>kid</code> triggers one refresh with a 30 s backoff so a flood of bad tokens cannot hammer Identity. Revocation is the one shared lookup: every service checks the Redis denylist for the token&rsquo;s <code>jti</code>.</p>
+        <p>Only Identity holds the private key, so no other service can mint a token. Key rotation is supported through <code>kid</code> but has not been exercised yet.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What is still open or not verified after the re-architecture?</summary>
+      <div class="answer">
+        <p>Recorded deferrals: no request-body size cap at the gateway; one shared Redis for the denylist and rate limits; service tokens without an <code>aud</code> claim; containers running as root. Not yet verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, and a person viewing the connected trace in the Jaeger UI. Three assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain relies on write-time validation (ORG-03), overlapping availability templates are still allowed (PPL-03), and clients combining services may briefly see stale state (PPL-04).</p>
+      </div>
+    </details>
+
+    <details class="qa">
       <summary>Is the local Docker Compose setup production-shaped?</summary>
       <div class="answer">
-        <p>Honestly: the local stack uses Temporal's <code>auto-setup</code> image and single-node Kafka/Postgres for developer convenience — that's labeled as dev-only, not a production deployment. Production-shaping (separate Temporal schema management, replicated brokers, resource limits) is called out as a decision to document rather than something silently claimed. Being explicit about this is part of the reliability story, not a gap.</p>
+        <p>Honestly: the local stack uses Temporal's <code>auto-setup</code> image and single-node Kafka and a single Postgres container (hosting all five service databases) for developer convenience &mdash; that's labeled as dev-only, not a production deployment. Production-shaping (separate Temporal schema management, replicated brokers, a Postgres instance per service, non-root application containers, resource limits) is called out as a decision to document rather than something silently claimed. Being explicit about this is part of the reliability story, not a gap.</p>
       </div>
     </details>
   </section>
@@ -729,13 +794,19 @@
   <!-- ROADMAP -->
   <section id="roadmap">
     <div class="sec-head"><span class="sec-num">07</span><h2>Roadmap &amp; how this dashboard grows</h2></div>
-    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v1 (Phase 1 scope) and is extended at the end of each phase — Phase 2 adds the finalized workflow/state diagrams, Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
+    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v2 (Phase 1.1 scope) and is extended at the end of each phase — Phase 2 adds the finalized workflow/state diagrams, Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
     <div class="phases">
-      <div class="phase active">
-        <div class="p-num">Phase 1 · Week 1 · current</div>
+      <div class="phase">
+        <div class="p-num">Phase 1 · Week 1 · complete</div>
         <h3>Foundation + Core Services</h3>
         <p>Infra skeleton, auth/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, dashboard v1.</p>
         <div class="reqs">IAM-01..04 · PPL-01..04 · ORG-01..03 · OBS-04 · DASH-01..02</div>
+      </div>
+      <div class="phase active">
+        <div class="p-num">Phase 1.1 · inserted after the week-1 review · current</div>
+        <h3>Phase 1.1 &mdash; Microservice re-architecture</h3>
+        <p>The Phase 1 monolith re-delivered as gateway + Identity, Organization, Provider, Patient and a Scheduling skeleton: database per service, RS256/JWKS, synchronous reference checks, connected traces. No new capability; Phase 1 requirements re-delivered.</p>
+        <div class="reqs">IAM-01..04 · PPL-01..04 · ORG-01..03 · OBS-04 · DASH-01..02 (re-delivered)</div>
       </div>
       <div class="phase">
         <div class="p-num">Phase 2 · Week 2</div>
