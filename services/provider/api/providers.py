@@ -2,10 +2,13 @@
 
 `ProviderCreate` requires `department_id` (the ORG-03 scope-chain root:
 provider -> department -> clinic) and `specialties` (>=1 name, RESEARCH
-must_haves — "one or more specialties"). A provider is created ONLY under
-an existing department; a non-existent `department_id` is rejected 404
-with no orphan row (mirroring `org_repo.create_department`'s missing-
-parent pattern), never a surfaced FK IntegrityError.
+must_haves — "one or more specialties"). The department belongs to Organization,
+so a provider is created ONLY under a department Organization confirms exists and
+is active, checked synchronously BEFORE any write (D-05): a missing or inactive
+department is a 422 (the Phase 1 404 is superseded), Organization being unable to
+answer is a 503, and in both cases nothing is written. Reads return this
+service's own rows with the department as a bare id — never enriched with another
+service's data (D-07) — and deactivating a department never cascades (D-06).
 
 Gap-closure Plan 01-07 adds `PATCH /api/providers/{provider_id}` (partial
 update — `specialties`, when supplied, REPLACES the full set via the same
@@ -21,18 +24,27 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
+from libs.auth.current_user import AuthenticatedUser
+from libs.auth.rbac import require_role
+from libs.auth.roles import Role
+from libs.db.mongo import get_mongo
+from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
-from services.identity.domain.enums import Role
-from services.identity.domain.schemas import ProviderUpdate
-from services.identity.repository import people_repo
-from services.identity.security.current_user import AuthenticatedUser
-from services.identity.security.rbac import require_role
-from smarthealth.db import get_db, get_mongo
+from libs.service_client import (
+    ReferencedResourceInvalid,
+    UpstreamServiceUnavailable,
+    reference_error_detail,
+    validate_department,
+)
+from services.provider.db import get_db
+from services.provider.domain.schemas import ProviderUpdate
+from services.provider.repository import provider_repo
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
@@ -73,34 +85,64 @@ def _to_out(provider) -> ProviderOut:
     )
 
 
+async def _audit_create_refused(mongo: AsyncMongoClient, user: AuthenticatedUser) -> None:
+    """Failure audit for a create refused by a reference check (no field values)."""
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="provider.create",
+        entity_type="provider",
+        entity_id="unknown",
+        clinic_id=None,
+        outcome="failure",
+    )
+
+
+async def _validate_references_or_refuse(
+    http: httpx.AsyncClient,
+    mongo: AsyncMongoClient,
+    user: AuthenticatedUser,
+    payload: ProviderCreate,
+) -> None:
+    """D-05: check the cross-service references BEFORE any write.
+
+    `department_id` belongs to Organization. A missing/inactive target is a 422,
+    an owner that cannot answer cleanly is a 503; either way the refusal is
+    audited as a failure and nothing has been written yet, so there is never a
+    half-created provider. The calls carry the id only.
+    """
+    try:
+        await validate_department(http, payload.department_id, bearer_token=user.raw_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_create_refused(mongo, user)
+        log.info("provider.create.department_rejected", department_id=str(payload.department_id))
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_create_refused(mongo, user)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="organization service unavailable",
+        ) from exc
+
+
 @router.post("", response_model=ProviderOut, status_code=status.HTTP_201_CREATED)
 async def create_provider(
     payload: ProviderCreate,
     user: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> ProviderOut:
-    provider = await people_repo.create_provider(
+    await _validate_references_or_refuse(http, mongo, user, payload)
+
+    provider = await provider_repo.create_provider(
         db,
         department_id=payload.department_id,
         full_name=payload.full_name,
         specialty_names=payload.specialties,
         user_id=payload.user_id,
     )
-
-    if provider is None:
-        await write_audit(
-            mongo,
-            actor_id=user.sub,
-            actor_role=user.role.value,
-            action="provider.create",
-            entity_type="provider",
-            entity_id="unknown",
-            clinic_id=None,
-            outcome="failure",
-        )
-        log.info("provider.create.department_not_found", department_id=str(payload.department_id))
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="department not found")
 
     await write_audit(
         mongo,
@@ -129,7 +171,7 @@ async def list_providers(
     user: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProviderOut]:
-    providers = await people_repo.list_providers(
+    providers = await provider_repo.list_providers(
         db, department_id, include_inactive=include_inactive
     )
     return [_to_out(p) for p in providers]
@@ -141,7 +183,7 @@ async def get_provider(
     user: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> ProviderOut:
-    provider = await people_repo.get_provider(db, provider_id)
+    provider = await provider_repo.get_provider(db, provider_id)
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="provider not found")
     return _to_out(provider)
@@ -155,7 +197,7 @@ async def update_provider(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> ProviderOut:
-    provider = await people_repo.update_provider(
+    provider = await provider_repo.update_provider(
         db, provider_id, full_name=payload.full_name, specialty_names=payload.specialties
     )
 
@@ -197,7 +239,7 @@ async def deactivate_provider(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> ProviderOut:
-    provider = await people_repo.deactivate_provider(db, provider_id)
+    provider = await provider_repo.deactivate_provider(db, provider_id)
 
     if provider is None:
         await write_audit(

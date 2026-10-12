@@ -86,7 +86,7 @@ collect_ignore = ["legacy_monolith"]
 
 # Services whose ASGI apps are mounted into the in-process mesh, and the one
 # the `client` fixture talks to (the gateway, once it exists).
-HARNESS_SERVICES: tuple[str, ...] = ("identity", "organization", "patient", "gateway")
+HARNESS_SERVICES: tuple[str, ...] = ("identity", "organization", "patient", "provider", "gateway")
 ENTRY_SERVICE = "gateway"
 
 
