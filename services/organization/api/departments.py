@@ -27,13 +27,14 @@ from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
+from libs.auth.current_user import AuthenticatedUser
+from libs.auth.rbac import require_role
+from libs.auth.roles import Role
+from libs.db.mongo import get_mongo
 from libs.observability.logging import get_logger
-from services.identity.domain.enums import Role
-from services.identity.domain.schemas import DepartmentUpdate
-from services.identity.repository import org_repo
-from services.identity.security.current_user import AuthenticatedUser
-from services.identity.security.rbac import require_role
-from smarthealth.db import get_db, get_mongo
+from services.organization.db import get_db
+from services.organization.domain.schemas import DepartmentUpdate
+from services.organization.repository import org_repo
 
 router = APIRouter(prefix="/api/clinics/{clinic_id}/departments", tags=["departments"])
 

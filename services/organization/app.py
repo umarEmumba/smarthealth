@@ -22,6 +22,8 @@ from libs.health import build_health_router
 from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
 from services.organization.api.clinics import router as clinics_router
+from services.organization.api.departments import router as departments_router
+from services.organization.api.internal import router as internal_router
 from services.organization.config import settings
 
 
@@ -37,6 +39,9 @@ def create_app() -> FastAPI:
 
     app.include_router(build_health_router("organization", lambda: settings.database_url))
     app.include_router(clinics_router)
+    app.include_router(departments_router)
+    # Reference lookups for other services: not gateway-routed, not in OpenAPI.
+    app.include_router(internal_router)
 
     # Every token is verified locally against Identity's cached public JWKS.
     app.state.key_resolver = JwksClient.from_settings(settings)

@@ -60,7 +60,16 @@ async def gateway_entry(request: Request) -> Response:
 
 
 def create_app(settings: GatewaySettings | None = None) -> FastAPI:
-    app = FastAPI(title="SmartHealth API Gateway", lifespan=lifespan)
+    # The gateway's only surface is /health, /metrics and the proxy catch-all:
+    # no OpenAPI/docs endpoints of its own, so every path outside the route
+    # table (including /openapi.json and /docs) is a plain 404.
+    app = FastAPI(
+        title="SmartHealth API Gateway",
+        lifespan=lifespan,
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+    )
 
     app.state.settings = settings or default_settings
     # None = use the process-default timeout-bounded client; the test harness
