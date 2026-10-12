@@ -27,6 +27,8 @@ from libs.db.mongo import get_mongo_client
 from libs.health import build_health_router
 from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
+from services.provider.api.availability import router as availability_router
+from services.provider.api.internal import router as internal_router
 from services.provider.api.providers import router as providers_router
 from services.provider.config import settings
 
@@ -43,6 +45,9 @@ def create_app() -> FastAPI:
 
     app.include_router(build_health_router("provider", lambda: settings.database_url))
     app.include_router(providers_router)
+    app.include_router(availability_router)
+    # Reference lookups for other services: not routed by the gateway, not in OpenAPI.
+    app.include_router(internal_router)
 
     # Every token is verified locally against Identity's cached public JWKS.
     app.state.key_resolver = JwksClient.from_settings(settings)

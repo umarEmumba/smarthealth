@@ -3,19 +3,25 @@ weekly templates only.
 
 RESEARCH Decision 2 (the most consequential Phase 1 decision): this
 router persists recurring WEEKLY AvailabilityTemplate rows (config/rules)
-only — it never generates concrete bookable-slot rows. Slot generation
-against these templates is Phase 2's job, against the already-proven
-GiST exclusion constraint on the (currently empty) concrete-slot table
-from Plan 02. This router does not import the concrete-slot ORM class
-and does not insert into the concrete-slot table anywhere.
+only — it never generates concrete bookable-slot rows, and Provider's
+schema has no concrete-slot table at all. Slot generation against these
+templates is Phase 2's job, owned by Scheduling.
 
 Times (`start_time`/`end_time`) are naive TIME values that MUST resolve
-against the owning provider's clinic's `Clinic.timezone` — NEVER assume
-UTC or server-local time (RESEARCH Pitfall 3). This router does not
-resolve a concrete calendar instant; it only validates and persists the
-template. The clinic's timezone is reachable via
-`provider.department.clinic.timezone` for any future consumer (Phase 2)
-that needs to resolve an instant from this template.
+against the owning provider's clinic's timezone — NEVER assume UTC or
+server-local time (RESEARCH Pitfall 3). This router does not resolve a
+concrete calendar instant; it only validates and persists the template.
+Provider holds no clinic data: the clinic (and its timezone) is reached
+through the department reference in Organization by whichever consumer
+(Phase 2) needs to resolve an instant from a template.
+
+Cross-service reference (D-05): `create_availability_template` copies the
+provider's `department_id` onto the template, so it first asks Organization
+whether that department still exists and is active — AFTER the CR-02
+ownership check and BEFORE any write (missing/inactive -> 422, Organization
+unable to answer -> 503, nothing written). Listing, PATCHing and deactivating
+existing templates make no cross-service call, so deactivating a department
+never blocks them (D-06).
 
 Gap-closure Plan 01-07 adds `PATCH .../{template_id}` (partial update)
 and `POST .../{template_id}/deactivate` (soft-delete, NEVER a row
@@ -33,18 +39,27 @@ import uuid
 from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
 from pydantic import BaseModel, Field, model_validator
 from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
+from libs.auth.current_user import AuthenticatedUser, user_id_as_uuid
+from libs.auth.rbac import require_role
+from libs.auth.roles import Role
+from libs.db.mongo import get_mongo
+from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
-from services.identity.domain.enums import Role
-from services.identity.domain.schemas import AvailabilityTemplateUpdate
-from services.identity.repository import people_repo
-from services.identity.security.current_user import AuthenticatedUser, user_id_as_uuid
-from services.identity.security.rbac import require_role
-from smarthealth.db import get_db, get_mongo
+from libs.service_client import (
+    ReferencedResourceInvalid,
+    UpstreamServiceUnavailable,
+    reference_error_detail,
+    validate_department,
+)
+from services.provider.db import get_db
+from services.provider.domain.schemas import AvailabilityTemplateUpdate
+from services.provider.repository import provider_repo
 
 router = APIRouter(prefix="/api/providers/{provider_id}/availability", tags=["availability"])
 
@@ -55,8 +70,8 @@ class AvailabilityTemplateCreate(BaseModel):
     """Validates a weekly availability window before it is ever persisted.
 
     NOTE (RESEARCH Pitfall 3): `start_time`/`end_time` are naive TIME
-    values. They resolve against the owning provider's clinic's
-    `Clinic.timezone` (IANA tz name) — NOT UTC, NOT server-local time.
+    values. They resolve against the owning provider's clinic's timezone
+    (IANA tz name, held by Organization) — NOT UTC, NOT server-local time.
     Phase 2's slot-generation job is the consumer that performs that
     resolution; this schema only validates the template's internal
     consistency (day_of_week range, end after start, positive duration,
@@ -122,6 +137,22 @@ def _assert_provider_owner_or_admin(
         )
 
 
+async def _audit_create_refused(
+    mongo: AsyncMongoClient, user: AuthenticatedUser, provider_id: uuid.UUID
+) -> None:
+    """Failure audit for a create refused by the department reference check."""
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="availability.create",
+        entity_type="availability_template",
+        entity_id=str(provider_id),
+        clinic_id=None,
+        outcome="failure",
+    )
+
+
 @router.post("", response_model=AvailabilityTemplateOut, status_code=status.HTTP_201_CREATED)
 async def create_availability_template(
     provider_id: uuid.UUID,
@@ -129,8 +160,9 @@ async def create_availability_template(
     user: AuthenticatedUser = Depends(require_role(Role.PROVIDER, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> AvailabilityTemplateOut:
-    provider = await people_repo.get_provider(db, provider_id)
+    provider = await provider_repo.get_provider(db, provider_id)
     if provider is None:
         await write_audit(
             mongo,
@@ -168,7 +200,22 @@ async def create_availability_template(
             detail="cannot manage another provider's availability",
         )
 
-    template = await people_repo.create_availability_template(
+    # D-05: the template carries the provider's department_id, which Organization
+    # owns — confirm it still exists and is active BEFORE writing (fail closed).
+    try:
+        await validate_department(http, provider.department_id, bearer_token=user.raw_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_create_refused(mongo, user, provider_id)
+        log.info("availability.create.department_rejected", provider_id=str(provider_id))
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_create_refused(mongo, user, provider_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="organization service unavailable",
+        ) from exc
+
+    template = await provider_repo.create_availability_template(
         db,
         provider_id=provider_id,
         department_id=provider.department_id,
@@ -208,7 +255,7 @@ async def list_availability(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> list[AvailabilityTemplateOut]:
-    provider = await people_repo.get_provider(db, provider_id)
+    provider = await provider_repo.get_provider(db, provider_id)
     if provider is None:
         # IN-06: audit the 404 (provider-not-found) branch for consistency
         # with the sibling create_availability_template's 404 branch and
@@ -241,7 +288,7 @@ async def list_availability(
             detail="cannot view another provider's availability",
         )
 
-    templates = await people_repo.list_availability(
+    templates = await provider_repo.list_availability(
         db, provider_id, include_inactive=include_inactive
     )
     return [_to_out(t) for t in templates]
@@ -256,7 +303,7 @@ async def update_availability_template(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> AvailabilityTemplateOut:
-    provider = await people_repo.get_provider(db, provider_id)
+    provider = await provider_repo.get_provider(db, provider_id)
     if provider is None:
         await write_audit(
             mongo,
@@ -273,7 +320,7 @@ async def update_availability_template(
 
     _assert_provider_owner_or_admin(user, provider)
 
-    existing = await people_repo.get_availability_template(db, template_id, provider_id)
+    existing = await provider_repo.get_availability_template(db, template_id, provider_id)
     if existing is None:
         await write_audit(
             mongo,
@@ -312,7 +359,7 @@ async def update_availability_template(
             detail="effective_from must be on or before effective_to",
         )
 
-    template = await people_repo.update_availability_template(
+    template = await provider_repo.update_availability_template(
         db,
         template_id,
         provider_id,
@@ -353,7 +400,7 @@ async def deactivate_availability_template(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> AvailabilityTemplateOut:
-    provider = await people_repo.get_provider(db, provider_id)
+    provider = await provider_repo.get_provider(db, provider_id)
     if provider is None:
         await write_audit(
             mongo,
@@ -370,7 +417,7 @@ async def deactivate_availability_template(
 
     _assert_provider_owner_or_admin(user, provider)
 
-    template = await people_repo.deactivate_availability_template(db, template_id, provider_id)
+    template = await provider_repo.deactivate_availability_template(db, template_id, provider_id)
     if template is None:
         await write_audit(
             mongo,
