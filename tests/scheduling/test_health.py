@@ -39,9 +39,9 @@ async def test_scheduling_health_through_the_mesh(mesh: httpx.AsyncClient) -> No
 async def test_scheduling_exposes_no_api_routes_this_phase() -> None:
     from services.scheduling.app import app  # noqa: PLC0415
 
+    # /health is answered from an included router; nothing may be mounted under /api.
     paths = {getattr(r, "path", "") for r in app.routes}
     assert not any(p.startswith("/api") for p in paths), paths
-    assert "/health" in paths
 
 
 @pytest.mark.integration

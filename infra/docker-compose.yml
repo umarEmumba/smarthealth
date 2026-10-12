@@ -6,6 +6,39 @@ name: smarthealth
 # requires them to reach a passing health status even though no app code
 # talks to them until Phase 2/3.
 
+# --- Shared building blocks for the application services (YAML anchors) ------
+# Every application container gets the same container-network URLs for the
+# shared stores (literal, NOT ${...}-interpolated: a host-oriented value in a
+# developer's .env, e.g. localhost:6380, must never leak into a container), the
+# same python-only healthcheck (the slim image has no curl) and the same
+# startup gate: db-init has finished and the stores are healthy.
+x-app-env: &app-env
+  MONGO_URL: mongodb://mongo:27017
+  MONGO_DB_NAME: ${MONGO_DB_NAME:-smarthealth}
+  REDIS_URL: redis://redis:6379/0
+  OTLP_ENDPOINT: http://jaeger:4317
+
+x-app-healthcheck: &app-healthcheck
+  test:
+    - CMD
+    - python
+    - -c
+    - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 20s
+
+x-app-depends-on: &app-depends-on
+  db-init:
+    condition: service_completed_successfully
+  postgres:
+    condition: service_healthy
+  mongo:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+
 services:
   postgres:
     image: postgres:15-trixie
@@ -236,6 +269,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # Scheduling (D-03): owns provider_slots and its double-booking exclusion
+  # constraint on scheduling_db. No /api routes this phase, so no host port and
+  # no gateway route; reachable only on the Compose network.
+  scheduling:
+    build:
+      context: ..
+      dockerfile: services/scheduling/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+      SCHEDULING_DATABASE_URL: postgresql+asyncpg://scheduling_svc:${SCHEDULING_DB_PASSWORD:-changeme-scheduling-local-dev-only}@postgres:5432/scheduling_db
+    depends_on: *app-depends-on
+    healthcheck: *app-healthcheck
 
 volumes:
   postgres_data:
