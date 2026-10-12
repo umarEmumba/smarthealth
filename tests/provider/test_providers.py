@@ -4,6 +4,7 @@ audited, department-scoped, specialties.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -372,3 +373,84 @@ async def test_provider_update_and_deactivate_audited(
     )
     assert deactivate_doc is not None
     assert deactivate_doc["outcome"] == "success"
+
+
+async def _specialty_rows(name: str) -> int:
+    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+
+    from services.provider.config import settings as provider_settings  # noqa: PLC0415
+
+    engine = create_async_engine(provider_settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            return await conn.scalar(
+                text("SELECT count(*) FROM specialties WHERE name = :n"), {"n": name}
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_existing_specialty_name_reuses_the_row(client: AsyncClient) -> None:
+    """PPL-02 idempotency edge: attaching a specialty name that already exists
+    reuses that specialties row (same id) instead of creating a duplicate, and a
+    name repeated inside one request attaches it once."""
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Specialty Reuse Clinic"
+    )
+    specialty = f"Reuse {uuid.uuid4().hex[:10]}"
+
+    first = await client.post(
+        "/api/providers",
+        json={"department_id": department_id, "full_name": "Dr. First", "specialties": [specialty]},
+        headers=_auth_header(admin_tokens),
+    )
+    second = await client.post(
+        "/api/providers",
+        json={
+            "department_id": department_id,
+            "full_name": "Dr. Second",
+            "specialties": [specialty, specialty],
+        },
+        headers=_auth_header(admin_tokens),
+    )
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert second.json()["specialties"] == first.json()["specialties"]
+    assert await _specialty_rows(specialty) == 1
+
+
+@pytest.mark.integration
+async def test_concurrent_creations_with_the_same_new_specialty_make_one_row(
+    client: AsyncClient,
+) -> None:
+    """PPL-02 concurrency edge: two provider creations racing to introduce the
+    SAME new specialty name both succeed and share one specialties row —
+    `specialties.name UNIQUE` is the backstop, `ON CONFLICT DO NOTHING` the path."""
+    admin_tokens = await _register_and_login(client, role="admin")
+    _clinic_id, department_id = await _create_clinic_and_department(
+        client, admin_tokens, clinic_name="Specialty Race Clinic"
+    )
+    specialty = f"Race {uuid.uuid4().hex[:10]}"
+
+    responses = await asyncio.gather(
+        *[
+            client.post(
+                "/api/providers",
+                json={
+                    "department_id": department_id,
+                    "full_name": f"Dr. Racer {i}",
+                    "specialties": [specialty],
+                },
+                headers=_auth_header(admin_tokens),
+            )
+            for i in range(6)
+        ]
+    )
+
+    assert [r.status_code for r in responses] == [201] * 6, [r.text for r in responses]
+    assert len({r.json()["specialties"][0]["id"] for r in responses}) == 1
+    assert await _specialty_rows(specialty) == 1
