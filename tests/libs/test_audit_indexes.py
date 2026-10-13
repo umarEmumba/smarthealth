@@ -16,7 +16,8 @@ from libs.config import shared_settings
 
 @pytest.mark.integration
 async def test_audit_indexes_created(mongo_client: AsyncMongoClient) -> None:
-    """ensure_audit_indexes creates the three query indexes idempotently.
+    """ensure_audit_indexes creates the three query indexes plus the partial
+    unique `ix_audit_dedupe_key` (plan 02-01) idempotently.
 
     ensure_audit_indexes writes to shared_settings.mongo_db_name (the app's real
     configured database, not a hardcoded test override) — so this test reads
@@ -33,6 +34,7 @@ async def test_audit_indexes_created(mongo_client: AsyncMongoClient) -> None:
             "ix_audit_entity_type_entity_id_timestamp",
             "ix_audit_actor_id_timestamp",
             "ix_audit_clinic_id_timestamp",
+            "ix_audit_dedupe_key",
         }
 
         # Second call must not raise (idempotent by index name).
@@ -40,9 +42,18 @@ async def test_audit_indexes_created(mongo_client: AsyncMongoClient) -> None:
         assert set(names_second) == set(names_first)
 
         index_cursor = await collection.list_indexes()
-        existing = {doc["name"] async for doc in index_cursor}
+        existing = {doc["name"]: doc async for doc in index_cursor}
         assert "ix_audit_entity_type_entity_id_timestamp" in existing
         assert "ix_audit_actor_id_timestamp" in existing
         assert "ix_audit_clinic_id_timestamp" in existing
+
+        # Retried activity steps dedupe on this key; documents without one
+        # (every pre-Phase-2 call site) are outside the index entirely.
+        dedupe = existing["ix_audit_dedupe_key"]
+        assert dict(dedupe["key"]) == {"dedupe_key": 1}
+        assert dedupe["unique"] is True
+        assert dedupe["partialFilterExpression"] == {"dedupe_key": {"$exists": True}}
+        # The three query indexes are not unique.
+        assert not existing["ix_audit_actor_id_timestamp"].get("unique", False)
     finally:
         await collection.drop()
