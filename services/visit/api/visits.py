@@ -1,6 +1,7 @@
 """Visit's public routes, reached through the gateway (plan 02-10, D-15, D-17, D-18).
 
     POST /api/visits                     check in a CONFIRMED appointment (front-desk, admin)
+    GET  /api/visits                     clinic-scoped list (front-desk, admin; VISIT-05)
     GET  /api/visits/{visit_id}          the visit plus its state history
     POST /api/visits/{visit_id}/start    checked_in -> in_progress
     POST /api/visits/{visit_id}/complete in_progress -> completed
@@ -28,6 +29,12 @@ history row in one transaction: applied -> commit, then audit
 -> 200 no-op (no history, no audit); a skipped state -> 409. Completion leaves
 `downstream_started_at` NULL for plan 02-11.
 
+List (VISIT-05, D-17): ops staff poll it (no cache, no push), filtered by
+status, provider and check-in time (`date_from` inclusive, `date_to`
+exclusive, both with a UTC offset), newest first, `limit` 1..200 (default 50)
+and `offset`. Front-desk naming another clinic is 403 (the patient-list
+convention); admin must name the clinic (422).
+
 Clinic scope (D-18): front-desk sees only its own clinic; anything outside it
 answers exactly like a missing visit (404 "not found"). Responses carry ids,
 statuses and timestamps only. Reads are not audited (existing convention);
@@ -37,9 +44,10 @@ audit entries carry field NAMES only and are written after the commit.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pymongo import AsyncMongoClient
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,6 +81,8 @@ log = get_logger(__name__)
 STAFF_ROLES = (Role.FRONT_DESK, Role.ADMIN)
 VISIT_ROLES = (Role.PROVIDER, Role.FRONT_DESK, Role.ADMIN)
 ENTITY_TYPE = "visit"
+LIST_LIMIT_MAX = 200
+LIST_LIMIT_DEFAULT = 50
 APPOINTMENT_CONFIRMED = "confirmed"
 
 
@@ -198,6 +208,51 @@ async def check_in(
         return _to_out(visit)
     await _audit(mongo, user, visit, "visit.check_in")
     return _to_out(visit)
+
+
+@router.get("", response_model=list[VisitOut])
+async def list_visits(
+    clinic_id: uuid.UUID | None = None,
+    visit_status: str | None = Query(default=None, alias="status"),
+    provider_id: uuid.UUID | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = Query(default=LIST_LIMIT_DEFAULT, ge=1, le=LIST_LIMIT_MAX),
+    offset: int = Query(default=0, ge=0),
+    user: AuthenticatedUser = Depends(require_role(*STAFF_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> list[VisitOut]:
+    if visit_status is not None and visit_status not in VisitStatus.ALL:
+        raise HTTPException(status_code=422, detail="unknown visit status")
+    for bound in (date_from, date_to):
+        if bound is not None and bound.tzinfo is None:
+            raise HTTPException(
+                status_code=422, detail="date_from and date_to must include a UTC offset"
+            )
+
+    if user.role == Role.ADMIN:
+        if clinic_id is None:
+            raise HTTPException(status_code=422, detail="clinic_id is required for admin")
+    else:
+        own = _user_clinic(user)
+        if own is None or (clinic_id is not None and clinic_id != own):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="cannot access another clinic's visits",
+            )
+        clinic_id = own
+
+    rows = await visit_repo.list_visits(
+        db,
+        clinic_id=clinic_id,
+        status=visit_status,
+        provider_id=provider_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return [_to_out(v) for v in rows]
 
 
 async def _visible_visit(

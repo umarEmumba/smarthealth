@@ -37,6 +37,8 @@ from services.provider.config import ProviderSettings
 from services.provider.repository.models import ProviderBase
 from services.scheduling.config import SchedulingSettings
 from services.scheduling.repository.models import SchedulingBase
+from services.visit.config import VisitSettings
+from services.visit.repository.models import VisitBase
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICES_DIR = REPO_ROOT / "services"
@@ -55,6 +57,7 @@ OWNED_TABLES: dict[str, set[str]] = {
         "waitlist_entries",
     },
     "billing": {"billing_records", "billing_status_history"},
+    "visit": {"visits", "visit_state_history"},
 }
 
 BASES = {
@@ -64,6 +67,7 @@ BASES = {
     "patient": PatientBase,
     "scheduling": SchedulingBase,
     "billing": BillingBase,
+    "visit": VisitBase,
 }
 
 SETTINGS = {
@@ -73,6 +77,7 @@ SETTINGS = {
     "patient": PatientSettings,
     "scheduling": SchedulingSettings,
     "billing": BillingSettings,
+    "visit": VisitSettings,
 }
 
 # Every deployable service package, including the gateway (which owns no data
