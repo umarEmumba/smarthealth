@@ -64,28 +64,13 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     BillingStatus.FINALIZED: frozenset(),
 }
 
-# Targets a caller may request through the transitions endpoint. `verified` and
-# `failed` are only ever set by the pre-check's own rule evaluation.
-TRANSITION_TARGETS: tuple[str, ...] = (
-    BillingStatus.VOIDED,
-    BillingStatus.REFUND_PENDING,
-    BillingStatus.REFUNDED,
-    BillingStatus.NO_REFUND,
-    BillingStatus.FINALIZED,
-)
-
-# Least privilege per calling service (T-02-22): Scheduling compensates and
-# cancels (D-09, D-13); Visit only finalizes after completion (D-16). Admin
-# user tokens may request any target.
+# Least privilege per calling service (T-02-22): Visit only finalizes after
+# completion (D-16); Scheduling compensates and cancels (D-09, D-13) and may not
+# finalize. Within what a service may name, the state machine decides (409).
+# Admin user tokens may name any target. `verified`/`failed` are only reachable
+# from `pending`, which the pre-check never leaves behind.
 SERVICE_TRANSITION_TARGETS: dict[str, frozenset[str]] = {
-    "scheduling": frozenset(
-        {
-            BillingStatus.VOIDED,
-            BillingStatus.REFUND_PENDING,
-            BillingStatus.REFUNDED,
-            BillingStatus.NO_REFUND,
-        }
-    ),
+    "scheduling": frozenset(BillingStatus.ALL) - {BillingStatus.FINALIZED},
     "visit": frozenset({BillingStatus.FINALIZED}),
 }
 

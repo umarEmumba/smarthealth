@@ -14,7 +14,18 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-TransitionTarget = Literal["voided", "refund_pending", "refunded", "no_refund", "finalized"]
+# Every billing state is a nameable target; the state machine (not this schema)
+# decides which moves are legal, so an illegal move is a 409, not a 422.
+TransitionTarget = Literal[
+    "pending",
+    "verified",
+    "failed",
+    "voided",
+    "refund_pending",
+    "refunded",
+    "no_refund",
+    "finalized",
+]
 
 REASON_CODE_PATTERN = r"^[a-z0-9_]+$"
 
