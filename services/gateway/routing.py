@@ -4,8 +4,9 @@ The route table maps a PUBLIC path prefix to the service that owns it. It is
 the whole of the gateway's routing knowledge, and it deliberately contains NO
 `/internal` prefix: internal reference-lookup endpoints are genuinely absent
 from the route map, not "routed but blocked" (RESEARCH anti-pattern; STRIDE
-T-01.1-11). Scheduling exposes no public `/api` routes in this phase (health
-only, D-03), so it has no prefix either.
+T-01.1-11). Scheduling's public prefixes (plan 02-04) are `/api/slots`,
+`/api/appointments` and `/api/waitlist`; like every other service, its
+`/internal` routes are never in this table.
 
 `is_safe_path` is the first gate every request passes (STRIDE T-01.1-12). The
 gateway forwards the RAW request path, so anything that could be re-interpreted
@@ -29,6 +30,9 @@ ROUTE_TABLE: tuple[tuple[str, str], ...] = (
     ("/api/clinics", "organization"),
     ("/api/providers", "provider"),
     ("/api/patients", "patient"),
+    ("/api/slots", "scheduling"),
+    ("/api/appointments", "scheduling"),
+    ("/api/waitlist", "scheduling"),
 )
 
 _FORBIDDEN_RAW_SEQUENCES: tuple[bytes, ...] = (b"%2e", b"%2f", b"%5c", b"%00")

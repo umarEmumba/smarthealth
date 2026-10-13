@@ -91,10 +91,14 @@ async def internal_request(
     service: str,
     idempotency_key: str | None = None,
     json: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
+    allow_list: bool = False,
+) -> dict[str, Any] | list[Any] | None:
     """One `method` request to `url` on `service` with a bearer service token.
 
     See the module docstring for the outcome contract. Exactly one attempt.
+    `allow_list=True` (plan 02-04) additionally accepts a JSON ARRAY success
+    body, for collection reads such as Provider's availability list; any other
+    non-object body is still `UpstreamServiceUnavailable`.
     """
     extra = {"authorization": f"Bearer {token}"}
     if idempotency_key:
@@ -131,7 +135,7 @@ async def internal_request(
         except ValueError as exc:
             log.warning("internal.request", method=method, path=path, service=service, outcome="malformed_body")
             raise UpstreamServiceUnavailable(service) from exc
-        if isinstance(body, dict):
+        if isinstance(body, dict) or (allow_list and isinstance(body, list)):
             return body
         log.warning("internal.request", method=method, path=path, service=service, outcome="malformed_body")
         raise UpstreamServiceUnavailable(service)

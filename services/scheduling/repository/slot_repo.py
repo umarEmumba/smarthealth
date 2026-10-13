@@ -1,4 +1,5 @@
-"""Retry-safe slot hold steps: hold, release, and the hold reaper (D-03, D-09).
+"""Slot steps: retry-safe hold/release/reaper (D-03, D-09) and, since plan
+02-04, idempotent generation, search and admin withdrawal (D-01).
 
 Each step is ONE conditional `UPDATE ... WHERE <expected state> RETURNING`, so
 concurrent callers are arbitrated by Postgres row locks and a Temporal activity
@@ -17,12 +18,16 @@ the transaction.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.scheduling.domain.enums import FailureReason
+from services.scheduling.domain.enums import FailureReason, SlotStatus
+from services.scheduling.domain.slot_generation import CandidateSlot
 from services.scheduling.repository.appointment_repo import mark_appointment_failed
+from services.scheduling.repository.models import ProviderSlot
 
 DEFAULT_HOLD_TTL_MINUTES = 10
 REAPER_ACTOR = "system:reaper"
@@ -144,3 +149,82 @@ async def expire_holds(db: AsyncSession, *, limit: int = 100) -> list[tuple[uuid
             )
         released.append((slot_id, appointment_id))
     return released
+
+
+# --- plan 02-04: slot generation, search and withdrawal (D-01) ---------------
+
+# `ON CONFLICT DO NOTHING` with NO conflict target skips a row that trips either
+# `uq_provider_slots_provider_start` (same provider + start, whatever its status,
+# so a held, booked or withdrawn slot is never re-inserted or touched) or the
+# `ex_provider_slots_no_overlap` exclusion constraint (research Pattern 6).
+_INSERT_GENERATED_SQL = text(
+    """
+    INSERT INTO provider_slots (provider_id, clinic_id, department_id, start_time, end_time)
+    SELECT :p, :c, g.department_id, g.start_time, g.end_time
+      FROM unnest(
+               CAST(:departments AS uuid[]),
+               CAST(:starts AS timestamptz[]),
+               CAST(:ends AS timestamptz[])
+           ) AS g(department_id, start_time, end_time)
+    ON CONFLICT DO NOTHING
+    RETURNING id
+    """
+)
+
+
+async def insert_generated_slots(
+    db: AsyncSession,
+    *,
+    provider_id: uuid.UUID,
+    clinic_id: uuid.UUID,
+    candidates: Sequence[CandidateSlot],
+) -> int:
+    """Insert the candidates as `available` slots; return how many were new.
+
+    Idempotent: re-running over the same range inserts nothing, and an existing
+    slot is never modified. Flushes through the caller's session; the caller
+    commits.
+    """
+    if not candidates:
+        return 0
+    rows = (
+        await db.execute(
+            _INSERT_GENERATED_SQL,
+            {
+                "p": provider_id,
+                "c": clinic_id,
+                "departments": [c.department_id for c in candidates],
+                "starts": [c.start for c in candidates],
+                "ends": [c.end for c in candidates],
+            },
+        )
+    ).all()
+    return len(rows)
+
+
+async def search_slots(
+    db: AsyncSession,
+    *,
+    provider_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+    status: str | None = SlotStatus.AVAILABLE.value,
+) -> list[ProviderSlot]:
+    """The provider's slots starting in `[start, end)`, ordered by start;
+    `status=None` returns every status."""
+    query = (
+        select(ProviderSlot)
+        .where(
+            ProviderSlot.provider_id == provider_id,
+            ProviderSlot.start_time >= start,
+            ProviderSlot.start_time < end,
+        )
+        .order_by(ProviderSlot.start_time)
+    )
+    if status is not None:
+        query = query.where(ProviderSlot.status == status)
+    return list((await db.scalars(query)).all())
+
+
+async def get_slot(db: AsyncSession, *, slot_id: uuid.UUID) -> ProviderSlot | None:
+    return await db.get(ProviderSlot, slot_id)

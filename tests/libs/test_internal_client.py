@@ -75,6 +75,19 @@ async def test_no_idempotency_header_when_key_absent() -> None:
     assert "idempotency-key" not in recorder.requests[0].headers
 
 
+async def test_allow_list_accepts_an_array_body_for_collection_reads() -> None:
+    recorder = _Recorder(lambda r: httpx.Response(200, json=[{"id": "t1"}]))
+    async with _client(recorder) as http:
+        body = await internal_request(
+            http, "GET", URL, token="t", service="provider", allow_list=True
+        )
+        with pytest.raises(UpstreamServiceUnavailable):
+            # Without the opt-in an array is still an untrustworthy answer.
+            await internal_request(http, "GET", URL, token="t", service="provider")
+    assert body == [{"id": "t1"}]
+    assert len(recorder.requests) == 2
+
+
 async def test_patch_204_returns_none() -> None:
     recorder = _Recorder(lambda r: httpx.Response(204))
     async with _client(recorder) as http:

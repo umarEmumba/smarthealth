@@ -1,5 +1,6 @@
 """Scheduling service settings: the shared infra settings plus Scheduling's OWN
-database URL.
+database URL, its service-client secret and the slot-generation bounds
+(plan 02-04, D-01).
 
 `database_url` is bound to `SCHEDULING_DATABASE_URL` only — there is
 deliberately no bare `DATABASE_URL` (it would silently point a service at
@@ -19,6 +20,21 @@ class SchedulingSettings(SharedSettings):
     database_url: str = Field(
         default="postgresql+asyncpg://scheduling_svc:changeme-scheduling-local-dev-only@localhost:5433/scheduling_db",
         validation_alias="SCHEDULING_DATABASE_URL",
+    )
+    # Path to Scheduling's client-credentials secret (plan 02-01). Read lazily
+    # on first use by `api.deps.get_service_tokens`, never at import, and never
+    # logged; an unreadable file makes the dependency fail closed (503).
+    client_secret_path: str = Field(
+        default="infra/secrets/service-clients/scheduling.secret",
+        validation_alias="SCHEDULING_CLIENT_SECRET_PATH",
+    )
+    # D-01: slots are materialized on demand over a rolling horizon. A search
+    # extends generation only up to now + horizon, and no generate/search range
+    # may be wider than `slot_max_range_days` (a GET can trigger a bounded write,
+    # research Pattern 6 / T-02-17).
+    slot_horizon_days: int = Field(default=28, gt=0, validation_alias="SCHEDULING_SLOT_HORIZON_DAYS")
+    slot_max_range_days: int = Field(
+        default=31, gt=0, validation_alias="SCHEDULING_SLOT_MAX_RANGE_DAYS"
     )
 
 
