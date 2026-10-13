@@ -24,7 +24,13 @@ from services.visit.domain.contracts import VisitCompletedResult, visit_complete
 from services.visit.downstream import sweep_unstarted
 from tests.conftest import harness_apps
 from tests.scheduling.seed import auth
-from tests.visit.conftest import VisitWorld, audit_count, check_in, confirmed_appointment
+from tests.visit.conftest import (
+    VisitWorld,
+    audit_count,
+    check_in,
+    confirmed_appointment,
+    history_rows,
+)
 
 
 async def _completed_visit(
@@ -60,6 +66,25 @@ async def _marker(visit_id: str) -> Any:
         async with engine.connect() as conn:
             return await conn.scalar(
                 text("SELECT downstream_started_at FROM visits WHERE id = :v"), {"v": visit_id}
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _finalized_rows(appointment_id: str) -> int:
+    """The number of finalize moves Billing recorded for the appointment."""
+    from services.billing.config import settings as billing_settings  # noqa: PLC0415
+
+    engine = create_async_engine(billing_settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            return await conn.scalar(
+                text(
+                    "SELECT count(*) FROM billing_status_history h "
+                    "JOIN billing_records r ON r.id = h.record_id "
+                    "WHERE r.appointment_id = :a AND h.to_status = 'finalized'"
+                ),
+                {"a": appointment_id},
             )
     finally:
         await engine.dispose()
@@ -163,3 +188,42 @@ async def test_lost_trigger_is_recovered_by_the_sweep_exactly_once(
     # Second sweep: this visit is no longer a candidate.
     await sweep_unstarted(factory, temporal_env.client, grace_seconds=30)
     assert await audit_count(visit["id"], "visit.billing_finalize_requested") == 1
+
+
+async def test_repeat_complete_with_null_marker_starts_workflow(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    visit_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """The first start was lost (Temporal down), so the marker is NULL; a
+    repeated complete is a no-op transition but retries the start, and the
+    workflow then finalizes billing exactly once."""
+    from tests.visit.conftest import _DownTemporal  # noqa: PLC0415
+
+    app = harness_apps()["visit"]
+    worker_client = app.state.temporal_client
+    app.state.temporal_client = _DownTemporal()  # Temporal down for the first completion only
+    try:
+        visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
+    finally:
+        app.state.temporal_client = worker_client
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "completed"
+    assert await _marker(visit["id"]) is None
+
+    repeat = await client.post(
+        f"/api/visits/{visit['id']}/complete", headers=auth(visit_world.world.provider)
+    )
+    assert repeat.status_code == 200, repeat.text
+    assert repeat.json()["status"] == "completed"
+
+    assert await _marker(visit["id"]) is not None
+    assert await _result(temporal_env, visit["id"]) == VisitCompletedResult(
+        outcome="completed", billing="finalized", followup="recorded", analytics="recorded"
+    )
+    assert await _billing_status(client, visit_world, appointment_id) == "finalized"
+    assert await _finalized_rows(appointment_id) == 1
+    assert [to for _, to in await history_rows(visit["id"]) if to == "completed"] == ["completed"]
+    assert await audit_count(visit["id"], "visit.complete") == 1
