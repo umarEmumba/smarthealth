@@ -19,7 +19,10 @@ Rules every activity follows:
   within the bounded policy.
 * State-changing steps commit first and write their audit entry LAST with
   `dedupe_key=f"{workflow_id}:{step}"` (one entry per step despite retries;
-  review WR-04).
+  review WR-04). The two Billing steps audit too (plan 02-07, D-09 "an audit
+  entry per step"): `billing_precheck` records its outcome (success/failure,
+  never the reference) and `void_billing` records an applied void; a void with
+  nothing to undo writes nothing.
 * No PHI anywhere: the coverage reference is read from the appointment row
   inside `billing_precheck` and sent only in the Billing request body; logs and
   audit carry ids, steps and outcomes.
@@ -38,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from libs.audit.writer import write_audit
+from libs.audit.writer import Outcome, write_audit
 from libs.auth.service_tokens import ServiceTokenProvider
 from libs.internal_client import InternalConflict, InternalNotFound, InternalRejected, internal_request
 from libs.observability.logging import get_logger
@@ -117,6 +120,7 @@ class SchedulingActivities:
         clinic_id: str | None,
         step: str,
         changed_fields: list[str] | None = None,
+        outcome: Outcome = "success",
     ) -> None:
         await write_audit(
             self._mongo,
@@ -126,7 +130,7 @@ class SchedulingActivities:
             entity_type=entity_type,
             entity_id=entity_id,
             clinic_id=clinic_id,
-            outcome="success",
+            outcome=outcome,
             changed_fields=changed_fields,
             dedupe_key=f"{_workflow_id()}:{step}",
         )
@@ -241,12 +245,27 @@ class SchedulingActivities:
                 outcome="refused",
                 error=type(exc).__name__,
             )
+            await self._audit_precheck(inp, verified=False)
             raise _business_error("BillingRejected", "billing pre-check rejected") from exc
 
         billing_status = (record or {}).get("status")
         log.info("booking.billing_precheck", appointment_id=inp.appointment_id, status=billing_status)
-        if billing_status != "verified":
+        verified = billing_status == "verified"
+        # Audit per saga step (D-09): the outcome, never the coverage reference.
+        await self._audit_precheck(inp, verified=verified)
+        if not verified:
             raise _business_error("BillingRejected", "billing pre-check rejected")
+
+    async def _audit_precheck(self, inp: BookingInput, *, verified: bool) -> None:
+        await self._audit(
+            action="billing.precheck",
+            entity_type="appointment",
+            entity_id=inp.appointment_id,
+            clinic_id=inp.clinic_id,
+            step="billing_precheck",
+            changed_fields=["billing_status"],
+            outcome="success" if verified else "failure",
+        )
 
     @activity.defn(name=ACT_NOTIFY)
     async def schedule_notification(self, inp: BookingInput) -> None:
@@ -350,6 +369,14 @@ class SchedulingActivities:
             )
             return
         log.info("booking.void_billing", appointment_id=inp.appointment_id, outcome="voided")
+        await self._audit(
+            action="billing.void",
+            entity_type="appointment",
+            entity_id=inp.appointment_id,
+            clinic_id=inp.clinic_id,
+            step="void_billing",
+            changed_fields=["billing_status"],
+        )
 
     @activity.defn(name=ACT_MARK_FAILED)
     async def mark_failed(self, inp: MarkFailedInput) -> None:
