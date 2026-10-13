@@ -14,7 +14,7 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from libs.temporal_policies import VISIT_TASK_QUEUE
+from libs.temporal_policies import NOTIFY_ACTIVITY, VISIT_TASK_QUEUE
 from services.visit.domain.contracts import (
     ACT_ANALYTICS_INTENT,
     ACT_FINALIZE_BILLING,
@@ -48,17 +48,27 @@ async def _run(env: WorkflowEnvironment, billing, followup, analytics) -> VisitC
         )
 
 
-def _stubs(calls: list[str], *, billing_error: Exception | None = None):
+def _stubs(
+    calls: list[str],
+    *,
+    billing_error: Exception | None = None,
+    billing_failures: int = 0,
+    followup_error: Exception | None = None,
+):
     @activity.defn(name=ACT_FINALIZE_BILLING)
     async def billing(inp: VisitCompletedInput) -> str:
         calls.append("billing")
         if billing_error is not None:
             raise billing_error
+        if calls.count("billing") <= billing_failures:
+            raise ApplicationError("billing unavailable", type="BillingUnavailable")
         return "finalized"
 
     @activity.defn(name=ACT_FOLLOWUP_INTENT)
     async def followup(inp: VisitCompletedInput) -> str:
         calls.append("followup")
+        if followup_error is not None:
+            raise followup_error
         return "recorded"
 
     @activity.defn(name=ACT_ANALYTICS_INTENT)
@@ -91,3 +101,34 @@ async def test_billing_business_failure_never_blocks_the_intents(
         analytics="recorded",
     )
     assert calls.count("billing") == 1  # non-retryable: no retry
+
+
+async def test_followup_failing_every_attempt_is_skipped_and_others_succeed(
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    calls: list[str] = []
+    error = ApplicationError("follow-up unavailable", type="FollowupUnavailable")
+    result = await _run(temporal_env, *_stubs(calls, followup_error=error))
+    assert result == VisitCompletedResult(
+        outcome="completed",
+        billing="finalized",
+        followup="skipped:FollowupUnavailable",
+        analytics="recorded",
+    )
+    # Retries back off 1 s then 2 s, well inside the 30 s schedule-to-close, so
+    # the attempt cap (not the timeout) ends the branch; time skipping makes it instant.
+    assert calls.count("followup") == NOTIFY_ACTIVITY["retry_policy"].maximum_attempts
+    assert calls.count("billing") == 1
+    assert calls.count("analytics") == 1
+
+
+async def test_billing_retryable_failures_are_absorbed(temporal_env: WorkflowEnvironment) -> None:
+    calls: list[str] = []
+    # COMPENSATION_ACTIVITY retries (up to 20 attempts) absorb transient Billing trouble.
+    result = await _run(temporal_env, *_stubs(calls, billing_failures=2))
+    assert result == VisitCompletedResult(
+        outcome="completed", billing="finalized", followup="recorded", analytics="recorded"
+    )
+    assert calls.count("billing") == 3
+    assert calls.count("followup") == 1
+    assert calls.count("analytics") == 1
