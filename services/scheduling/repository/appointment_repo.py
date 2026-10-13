@@ -298,6 +298,36 @@ async def mark_workflow_started(db: AsyncSession, *, appointment_id: uuid.UUID) 
     return marked is not None
 
 
+async def list_unstarted_pending(
+    db: AsyncSession, *, older_than_seconds: int, limit: int = 100
+) -> list[Appointment]:
+    """Pending appointments whose booking workflow was never started (plan
+    02-07, research G7 / Pitfall 4): `status = 'pending' AND
+    workflow_started_at IS NULL AND created_at < now() - older_than_seconds`,
+    oldest first, at most `limit`. Served by the partial index
+    `ix_appointments_pending_unstarted`.
+
+    No row lock is taken: the starter calls Temporal per row, and a duplicate
+    start is already a no-op (`start_once`, then the conditional
+    `mark_workflow_started`). The grace window keeps the starter away from
+    bookings the API is starting right now.
+    """
+    query = (
+        select(Appointment)
+        .where(
+            Appointment.status == AppointmentStatus.PENDING,
+            Appointment.workflow_started_at.is_(None),
+            Appointment.created_at
+            < text("now() - make_interval(secs => :grace)").bindparams(
+                grace=float(older_than_seconds)
+            ),
+        )
+        .order_by(Appointment.created_at)
+        .limit(limit)
+    )
+    return list((await db.scalars(query)).all())
+
+
 async def get_appointment(db: AsyncSession, appointment_id: uuid.UUID) -> Appointment | None:
     return await db.get(Appointment, appointment_id)
 

@@ -1,1 +1,4 @@
-"""Scheduling's Temporal activities (class-based, constructor-injected deps)."""
+"""Scheduling's Temporal activities (class-based, constructor-injected deps):
+`booking.SchedulingActivities` (the saga's steps) and
+`maintenance.MaintenanceActivities` (hold reaper and pending-booking starter,
+plan 02-07)."""

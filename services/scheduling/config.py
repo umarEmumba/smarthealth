@@ -43,5 +43,20 @@ class SchedulingSettings(SharedSettings):
     # never frees a slot under a live saga in normal operation.
     hold_ttl_minutes: int = Field(default=10, gt=0, validation_alias="SCHEDULING_HOLD_TTL_MINUTES")
 
+    # Plan 02-07 (D-03, research G7 / Pattern 8): Temporal Schedules registered
+    # by the worker. The hold reaper runs every `reaper_interval_seconds`; the
+    # pending-booking starter runs every `starter_interval_seconds` and only
+    # touches appointments older than `starter_grace_seconds`, so it never
+    # races the API's own start right after the accept commit.
+    reaper_interval_seconds: int = Field(
+        default=60, gt=0, validation_alias="SCHEDULING_REAPER_INTERVAL_SECONDS"
+    )
+    starter_interval_seconds: int = Field(
+        default=30, gt=0, validation_alias="SCHEDULING_STARTER_INTERVAL_SECONDS"
+    )
+    starter_grace_seconds: int = Field(
+        default=30, gt=0, validation_alias="SCHEDULING_STARTER_GRACE_SECONDS"
+    )
+
 
 settings = SchedulingSettings()

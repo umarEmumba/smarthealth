@@ -33,8 +33,16 @@ def contract_classes() -> list[type]:
     ]
 
 
+# Plain JSON scalars only: str (ids, outcomes, reasons) and int (counts,
+# plan 02-07 `MaintenanceResult.processed`).
+PLAIN_SCALARS = (str, int)
+
+
 def sample(cls: type) -> object:
-    values = {f.name: f"{f.name}-value" for f in dataclasses.fields(cls)}
+    hints = typing.get_type_hints(cls)
+    values = {
+        f.name: (7 if hints[f.name] is int else f"{f.name}-value") for f in dataclasses.fields(cls)
+    }
     return cls(**values)
 
 
@@ -53,8 +61,11 @@ async def test_every_contract_round_trips_through_the_default_converter(cls: typ
 
     assert decoded == original
     assert type(decoded) is cls
+    hints = typing.get_type_hints(cls)
     for field in dataclasses.fields(cls):
-        assert type(getattr(decoded, field.name)) is str
+        declared = hints[field.name]
+        expected = declared if declared in PLAIN_SCALARS else str
+        assert type(getattr(decoded, field.name)) is expected
 
 
 async def test_optional_reason_round_trips_as_none() -> None:
@@ -73,7 +84,9 @@ def test_no_contract_field_is_an_enum(cls: type) -> None:
             assert not (inspect.isclass(candidate) and issubclass(candidate, enum.Enum)), (
                 f"{cls.__name__}.{name} is an Enum"
             )
-            assert candidate in (str, type(None)), f"{cls.__name__}.{name} is not a plain str"
+            assert candidate in (*PLAIN_SCALARS, type(None)), (
+                f"{cls.__name__}.{name} is not a plain str/int"
+            )
 
 
 @pytest.mark.parametrize("cls", contract_classes(), ids=lambda c: c.__name__)
