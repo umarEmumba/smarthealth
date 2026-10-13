@@ -52,6 +52,7 @@ OWNED_TABLES: dict[str, set[str]] = {
         "appointments",
         "idempotency_keys",
         "appointment_status_history",
+        "waitlist_entries",
     },
     "billing": {"billing_records", "billing_status_history"},
 }

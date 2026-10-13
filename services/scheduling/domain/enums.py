@@ -61,3 +61,24 @@ class FailureReason:
     CONFIRM_LOST_HOLD = "ConfirmLostHold"
     ACTIVITY_TIMEOUT = "activity_timeout"
     ACTIVITY_FAILED = "activity_failed"
+
+
+class WaitlistStatus:
+    """String constants for `waitlist_entries.status` (plan 02-09, D-12).
+
+    A plain class of `str` attributes like `AppointmentStatus` (research
+    Pitfall 1). `waiting -> matched` is the claim (FOR UPDATE SKIP LOCKED);
+    a matched entry ends `booked`, `failed` (with a reason) or goes back to
+    `waiting` when its booking lost the slot race. `cancelled` is the
+    patient/staff withdrawal of a waiting entry.
+    """
+
+    WAITING = "waiting"
+    MATCHED = "matched"
+    BOOKED = "booked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    # The statuses covered by `uq_waitlist_active_patient_provider`.
+    ACTIVE = ("waiting", "matched")
+    ALL = ("waiting", "matched", "booked", "failed", "cancelled")

@@ -10,7 +10,8 @@ not share a sibling folder's conftest fixtures.
 * `scheduling_worker`  - a real `Worker` on `scheduling-tq` running every
                          Scheduling workflow (`services.scheduling.worker.
                          WORKFLOWS`) with `SchedulingActivities` (yielded),
-                         `AppointmentChangeActivities` (plan 02-08) and
+                         `AppointmentChangeActivities` (plan 02-08),
+                         `WaitlistActivities` (plan 02-09) and
                          `MaintenanceActivities` wired to
                          the in-process mesh (HTTP + service-token minting), the
                          real scheduling_db and the test Mongo client. While it
@@ -63,6 +64,7 @@ async def running_scheduling_worker(
     from services.scheduling.activities.booking import SchedulingActivities  # noqa: PLC0415
     from services.scheduling.activities.changes import AppointmentChangeActivities  # noqa: PLC0415
     from services.scheduling.activities.maintenance import MaintenanceActivities  # noqa: PLC0415
+    from services.scheduling.activities.waitlist import WaitlistActivities  # noqa: PLC0415
     from services.scheduling.config import settings  # noqa: PLC0415
     from services.scheduling.worker import WORKFLOWS  # noqa: PLC0415
 
@@ -76,6 +78,7 @@ async def running_scheduling_worker(
     activities = SchedulingActivities(session_factory, http, tokens, mongo)
     changes = AppointmentChangeActivities(session_factory, http, tokens, mongo)
     maintenance = MaintenanceActivities(session_factory, client, mongo)
+    waitlist = WaitlistActivities(session_factory, mongo)
 
     app = harness_apps()["scheduling"]
     previous = getattr(app.state, "temporal_client", None)
@@ -85,7 +88,7 @@ async def running_scheduling_worker(
             client,
             task_queue=SCHEDULING_TASK_QUEUE,
             workflows=WORKFLOWS,
-            activities=[*activities.all(), *changes.all(), *maintenance.all()],
+            activities=[*activities.all(), *changes.all(), *waitlist.all(), *maintenance.all()],
         ):
             yield activities
     finally:

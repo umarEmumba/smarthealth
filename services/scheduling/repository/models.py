@@ -228,3 +228,66 @@ class AppointmentStatusHistory(SchedulingBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+class WaitlistEntry(SchedulingBase):
+    """A patient waiting for a provider's slot (plan 02-09; SCHED-07, D-12).
+
+    Mirrors migration `scheduling_0003`, its source of truth: the
+    one-active-entry partial unique index, the FIFO partial index and the
+    status/window CHECKs. `coverage_ref` is an opaque billing reference copied
+    onto the auto-booked appointment; it is never returned, logged or put in
+    workflow I/O.
+    """
+
+    __tablename__ = "waitlist_entries"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    clinic_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    provider_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    patient_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    coverage_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'waiting'"))
+    failure_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    matched_appointment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    booked_appointment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_by: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('waiting','matched','booked','failed','cancelled')",
+            name="ck_waitlist_entries_status_valid",
+        ),
+        CheckConstraint(
+            "window_start IS NULL OR window_end IS NULL OR window_end > window_start",
+            name="ck_waitlist_entries_window_order",
+        ),
+        Index(
+            "uq_waitlist_active_patient_provider",
+            "patient_id",
+            "provider_id",
+            unique=True,
+            postgresql_where=text("status IN ('waiting','matched')"),
+        ),
+        Index(
+            "ix_waitlist_fifo",
+            "provider_id",
+            "created_at",
+            "id",
+            postgresql_where=text("status = 'waiting'"),
+        ),
+        Index("ix_waitlist_clinic_status", "clinic_id", "status", "created_at"),
+    )

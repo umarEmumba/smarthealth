@@ -3,9 +3,9 @@
 A separate process from the API (same image, command override in Compose,
 plan 02-12). It polls `scheduling-tq`, runs `BookingWorkflow`, the maintenance
 workflows (`HoldReaperWorkflow`, `PendingBookingStarterWorkflow`, plan 02-07),
-`CancelWorkflow` and `RescheduleWorkflow` (plan 02-08), the
-`SchedulingActivities`, `AppointmentChangeActivities` and
-`MaintenanceActivities`, and authenticates every outgoing `/internal/*` call
+`CancelWorkflow` and `RescheduleWorkflow` (plan 02-08), `WaitlistAdvanceWorkflow`
+(plan 02-09), the `SchedulingActivities`, `AppointmentChangeActivities`,
+`WaitlistActivities` and `MaintenanceActivities`, and authenticates every outgoing `/internal/*` call
 with Scheduling's aud-scoped service tokens (D-06).
 
 Start-up: logging, audit indexes, then an EAGER Temporal connection retried
@@ -48,6 +48,7 @@ from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.activities.booking import SchedulingActivities
 from services.scheduling.activities.changes import AppointmentChangeActivities
 from services.scheduling.activities.maintenance import MaintenanceActivities
+from services.scheduling.activities.waitlist import WaitlistActivities
 from services.scheduling.config import settings
 from services.scheduling.schedules import ensure_schedules
 from services.scheduling.workflows.booking import BookingWorkflow
@@ -57,6 +58,7 @@ from services.scheduling.workflows.maintenance import (
     PendingBookingStarterWorkflow,
 )
 from services.scheduling.workflows.reschedule import RescheduleWorkflow
+from services.scheduling.workflows.waitlist_advance import WaitlistAdvanceWorkflow
 
 WORKFLOWS = [
     BookingWorkflow,
@@ -64,6 +66,7 @@ WORKFLOWS = [
     PendingBookingStarterWorkflow,
     CancelWorkflow,
     RescheduleWorkflow,
+    WaitlistAdvanceWorkflow,
 ]
 
 log = get_logger(__name__)
@@ -143,6 +146,7 @@ async def main() -> int:
     maintenance = MaintenanceActivities(
         get_session_factory(settings.database_url), client, get_mongo_client()
     )
+    waitlist = WaitlistActivities(get_session_factory(settings.database_url), get_mongo_client())
     await ensure_audit_indexes(get_mongo_client())
     try:
         await ensure_schedules(client)
@@ -156,7 +160,12 @@ async def main() -> int:
             client,
             task_queue=SCHEDULING_TASK_QUEUE,
             workflows=WORKFLOWS,
-            activities=[*activities.all(), *changes.all(), *maintenance.all()],
+            activities=[
+                *activities.all(),
+                *changes.all(),
+                *waitlist.all(),
+                *maintenance.all(),
+            ],
             graceful_shutdown_timeout=GRACEFUL_SHUTDOWN,
         ):
             log.info("worker.started", task_queue=SCHEDULING_TASK_QUEUE)

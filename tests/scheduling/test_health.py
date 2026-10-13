@@ -27,6 +27,7 @@ def test_scheduling_owns_its_tables_without_a_cross_service_foreign_key() -> Non
         "appointments",
         "idempotency_keys",
         "appointment_status_history",
+        "waitlist_entries",  # plan 02-09
     }
     assert not ProviderSlot.__table__.c.provider_id.foreign_keys
     # Only intra-service foreign keys: provider/patient/clinic ids are plain UUIDs.

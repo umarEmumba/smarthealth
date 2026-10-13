@@ -126,4 +126,8 @@ async def cleanup_scheduling_rows(engine: AsyncEngine, provider_ids: Iterable[uu
             params,
         )
         await conn.execute(text("DELETE FROM appointments WHERE provider_id = ANY(:ids)"), params)
+        # Plan 02-09: waitlist entries are scoped by provider too.
+        await conn.execute(
+            text("DELETE FROM waitlist_entries WHERE provider_id = ANY(:ids)"), params
+        )
         await conn.execute(text("DELETE FROM provider_slots WHERE provider_id = ANY(:ids)"), params)

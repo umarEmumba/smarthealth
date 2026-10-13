@@ -9,6 +9,10 @@ reads the clock and its history stays deterministic.
                               (one local transaction)
     2. billing_cancel         refund_pending -> refunded, or no_refund
     3. schedule_notification  best effort (D-11), `booking_cancelled`
+    4. waitlist advance       (plan 02-09, D-12/D-13) start
+                              `WaitlistAdvanceWorkflow` for the freed slot as a
+                              child with `ParentClosePolicy.ABANDON`; not
+                              awaited, the cancel result is unchanged
 
 Cancellation is forward-only: once step 1 commits there is nothing to
 compensate. Billing must then catch up, so step 2 runs on the long
@@ -20,7 +24,10 @@ compensation budget; if it still does not land, the workflow records
 
 Changing this code once histories exist (D-19): guard any change to the
 command sequence with `workflow.patched(...)` and prove it with the replay test
-(`tests/workflows/histories/cancel_refund_v1.json`).
+(`tests/workflows/histories/cancel_refund_v1.json`). Step 4 is the first such
+change: it runs only behind the `WAITLIST_PATCH_ID` patch marker, so a cancel
+recorded before plan 02-09 (no marker in its history) replays without it, and
+`cancel_waitlist_v2.json` proves the patched path.
 """
 
 from __future__ import annotations
@@ -29,7 +36,12 @@ from temporalio import workflow
 from temporalio.exceptions import ActivityError, ApplicationError, TimeoutError
 
 with workflow.unsafe.imports_passed_through():
-    from libs.temporal_policies import COMPENSATION_ACTIVITY, FORWARD_ACTIVITY, NOTIFY_ACTIVITY
+    from libs.temporal_policies import (
+        COMPENSATION_ACTIVITY,
+        FORWARD_ACTIVITY,
+        NOTIFY_ACTIVITY,
+        SCHEDULING_TASK_QUEUE,
+    )
     from services.scheduling.domain.contracts import (
         ACT_BILLING_CANCEL,
         ACT_CANCEL_APPOINTMENT,
@@ -40,10 +52,14 @@ with workflow.unsafe.imports_passed_through():
         NOTIFY_CANCELLED,
         OUTCOME_CANCELLED,
         OUTCOME_FAILED,
+        WAITLIST_ADVANCE_WORKFLOW,
+        WAITLIST_PATCH_ID,
         CancelInput,
         ChangeOutcomeInput,
         ChangeResult,
         NotifyInput,
+        WaitlistAdvanceInput,
+        waitlist_advance_workflow_id,
     )
 
 
@@ -62,6 +78,20 @@ async def record_outcome(inp: ChangeOutcomeInput) -> None:
         await workflow.execute_activity(ACT_RECORD_OUTCOME, inp, **COMPENSATION_ACTIVITY)
     except ActivityError as err:
         workflow.logger.error("change.record_outcome_failed reason=%s", failure_reason(err))
+
+
+async def start_waitlist_advance(slot_id: str, clinic_id: str) -> None:
+    """Start the waitlist advance for a freed slot (plan 02-09) as an
+    ABANDONed child: it outlives this workflow and is never awaited. Its id is
+    derived from this workflow's id, so a duplicate start is impossible."""
+    source = workflow.info().workflow_id
+    await workflow.start_child_workflow(
+        WAITLIST_ADVANCE_WORKFLOW,
+        WaitlistAdvanceInput(slot_id=slot_id, clinic_id=clinic_id, source_workflow_id=source),
+        id=waitlist_advance_workflow_id(source),
+        task_queue=SCHEDULING_TASK_QUEUE,
+        parent_close_policy=workflow.ParentClosePolicy.ABANDON,
+    )
 
 
 async def notify(inp: NotifyInput) -> None:
@@ -113,6 +143,11 @@ class CancelWorkflow:
                 notification_type=NOTIFY_CANCELLED,
             )
         )
+        # Reached only when step 1 reported "cancelled" or "already" (a refusal
+        # returned above); "already" is a retried activity reporting the
+        # cancellation it made itself.
+        if workflow.patched(WAITLIST_PATCH_ID):
+            await start_waitlist_advance(inp.slot_id, inp.clinic_id)
         if not billing_done:
             return ChangeResult(outcome=OUTCOME_CANCELLED, reason=BILLING_PENDING)
         return ChangeResult(outcome=OUTCOME_CANCELLED)

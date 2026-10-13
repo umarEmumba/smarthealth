@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SlotGenerateRequest(BaseModel):
@@ -99,3 +99,51 @@ class ChangeAccepted(BaseModel):
     status_url: str
     # "cancel" or "reschedule"
     operation: str
+
+
+# --- plan 02-09: waitlist -----------------------------------------------------
+
+
+class WaitlistCreate(BaseModel):
+    provider_id: uuid.UUID
+    # Staff must name the patient; a PATIENT joins for themselves (resolved
+    # from their login) and may only repeat their own id here.
+    patient_id: uuid.UUID | None = None
+    # Optional window (tz-aware); NULL ends are open. The auto-booked slot
+    # must lie entirely inside it.
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    # Opaque billing reference for the auto-booking: stored, never echoed
+    # back, logged, audited or put in workflow I/O.
+    coverage_ref: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def _window_is_ordered(self) -> "WaitlistCreate":
+        for bound in (self.window_start, self.window_end):
+            if bound is not None and bound.tzinfo is None:
+                raise ValueError("window_start and window_end must include a UTC offset")
+        if (
+            self.window_start is not None
+            and self.window_end is not None
+            and self.window_end <= self.window_start
+        ):
+            raise ValueError("window_end must be after window_start")
+        return self
+
+
+class WaitlistEntryOut(BaseModel):
+    """Ids, window and statuses only: never the coverage reference."""
+
+    id: uuid.UUID
+    clinic_id: uuid.UUID
+    provider_id: uuid.UUID
+    patient_id: uuid.UUID
+    window_start: datetime | None
+    window_end: datetime | None
+    status: str
+    failure_reason: str | None
+    matched_appointment_id: uuid.UUID | None
+    booked_appointment_id: uuid.UUID | None
+    attempts: int
+    created_at: datetime
+    updated_at: datetime

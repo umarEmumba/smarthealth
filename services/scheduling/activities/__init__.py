@@ -2,4 +2,5 @@
 `booking.SchedulingActivities` (the saga's steps) and
 `maintenance.MaintenanceActivities` (hold reaper and pending-booking starter,
 plan 02-07) and `changes.AppointmentChangeActivities` (cancel and reschedule,
-plan 02-08)."""
+plan 02-08) and `waitlist.WaitlistActivities` (waitlist claim/resolve,
+plan 02-09)."""

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,6 +100,7 @@ async def accept_booking(
     slot_end: datetime,
     coverage_ref: str | None,
     created_by: uuid.UUID,
+    workflow_started: bool = False,
 ) -> AcceptResult:
     """Claim the idempotency key, then insert the `pending` appointment, in the
     caller's transaction (research Pattern 1).
@@ -112,6 +113,12 @@ async def accept_booking(
     On `SlotTaken`/`PatientOverlap` the transaction is aborted (no SAVEPOINT is
     used), so the caller MUST roll back; that also discards the key claim, so a
     losing request leaves no idempotency row behind and may be retried.
+
+    `workflow_started=True` (plan 02-09, the waitlist claim) sets
+    `workflow_started_at = now()` on the inserted row in this same
+    transaction: the caller (a parent workflow) guarantees the booking saga is
+    started as its child, so the pending-booking starter (plan 02-07) must
+    never pick the row up and race that child start.
     """
     owner = await claim_idempotency_key(
         db,
@@ -141,6 +148,7 @@ async def accept_booking(
             status=AppointmentStatus.PENDING,
             coverage_ref=coverage_ref,
             created_by=created_by,
+            workflow_started_at=func.now() if workflow_started else None,
         )
     )
     db.add(
