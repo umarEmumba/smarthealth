@@ -13,6 +13,11 @@ coverage reference or token (the coverage reference stays in the appointment
 row), and the recorder strips stack traces (they hold local source lines and
 paths, and replay does not need them). A test re-checks that on every run.
 
+Plan 02-08 adds `cancel_refund_v1.json` (CancelWorkflow, refund before the
+cutoff) and `reschedule_v1.json` (RescheduleWorkflow, successful swap), captured
+the same way from the gateway tracer scenarios. Plan 02-09 replays them to
+prove its `workflow.patched` change is backward compatible.
+
 Re-record (only for a deliberate, versioned change; add `_v2` files and keep
 the old ones replaying):
     SMARTHEALTH_RECORD_HISTORIES=1 pytest tests/workflows/test_replay.py -k record
@@ -39,15 +44,25 @@ from services.scheduling.domain.contracts import (
     BOOKING_WORKFLOW,
     BookingInput,
     BookingResult,
+    ChangeResult,
     booking_workflow_id,
+    cancel_workflow_id,
+    reschedule_workflow_id,
 )
 from services.scheduling.workflows.booking import BookingWorkflow
+from services.scheduling.workflows.cancel import CancelWorkflow
+from services.scheduling.workflows.reschedule import RescheduleWorkflow
 from tests.scheduling.seed import World, auth
 
 HISTORIES = Path(__file__).parent / "histories"
 FIXTURES = {
     "booking_confirmed_v1.json": "confirmed",
     "booking_billing_rejected_v1.json": "failed",
+}
+# Plan 02-08: cancel / reschedule histories and the workflow each replays against.
+CHANGE_FIXTURES = {
+    "cancel_refund_v1.json": CancelWorkflow,
+    "reschedule_v1.json": RescheduleWorkflow,
 }
 FORBIDDEN = ("coverage", "Bearer", "DENY-")
 
@@ -64,6 +79,20 @@ async def test_recorded_booking_history_replays_against_current_code(name: str) 
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))
 def test_history_fixtures_carry_no_coverage_token_or_failing_prefix(name: str) -> None:
+    raw = (HISTORIES / name).read_text()
+    for forbidden in FORBIDDEN:
+        assert forbidden not in raw, f"{name} contains {forbidden!r}"
+    assert "stackTrace" not in raw
+
+
+@pytest.mark.parametrize("name", sorted(CHANGE_FIXTURES))
+async def test_recorded_change_history_replays_against_current_code(name: str) -> None:
+    result = await Replayer(workflows=[CHANGE_FIXTURES[name]]).replay_workflow(_load(name))
+    assert result.replay_failure is None
+
+
+@pytest.mark.parametrize("name", sorted(CHANGE_FIXTURES))
+def test_change_history_fixtures_carry_no_coverage_or_token(name: str) -> None:
     raw = (HISTORIES / name).read_text()
     for forbidden in FORBIDDEN:
         assert forbidden not in raw, f"{name} contains {forbidden!r}"
@@ -148,3 +177,47 @@ async def test_record_booking_histories(
         history = await handle.fetch_history()
         document = _scrub(history.to_json_dict())
         (HISTORIES / name).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("SMARTHEALTH_RECORD_HISTORIES") != "1",
+    reason="re-records the committed history fixtures; opt in with SMARTHEALTH_RECORD_HISTORIES=1",
+)
+async def test_record_change_histories(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """Plan 02-08: one cancel (refund, before the cutoff) and one successful
+    reschedule, driven through the gateway like the tracer tests."""
+    from tests.scheduling.test_cancel import book_confirmed, day_slots  # noqa: PLC0415
+
+    world = booking_world
+    slots = await day_slots(client, world)
+    HISTORIES.mkdir(exist_ok=True)
+
+    async def save(workflow_id: str, name: str, outcome: str) -> None:
+        handle = temporal_env.client.get_workflow_handle(workflow_id, result_type=ChangeResult)
+        async with temporal_env.time_skipping_unlocked():
+            assert (await handle.result()).outcome == outcome
+        history = await handle.fetch_history()
+        document = _scrub(history.to_json_dict())
+        (HISTORIES / name).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+
+    cancelled = await book_confirmed(client, temporal_env, world, slots[0]["id"])
+    resp = await client.post(
+        f"/api/appointments/{cancelled['id']}/cancel", json={}, headers=auth(world.front_desk)
+    )
+    assert resp.status_code == 202, resp.text
+    await save(cancel_workflow_id(cancelled["id"], cancelled["version"]), "cancel_refund_v1.json", "cancelled")
+
+    moved = await book_confirmed(client, temporal_env, world, slots[2]["id"])
+    resp = await client.post(
+        f"/api/appointments/{moved['id']}/reschedule",
+        json={"new_slot_id": slots[3]["id"]},
+        headers=auth(world.front_desk),
+    )
+    assert resp.status_code == 202, resp.text
+    await save(reschedule_workflow_id(moved["id"], moved["version"]), "reschedule_v1.json", "rescheduled")

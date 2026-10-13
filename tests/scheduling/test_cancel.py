@@ -18,6 +18,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import WorkflowEnvironment
 
 from services.scheduling.domain.contracts import (
@@ -26,8 +27,9 @@ from services.scheduling.domain.contracts import (
     booking_workflow_id,
     cancel_workflow_id,
 )
-from tests.scheduling.conftest import cleanup_scheduling_rows, seed_slot
-from tests.scheduling.seed import World, auth
+from tests.scheduling.conftest import seed_slot
+from tests.conftest import unique_email
+from tests.scheduling.seed import PASSWORD, World, auth
 
 pytestmark = pytest.mark.integration
 
@@ -194,3 +196,218 @@ async def test_tracer_cancel_frees_the_slot_and_refunds(
     moves, billing_status = await billing_moves(client, world, appointment_id)
     assert billing_status == "refunded"
     assert [m[:2] for m in moves[-2:]] == [("verified", "refund_pending"), ("refund_pending", "refunded")]
+
+
+# --- Task 3: cutoff, waiver, no-op and refusals -------------------------------------
+
+
+def inside_cutoff_start(world: World) -> datetime:
+    """About two hours from now, moved past the seeded 09:00-12:00 local window
+    when it would overlap a generated slot (still well inside 24 hours)."""
+    start = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(second=0, microsecond=0)
+    local = start.astimezone(world.tz)
+    window_start = local.replace(hour=9, minute=0)
+    window_end = local.replace(hour=12, minute=0)
+    if window_start - timedelta(minutes=30) < local < window_end:
+        start = window_end.astimezone(timezone.utc)
+    return start
+
+
+async def confirmed_inside_cutoff(
+    client: AsyncClient, env: WorkflowEnvironment, world: World, engine: AsyncEngine
+) -> dict[str, Any]:
+    slot_id = await seed_slot(
+        engine,
+        provider_id=world.provider_id,
+        start=inside_cutoff_start(world),
+        clinic_id=world.clinic_id,
+        department_id=world.department_id,
+    )
+    return await book_confirmed(client, env, world, str(slot_id))
+
+
+async def test_cancel_inside_the_cutoff_is_no_refund(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    temporal_env: WorkflowEnvironment,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    world = booking_world
+    appointment = await confirmed_inside_cutoff(
+        client, temporal_env, world, committed_scheduling_engine
+    )
+
+    resp = await cancel(client, world.patient, appointment["id"])
+
+    assert resp.status_code == 202, resp.text
+    result = await change_result(
+        temporal_env, cancel_workflow_id(appointment["id"], appointment["version"])
+    )
+    assert result.outcome == "cancelled"
+    moves, billing_status = await billing_moves(client, world, appointment["id"])
+    assert billing_status == "no_refund"
+    assert [m[:2] for m in moves[-1:]] == [("verified", "no_refund")]
+
+
+async def test_staff_waiver_inside_the_cutoff_refunds(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    temporal_env: WorkflowEnvironment,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    world = booking_world
+    appointment = await confirmed_inside_cutoff(
+        client, temporal_env, world, committed_scheduling_engine
+    )
+
+    resp = await cancel(client, world.front_desk, appointment["id"], {"waive_cutoff": True})
+
+    assert resp.status_code == 202, resp.text
+    result = await change_result(
+        temporal_env, cancel_workflow_id(appointment["id"], appointment["version"])
+    )
+    assert result.outcome == "cancelled"
+    moves, billing_status = await billing_moves(client, world, appointment["id"])
+    assert billing_status == "refunded"
+    assert [m[:2] for m in moves[-2:]] == [("verified", "refund_pending"), ("refund_pending", "refunded")]
+
+
+async def test_patient_cannot_waive_the_cutoff(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    world = booking_world
+    slot = (await day_slots(client, world))[0]
+    appointment = await book_confirmed(client, temporal_env, world, slot["id"])
+
+    resp = await cancel(client, world.patient, appointment["id"], {"waive_cutoff": True})
+
+    assert resp.status_code == 403, resp.text
+    assert (await get_appointment(client, world, appointment["id"]))["status"] == "confirmed"
+
+
+async def test_cancel_twice_is_a_no_op(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    world = booking_world
+    slot = (await day_slots(client, world))[0]
+    appointment = await book_confirmed(client, temporal_env, world, slot["id"])
+    appointment_id = appointment["id"]
+
+    first = await cancel(client, world.front_desk, appointment_id)
+    assert first.status_code == 202, first.text
+    await change_result(temporal_env, cancel_workflow_id(appointment_id, appointment["version"]))
+    second = await cancel(client, world.front_desk, appointment_id)
+
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "cancelled"
+    assert second.json()["operation"] == "cancel"
+    # No second cancel workflow (the cancelled appointment's next version).
+    with pytest.raises(RPCError) as exc:
+        await temporal_env.client.get_workflow_handle(
+            cancel_workflow_id(appointment_id, appointment["version"] + 1)
+        ).describe()
+    assert exc.value.status == RPCStatusCode.NOT_FOUND
+    after = await get_appointment(client, world, appointment_id)
+    assert [(h["from_status"], h["to_status"]) for h in after["history"]].count(
+        ("confirmed", "cancelled")
+    ) == 1
+    moves, billing_status = await billing_moves(client, world, appointment_id)
+    assert billing_status == "refunded"
+    assert [m[1] for m in moves].count("refund_pending") == 1
+    assert [m[1] for m in moves].count("refunded") == 1
+
+
+async def test_cancel_while_pending_is_booking_in_progress(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    world = booking_world
+    appointment_id, _ = await insert_appointment(
+        committed_scheduling_engine,
+        booking_world,
+        status="pending",
+        start=datetime.now(timezone.utc) + timedelta(days=10),
+    )
+
+    resp = await cancel(client, world.front_desk, appointment_id)
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "booking in progress"
+
+
+async def test_cancel_of_a_failed_booking_is_refused(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    world = booking_world
+    appointment_id, _ = await insert_appointment(
+        committed_scheduling_engine,
+        world,
+        status="failed",
+        start=datetime.now(timezone.utc) + timedelta(days=10),
+    )
+
+    resp = await cancel(client, world.front_desk, appointment_id)
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "appointment not cancellable"
+
+
+async def test_cancel_after_the_slot_started_is_refused(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    world = booking_world
+    appointment_id, slot_id = await insert_appointment(
+        committed_scheduling_engine,
+        world,
+        status="confirmed",
+        start=datetime.now(timezone.utc) - timedelta(days=3),
+        slot_status="booked",
+    )
+
+    resp = await cancel(client, world.front_desk, appointment_id, {"waive_cutoff": True})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "appointment already started"
+    assert (await get_appointment(client, world, appointment_id))["status"] == "confirmed"
+
+
+async def test_another_patients_appointment_is_not_found(
+    client: AsyncClient,
+    booking_world: World,
+    scheduling_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    world = booking_world
+    slot = (await day_slots(client, world))[0]
+    appointment = await book_confirmed(client, temporal_env, world, slot["id"])
+    email = unique_email("other-patient")
+    registered = await client.post(
+        "/api/auth/register",
+        json={"email": email, "password": PASSWORD, "clinic_id": str(world.clinic_id)},
+    )
+    assert registered.status_code == 201, registered.text
+    login = await client.post("/api/auth/login", json={"email": email, "password": PASSWORD})
+    assert login.status_code == 200, login.text
+
+    resp = await cancel(client, login.json(), appointment["id"])
+    missing = await cancel(client, login.json(), str(uuid.uuid4()))
+
+    assert resp.status_code == 404, resp.text
+    assert resp.json() == missing.json()
+    assert (await get_appointment(client, world, appointment["id"]))["status"] == "confirmed"
