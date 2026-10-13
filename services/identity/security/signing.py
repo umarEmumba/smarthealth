@@ -67,18 +67,21 @@ def create_refresh_token(user_id: str) -> tuple[str, str]:
     return _encode(payload), jti
 
 
-def create_service_token(service_name: str) -> str:
+def create_service_token(service_name: str, *, audience: str) -> str:
     """Issue a short-lived service token for an internal call with NO user context.
 
-    Claims: `sub=service:<name>`, `type=service`, `jti`, `iat`, `exp` (default 60 s,
+    Claims: `sub=service:<name>`, `aud=<audience>` (the ONE service the token may be
+    presented to, D-06), `type=service`, `jti`, `iat`, `exp` (default 60 s,
     `service_token_expire_seconds`) — no role, no clinic. Only `require_internal_caller`
-    accepts this type; `get_current_user` accepts access tokens only, so every public
-    route rejects it. It is attached to Identity's own outgoing reference checks and is
-    never returned to any client.
+    accepts this type, and only when `aud` names the receiving service;
+    `get_current_user` accepts access tokens only, so every public route rejects it.
+    Identity attaches one to its own outgoing reference checks and hands others out
+    only through the client-credentials mint (`POST /internal/service-tokens`).
     """
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": f"service:{service_name}",
+        "aud": audience,
         "type": SERVICE_TOKEN_TYPE,
         "jti": str(uuid.uuid4()),
         "iat": now,

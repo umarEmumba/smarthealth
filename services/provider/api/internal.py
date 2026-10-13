@@ -8,9 +8,9 @@ since that column can no longer be a foreign key across the service boundary:
 Design rules:
   * Not routed by the gateway (it has no `/internal` prefix) and excluded from
     OpenAPI (`include_in_schema=False`).
-  * Authenticated callers only: ADMIN user tokens, or a service token
-    (`require_internal_caller` lets service callers through; the role allowlist
-    applies to user callers only). Any other role is 403, no token is 401.
+  * Authenticated callers only: ADMIN user tokens, or a Scheduling/Visit service
+    token whose `aud` is `provider` (`require_internal_caller`, D-06). Any other
+    role or service is 403; no token, or a service token for another audience, is 401.
   * INACTIVE providers are REPORTED (`is_active: false`), never hidden: the
     caller decides what "inactive" means for it.
   * An unknown id is the same 404 for every caller. The answer carries ids and a
@@ -47,7 +47,9 @@ class ProviderRef(BaseModel):
 @router.get("/providers/{provider_id}", response_model=ProviderRef)
 async def lookup_provider(
     provider_id: uuid.UUID,
-    caller: InternalCaller = Depends(require_internal_caller(Role.ADMIN)),
+    caller: InternalCaller = Depends(
+        require_internal_caller(Role.ADMIN, audience="provider", allowed_services=frozenset({"scheduling", "visit"}))
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> ProviderRef:
     provider = await provider_repo.get_provider(db, provider_id)

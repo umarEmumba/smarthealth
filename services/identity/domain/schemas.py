@@ -9,6 +9,7 @@ remain readable at reference commit 7ce4490.
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -81,3 +82,15 @@ class UserOut(BaseModel):
     email: EmailStr
     role: Role
     clinic_id: uuid.UUID | None = None
+
+
+class ServiceTokenRequest(BaseModel):
+    """Body of `POST /internal/service-tokens`: the ONE service the token is for."""
+
+    audience: str = Field(min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9_-]*$")
+
+
+class ServiceTokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["Bearer"]
+    expires_in: int

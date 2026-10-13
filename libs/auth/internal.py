@@ -6,16 +6,24 @@ caller's access token (the callee re-applies RBAC and clinic scope itself).
 They are not routed by the gateway at all; this module is the in-service half
 of that isolation.
 
-`require_internal_caller(*allowed_roles)` verifies the bearer token locally
-(RS256 via the app's key resolver, never a call to Identity), checks the shared
-Redis denylist, and enforces a per-endpoint role allowlist. It accepts a
-forwarded user ACCESS token or a SERVICE token (`INTERNAL_CALLER_TYPES`); the
-latter is used when a call has no user context (e.g. anonymous registration
-validating a clinic) and is signed by Identity with `type=service` and
-`sub=service:<name>`. `InternalCaller.kind` distinguishes the two; the role
-allowlist applies to user callers only (a service caller has no role). Public
-routes keep using `get_current_user`, which accepts access tokens only, so a
-service token can never authenticate a public request.
+`require_internal_caller(*allowed_roles, audience=..., allowed_services=...)`
+verifies the bearer token locally (RS256 via the app's key resolver, never a
+call to Identity), checks the shared Redis denylist, and enforces a per-endpoint
+allowlist. It accepts a forwarded user ACCESS token or a SERVICE token
+(`INTERNAL_CALLER_TYPES`); the latter is used when a call has no user context
+(anonymous registration validating a clinic, Temporal activities, D-06) and is
+signed by Identity with `type=service`, `sub=service:<name>` and `aud=<target>`.
+`InternalCaller.kind` distinguishes the two:
+
+  * user callers: the role allowlist applies (`allowed_roles`); user tokens carry
+    no `aud`, so they behave exactly as before.
+  * service callers (D-06, research G2, review WR-02): the token's `aud` MUST be
+    present and name `audience` (this service) — 401 otherwise — and the calling
+    service MUST be in the route's `allowed_services` — 403 otherwise. An empty
+    `allowed_services` means no service may call the route.
+
+Public routes keep using `get_current_user`, which accepts access tokens only,
+so a service token can never authenticate a public request.
 
 `clinic_scope_permits` is the clinic-scope rule: an out-of-scope target is
 treated by endpoints exactly like a missing one (same 404), so existence cannot
@@ -68,12 +76,29 @@ class InternalCaller:
     role: Role | None
     clinic_id: str | None
     raw_token: str
+    # Name after the `service:` prefix for service callers; None for user callers.
+    service_name: str | None = None
 
 
-def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCaller]:
-    """Dependency factory: an authenticated internal caller whose role is in
-    `allowed_roles` (401 unauthenticated/revoked, 403 wrong role, 503 when keys
-    or the denylist are unavailable — fail closed)."""
+def _audience_matches(aud: object, audience: str) -> bool:
+    if isinstance(aud, str):
+        return aud == audience
+    if isinstance(aud, list):
+        return audience in aud
+    return False
+
+
+def require_internal_caller(
+    *allowed_roles: Role,
+    audience: str,
+    allowed_services: frozenset[str] = frozenset(),
+) -> Callable[..., InternalCaller]:
+    """Dependency factory: an authenticated internal caller — a user whose role is
+    in `allowed_roles`, or a service named in `allowed_services` presenting a
+    token whose `aud` is `audience` (401 unauthenticated/revoked/wrong or missing
+    aud, 403 wrong role or unlisted service, 503 when keys or the denylist are
+    unavailable — fail closed)."""
+    allowed_services = frozenset(allowed_services)
 
     async def _dependency(
         credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
@@ -91,7 +116,11 @@ def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCalle
 
         try:
             claims = await decode_token(
-                token, expected_types=INTERNAL_CALLER_TYPES, resolver=resolver, http=http
+                token,
+                expected_types=INTERNAL_CALLER_TYPES,
+                resolver=resolver,
+                http=http,
+                audience=audience,
             )
         except TokenError as exc:
             raise HTTPException(
@@ -114,6 +143,10 @@ def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCalle
             role = None if is_service else Role(claims["role"])
             if is_service and not (isinstance(sub, str) and sub.startswith(SERVICE_SUBJECT_PREFIX)):
                 raise ValueError("service token subject must start with 'service:'")
+            # python-jose skips the audience check when `aud` is absent, so a
+            # service token must be proven to carry OUR audience here.
+            if is_service and not _audience_matches(claims.get("aud"), audience):
+                raise ValueError("service token audience does not name this service")
         except (KeyError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -138,8 +171,20 @@ def require_internal_caller(*allowed_roles: Role) -> Callable[..., InternalCalle
             )
 
         if is_service:
+            service_name = sub.removeprefix(SERVICE_SUBJECT_PREFIX)
+            if service_name not in allowed_services:
+                log.info("auth.internal_service_refused", service=service_name, audience=audience)
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="service not permitted for this operation",
+                )
             return InternalCaller(
-                kind="service", sub=sub, role=None, clinic_id=None, raw_token=token
+                kind="service",
+                sub=sub,
+                role=None,
+                clinic_id=None,
+                raw_token=token,
+                service_name=service_name,
             )
 
         if role not in allowed_roles:

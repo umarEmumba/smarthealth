@@ -61,6 +61,34 @@ def _ensure_test_signing_key() -> None:
 
 _ensure_test_signing_key()
 
+
+SERVICE_CLIENTS: tuple[str, ...] = ("scheduling", "visit", "billing")
+
+
+def _ensure_test_service_client_secrets() -> None:
+    """Give each non-Identity service client a throwaway secret file (plan 02-01)
+    unless the environment already supplies `SERVICE_CLIENT_SECRETS_DIR`.
+
+    Sets `SERVICE_CLIENT_SECRETS_DIR` (read by Identity's mint endpoint) and
+    `<SERVICE>_CLIENT_SECRET_PATH` (read by each calling service) before any
+    settings object is built. Secrets are random per run and never printed.
+    """
+    import secrets as _secrets  # noqa: PLC0415
+
+    if os.environ.get("SERVICE_CLIENT_SECRETS_DIR"):
+        return
+    secrets_dir = tempfile.mkdtemp(prefix="smarthealth-test-service-clients-")
+    for client in SERVICE_CLIENTS:
+        path = os.path.join(secrets_dir, f"{client}.secret")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(_secrets.token_urlsafe(32))
+        os.environ[f"{client.upper()}_CLIENT_SECRET_PATH"] = path
+    os.environ["SERVICE_CLIENT_SECRETS_DIR"] = secrets_dir
+
+
+_ensure_test_service_client_secrets()
+
 # The gateway rate-limits per client IP. The functional suite fires far more
 # requests than production budgets allow from one address, so lift both budgets
 # BEFORE any settings object is built; tests/gateway/test_ratelimit.py passes its
@@ -319,12 +347,22 @@ async def bootstrap_admin_and_login(client: AsyncClient) -> dict[str, Any]:
     return login_resp.json()
 
 
-def verify_identity_token(token: str) -> dict[str, Any]:
+def verify_identity_token(token: str, *, audience: str | None = None) -> dict[str, Any]:
     """Decode a token against Identity's PUBLIC JWK with RS256 pinned — claim
     assertions in tests never need (or see) a shared secret.
+
+    Service tokens carry `aud` (plan 02-01). With `audience` given it must match;
+    without it the audience is not checked, so a test can read the claims and
+    assert on `aud` itself.
     """
     from jose import jwt  # noqa: PLC0415
 
     from services.identity.security.keys import get_signing_key  # noqa: PLC0415
 
-    return jwt.decode(token, get_signing_key().public_jwk, algorithms=["RS256"])
+    return jwt.decode(
+        token,
+        get_signing_key().public_jwk,
+        algorithms=["RS256"],
+        audience=audience,
+        options={"verify_aud": audience is not None},
+    )

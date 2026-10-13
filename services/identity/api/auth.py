@@ -137,7 +137,7 @@ async def register(
             http,
             mongo,
             clinic_id=payload.clinic_id,
-            bearer_token=create_service_token("identity"),
+            bearer_token=create_service_token("identity", audience="organization"),
             actor_id="anonymous",
             actor_role="anonymous",
         )

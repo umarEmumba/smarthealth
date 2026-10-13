@@ -57,7 +57,9 @@ def _not_found() -> HTTPException:
 @router.get("/clinics/{clinic_id}", response_model=ClinicRef)
 async def lookup_clinic(
     clinic_id: uuid.UUID,
-    caller: InternalCaller = Depends(require_internal_caller(Role.ADMIN, Role.FRONT_DESK)),
+    caller: InternalCaller = Depends(
+        require_internal_caller(Role.ADMIN, Role.FRONT_DESK, audience="organization", allowed_services=frozenset({"identity"}))
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> ClinicRef:
     clinic = await org_repo.get_clinic(db, clinic_id)
@@ -72,7 +74,9 @@ async def lookup_clinic(
 @router.get("/departments/{department_id}", response_model=DepartmentRef)
 async def lookup_department(
     department_id: uuid.UUID,
-    caller: InternalCaller = Depends(require_internal_caller(Role.ADMIN, Role.PROVIDER)),
+    caller: InternalCaller = Depends(
+        require_internal_caller(Role.ADMIN, Role.PROVIDER, audience="organization", allowed_services=frozenset())
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> DepartmentRef:
     department = await org_repo.get_department(db, department_id)

@@ -14,6 +14,8 @@ Security invariants (STRIDE T-01.1-02) — locked, not style choices:
     position in the JWKS and never by falling back to a default key.
   * The `type` claim must be in the caller's `expected_types`, so a refresh
     token can never authenticate an API call.
+  * `exp` is REQUIRED on every token (`require_exp`), so a token minted without
+    an expiry can never live forever (review WR-03).
 
 Full token contents are never logged — only `jti`/`sub` are safe to log.
 """
@@ -75,12 +77,19 @@ async def decode_token(
     expected_types: frozenset[str],
     resolver: KeyResolver,
     http: httpx.AsyncClient | None = None,
+    audience: str | None = None,
 ) -> dict[str, Any]:
-    """Verify signature + expiry + type and return the claims.
+    """Verify signature + expiry + type (+ audience) and return the claims.
 
     Raises `TokenError` on any invalid token and lets `KeysUnavailable`
     propagate from the resolver. Never trusts the header's `alg`, never
-    selects a key by position, never accepts a token without a `kid`.
+    selects a key by position, never accepts a token without a `kid` or `exp`.
+
+    `audience`: when the token carries `aud`, it must contain this value; a
+    token WITH `aud` decoded with `audience=None` is rejected. python-jose
+    SKIPS the audience check entirely when the token has no `aud`, so passing
+    `audience=` can never REQUIRE `aud` — callers that must (service tokens on
+    internal routes, `libs.auth.internal`) check its presence themselves.
     """
     try:
         header = jwt.get_unverified_header(token)
@@ -97,7 +106,13 @@ async def decode_token(
     key = await resolver.get_key(kid, http)
 
     try:
-        claims = jwt.decode(token, key, algorithms=[JWT_ALGORITHM])
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=[JWT_ALGORITHM],
+            audience=audience,
+            options={"require_exp": True},
+        )
     except (JWTError, JWKError) as exc:
         raise TokenError("invalid token") from exc
 
