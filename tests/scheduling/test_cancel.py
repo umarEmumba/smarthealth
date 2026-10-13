@@ -95,7 +95,54 @@ async def billing_moves(client: AsyncClient, world: World, appointment_id: str) 
     )
     assert resp.status_code == 200, resp.text
     record = resp.json()
-    return [(h["from_status"], h["to_status"]) for h in record["history"]], record["status"]
+    history = [(h["from_status"], h["to_status"], h["reason_code"]) for h in record["history"]]
+    return history, record["status"]
+
+
+async def insert_appointment(
+    engine: AsyncEngine,
+    world: World,
+    *,
+    status: str,
+    start: datetime,
+    provider_id: uuid.UUID | None = None,
+    clinic_id: uuid.UUID | None = None,
+    slot_status: str = "available",
+) -> tuple[str, str]:
+    """Seed a slot and an appointment in `status` directly (states the API
+    cannot be steered into on demand: pending, failed, already started).
+    Rows are scoped by `provider_id` for clean-up. Returns (appointment, slot)."""
+    provider_id = provider_id or world.provider_id
+    clinic_id = clinic_id or world.clinic_id
+    slot_id = await seed_slot(
+        engine,
+        provider_id=provider_id,
+        start=start,
+        clinic_id=clinic_id,
+        department_id=world.department_id,
+        status=slot_status,
+    )
+    appointment_id = uuid.uuid4()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO appointments (id, clinic_id, patient_id, provider_id, slot_id, "
+                "slot_start, slot_end, status, version, created_by) "
+                "VALUES (:id, :c, :pt, :pr, :s, :st, :en, :status, 1, :by)"
+            ),
+            {
+                "id": appointment_id,
+                "c": clinic_id,
+                "pt": world.patient_id,
+                "pr": provider_id,
+                "s": slot_id,
+                "st": start,
+                "en": start + timedelta(minutes=30),
+                "status": status,
+                "by": uuid.uuid4(),
+            },
+        )
+    return str(appointment_id), str(slot_id)
 
 
 async def cancel(
@@ -146,4 +193,4 @@ async def test_tracer_cancel_frees_the_slot_and_refunds(
 
     moves, billing_status = await billing_moves(client, world, appointment_id)
     assert billing_status == "refunded"
-    assert moves[-2:] == [("verified", "refund_pending"), ("refund_pending", "refunded")]
+    assert [m[:2] for m in moves[-2:]] == [("verified", "refund_pending"), ("refund_pending", "refunded")]
