@@ -140,3 +140,10 @@ Deliver the core reliability requirement: booking, cancelling, rescheduling and 
 
 *Phase: 2-Scheduling + Service Workflow*
 *Context gathered: 2026-10-12*
+
+## Planning-Time Decisions (resolved with user at /gsd-plan-phase 2, 2026-10-12)
+
+- **Saga order:** follow D-09 (billing pre-check before notification); document deviation from SCHED-02 and map "prevent conflicts" to the reserve step's DB constraints.
+- **Service tokens:** add an Identity client-credentials endpoint issuing one token per audience (`aud`, required `exp`); update verifiers. Plan as an early wave (research assumption A1).
+- **Patient overlap:** add a Postgres `EXCLUDE` constraint preventing overlapping active appointments for one patient.
+- **Edge states:** cancel/reschedule while `pending` returns 409; no `completed` appointment status (completion lives on the visit).
