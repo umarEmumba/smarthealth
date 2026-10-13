@@ -2,6 +2,7 @@
 
     POST /api/slots/generate        ADMIN, FRONT_DESK  materialize slots from templates
     GET  /api/slots                 any role           search one provider's slots
+                                                       (?status=available default, or any)
     POST /api/slots/{slot_id}/cancel ADMIN, FRONT_DESK withdraw an available slot
 
 Generation resolves, server-side and over aud-scoped service tokens
@@ -63,6 +64,7 @@ log = get_logger(__name__)
 ALL_ROLES = (Role.PATIENT, Role.PROVIDER, Role.FRONT_DESK, Role.ADMIN)
 STAFF_ROLES = (Role.FRONT_DESK, Role.ADMIN)
 CHANGED_FIELDS = ["provider_slots"]
+ANY_STATUS = "any"
 
 
 class GenerationRefused(Exception):
@@ -248,17 +250,22 @@ async def search_slots(
     provider_id: uuid.UUID,
     start: datetime,
     end: datetime,
-    slot_status: str | None = Query(default=SlotStatus.AVAILABLE.value, alias="status"),
+    # A slot status, or "any" for every status (staff views of withdrawn/held slots).
+    slot_status: str = Query(default=SlotStatus.AVAILABLE.value, alias="status"),
     user: AuthenticatedUser = Depends(require_role(*ALL_ROLES)),
     db: AsyncSession = Depends(get_db),
 ) -> list[SlotOut]:
     if start.tzinfo is None or end.tzinfo is None:
         raise HTTPException(status_code=422, detail="start and end must include a UTC offset")
-    if slot_status is not None and slot_status not in {s.value for s in SlotStatus}:
+    if slot_status != ANY_STATUS and slot_status not in {s.value for s in SlotStatus}:
         raise HTTPException(status_code=422, detail="unknown slot status")
     _check_range_days(end - start)
 
     slots = await slot_repo.search_slots(
-        db, provider_id=provider_id, start=start, end=end, status=slot_status
+        db,
+        provider_id=provider_id,
+        start=start,
+        end=end,
+        status=None if slot_status == ANY_STATUS else slot_status,
     )
     return [_to_out(s) for s in slots]

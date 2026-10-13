@@ -89,6 +89,13 @@ def test_route_table_maps_owners_and_has_no_internal_prefix() -> None:
         ("/api/clinics/abc/departments", "organization"),
         ("/api/providers/abc", "provider"),
         ("/api/patients", "patient"),
+        ("/api/slots", "scheduling"),
+        ("/api/slots/generate", "scheduling"),
+        ("/api/appointments/abc/cancel", "scheduling"),
+        ("/api/waitlist", "scheduling"),
+        ("/api/slotsX", None),
+        ("/internal/appointments/abc", None),
+        ("/internal/slots", None),
         ("/api/clinicsX", None),
         ("/api/clinics-x/abc", None),
         ("/api/unknown", None),
@@ -140,7 +147,12 @@ def test_is_safe_path_accepts_ordinary_paths() -> None:
 async def test_internal_paths_are_404_and_never_forwarded(
     gateway: httpx.AsyncClient, upstream: Upstream
 ) -> None:
-    for path in ("/internal/clinics/x", "/internal/departments/x", "/internal"):
+    for path in (
+        "/internal/clinics/x",
+        "/internal/departments/x",
+        "/internal/appointments/x",
+        "/internal",
+    ):
         response = await gateway.get(path)
         assert response.status_code == 404, path
         assert response.json() == {"detail": "not found"}

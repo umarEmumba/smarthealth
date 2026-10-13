@@ -17,7 +17,7 @@ Rules:
   00:00-04:00 window on the fall-back day is five.
 * A window whose START falls in a gap starts at the next template grid point
   that exists (no slot is ever generated for a nonexistent wall time); an END
-  in a gap is taken at its earlier reading, so a window never grows.
+  in a gap is clamped to the instant the gap starts, so a window never grows.
 * `expand_templates` honours `is_active`, `day_of_week` (0 = Monday, the
   Provider convention and Python's `date.weekday()`), and the inclusive
   `effective_from`/`effective_to` dates. Overlapping templates for the same
@@ -118,16 +118,22 @@ def _window_start(day: date, template: AvailabilityTemplate, tz: ZoneInfo) -> da
 
 
 def _window_end(day: date, template: AvailabilityTemplate, tz: ZoneInfo) -> datetime:
-    """UTC end of the template's window on `day`; a gap end takes the earlier
-    of its two readings so the window never grows."""
+    """UTC end of the template's window on `day`. An end inside a gap is the
+    instant the gap starts (the last real moment before the nonexistent wall
+    time), so the window never grows past what the template meant."""
     converted = local_to_utc(day, template.end_time, tz)
     if converted is not None:
         return converted
     naive = datetime.combine(day, template.end_time)
-    return min(
-        naive.replace(tzinfo=tz, fold=0).astimezone(timezone.utc),
-        naive.replace(tzinfo=tz, fold=1).astimezone(timezone.utc),
+    readings = sorted(
+        naive.replace(tzinfo=tz, fold=fold).astimezone(timezone.utc) for fold in (0, 1)
     )
+    # The offset changes somewhere in (earlier, later]; find it to the minute.
+    instant, later = readings
+    offset_before = instant.astimezone(tz).utcoffset()
+    while instant < later and instant.astimezone(tz).utcoffset() == offset_before:
+        instant += timedelta(minutes=1)
+    return instant
 
 
 def expand_templates(
