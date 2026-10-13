@@ -107,10 +107,10 @@ def _invalid_client() -> HTTPException:
 def _client_secret(client: str) -> str | None:
     """The configured secret for `client`, or None when it cannot authenticate
     (not a known client, no secrets dir, unreadable or empty file)."""
-    if client not in SERVICE_TOKEN_AUDIENCES or not settings.service_client_secrets_dir:
+    if client not in SERVICE_TOKEN_AUDIENCES or not settings.service_client_credentials_dir:
         return None
     try:
-        secret = (Path(settings.service_client_secrets_dir) / f"{client}.secret").read_text().strip()
+        secret = (Path(settings.service_client_credentials_dir) / f"{client}.secret").read_text().strip()
     except OSError:
         return None
     return secret or None
