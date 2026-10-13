@@ -6,11 +6,27 @@ empty-body check (the Phase 1 originals remain readable at reference commit
 
 Every field is optional (partial update — only supplied fields change) and a
 fully-empty body is rejected 422.
+
+`validate_iana_timezone` (plan 02-03, research G11 / review WR-13) is the shared
+clinic-timezone rule: Scheduling interprets naive availability times in the
+clinic's zone, so only names the system IANA zone database resolves are
+accepted (the PyPI zone-database package is deliberately not a dependency).
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def validate_iana_timezone(value: str) -> str:
+    """Return `value` unchanged if it names an IANA time zone; else ValueError."""
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("timezone must be an IANA name") from exc
+    return value
 
 
 def _reject_empty_body(model: BaseModel) -> BaseModel:
@@ -22,6 +38,11 @@ def _reject_empty_body(model: BaseModel) -> BaseModel:
 class ClinicUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def _check_timezone(cls, value: str | None) -> str | None:
+        return None if value is None else validate_iana_timezone(value)
 
     @model_validator(mode="after")
     def _check_not_empty(self) -> "ClinicUpdate":

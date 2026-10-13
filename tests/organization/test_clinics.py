@@ -282,3 +282,67 @@ async def test_clinic_update_and_deactivate_audited(
     )
     assert deactivate_doc is not None
     assert deactivate_doc["outcome"] == "success"
+
+
+# --- plan 02-03: IANA timezone validation (research G11 / review WR-13) ---
+
+
+@pytest.mark.parametrize("value", ["Asia/Karachi", "UTC", "America/New_York", "Etc/GMT+5"])
+def test_validate_iana_timezone_accepts_iana_names(value: str) -> None:
+    from services.organization.domain.schemas import validate_iana_timezone  # noqa: PLC0415
+
+    assert validate_iana_timezone(value) == value
+
+
+@pytest.mark.parametrize("value", ["Mars/Olympus", "UTC+5", "../etc/passwd", "not a zone"])
+def test_validate_iana_timezone_rejects_non_iana_values(value: str) -> None:
+    from services.organization.domain.schemas import validate_iana_timezone  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="IANA"):
+        validate_iana_timezone(value)
+
+
+@pytest.mark.integration
+async def test_create_clinic_with_iana_timezone(client: AsyncClient) -> None:
+    tokens = await _register_and_login(client, role="admin")
+
+    resp = await client.post(
+        "/api/clinics",
+        json={"name": "Karachi Clinic", "timezone": "Asia/Karachi"},
+        headers=_auth_header(tokens),
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["timezone"] == "Asia/Karachi"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("value", ["Mars/Olympus", "UTC+5"])
+async def test_create_clinic_with_non_iana_timezone_is_422(client: AsyncClient, value: str) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    name = f"Bad Zone Clinic {uuid.uuid4()}"
+
+    resp = await client.post(
+        "/api/clinics", json={"name": name, "timezone": value}, headers=_auth_header(tokens)
+    )
+
+    assert resp.status_code == 422, resp.text
+    listed = await client.get("/api/clinics", headers=_auth_header(tokens))
+    assert name not in {clinic["name"] for clinic in listed.json()}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("value", ["Mars/Olympus", "UTC+5"])
+async def test_patch_clinic_with_non_iana_timezone_is_422(client: AsyncClient, value: str) -> None:
+    tokens = await _register_and_login(client, role="admin")
+    clinic_id = await _create_clinic(client, tokens)
+    before = await client.get(f"/api/clinics/{clinic_id}", headers=_auth_header(tokens))
+    assert before.status_code == 200, before.text
+
+    resp = await client.patch(
+        f"/api/clinics/{clinic_id}", json={"timezone": value}, headers=_auth_header(tokens)
+    )
+
+    assert resp.status_code == 422, resp.text
+    after = await client.get(f"/api/clinics/{clinic_id}", headers=_auth_header(tokens))
+    assert after.json()["timezone"] == before.json()["timezone"]

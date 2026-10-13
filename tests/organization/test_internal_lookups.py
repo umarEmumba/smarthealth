@@ -86,7 +86,26 @@ async def test_admin_reads_active_clinic_ref(client: AsyncClient, mesh: httpx.As
     resp = await mesh.get(_internal(f"/internal/clinics/{clinic_id}"), headers=_auth(admin))
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"id": clinic_id, "is_active": True}
+    assert resp.json() == {"id": clinic_id, "is_active": True, "timezone": "UTC"}
+
+
+@pytest.mark.integration
+async def test_clinic_ref_carries_the_stored_iana_timezone(
+    client: AsyncClient, mesh: httpx.AsyncClient
+) -> None:
+    admin = await bootstrap_admin_and_login(client)
+    created = await client.post(
+        "/api/clinics",
+        json={"name": "Lookup Karachi Clinic", "timezone": "Asia/Karachi"},
+        headers=_auth(admin),
+    )
+    assert created.status_code == 201, created.text
+    clinic_id = created.json()["id"]
+
+    resp = await mesh.get(_internal(f"/internal/clinics/{clinic_id}"), headers=_auth(admin))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"id": clinic_id, "is_active": True, "timezone": "Asia/Karachi"}
 
 
 @pytest.mark.integration
@@ -101,7 +120,7 @@ async def test_deactivated_clinic_is_reported_inactive_not_hidden(
     resp = await mesh.get(_internal(f"/internal/clinics/{clinic_id}"), headers=_auth(admin))
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"id": clinic_id, "is_active": False}
+    assert resp.json() == {"id": clinic_id, "is_active": False, "timezone": "UTC"}
 
 
 @pytest.mark.integration
@@ -130,7 +149,7 @@ async def test_front_desk_is_clinic_scoped_and_out_of_scope_looks_like_missing(
     )
 
     assert own.status_code == 200, own.text
-    assert own.json() == {"id": clinic_a, "is_active": True}
+    assert own.json() == {"id": clinic_a, "is_active": True, "timezone": "UTC"}
     assert other.status_code == 404
     # Identical to a genuinely missing id, so scope cannot be probed.
     assert other.status_code == missing.status_code

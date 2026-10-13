@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +32,7 @@ from libs.auth.roles import Role
 from libs.db.mongo import get_mongo
 from libs.observability.logging import get_logger
 from services.organization.db import get_db
-from services.organization.domain.schemas import ClinicUpdate
+from services.organization.domain.schemas import ClinicUpdate, validate_iana_timezone
 from services.organization.repository import org_repo
 
 router = APIRouter(prefix="/api/clinics", tags=["clinics"])
@@ -43,6 +43,11 @@ log = get_logger(__name__)
 class ClinicCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     timezone: str = Field(min_length=1, max_length=64, description="IANA tz name, e.g. America/New_York")
+
+    @field_validator("timezone")
+    @classmethod
+    def _check_timezone(cls, value: str) -> str:
+        return validate_iana_timezone(value)
 
 
 class ClinicOut(BaseModel):

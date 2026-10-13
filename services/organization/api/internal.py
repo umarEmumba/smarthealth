@@ -3,7 +3,7 @@
 Identity, Patient and Provider call these at write time before accepting a
 reference to a clinic or department, forwarding the original caller's token:
 
-    GET /internal/clinics/{clinic_id}         -> {id, is_active}
+    GET /internal/clinics/{clinic_id}         -> {id, is_active, timezone}
     GET /internal/departments/{department_id} -> {id, clinic_id, is_active}
 
 Design rules (STRIDE T-01.1-14):
@@ -44,6 +44,9 @@ log = get_logger(__name__)
 class ClinicRef(BaseModel):
     id: uuid.UUID
     is_active: bool
+    # IANA zone name (plan 02-03): Scheduling interprets availability templates
+    # in it (D-01). Rows written before validation existed are returned as stored.
+    timezone: str
 
 
 class DepartmentRef(BaseModel):
@@ -70,7 +73,7 @@ async def lookup_clinic(
         raise _not_found()
 
     log.info("internal.clinic_lookup", clinic_id=str(clinic.id), outcome="found")
-    return ClinicRef(id=clinic.id, is_active=clinic.is_active)
+    return ClinicRef(id=clinic.id, is_active=clinic.is_active, timezone=clinic.timezone)
 
 
 @router.get("/departments/{department_id}", response_model=DepartmentRef)

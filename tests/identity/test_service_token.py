@@ -274,7 +274,7 @@ async def test_service_token_is_accepted_on_an_internal_endpoint(
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"id": clinic_id, "is_active": True}
+    assert resp.json() == {"id": clinic_id, "is_active": True, "timezone": "UTC"}
 
 
 async def test_service_token_without_the_service_prefix_is_rejected(
