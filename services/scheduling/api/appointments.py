@@ -3,6 +3,8 @@
     POST /api/appointments                   PATIENT, FRONT_DESK, ADMIN   202 Accepted
     GET  /api/appointments/{appointment_id}  PATIENT (own), FRONT_DESK (own clinic), ADMIN
     GET  /api/appointments                   same scope rules, with filters
+    POST /api/appointments/{id}/cancel       same scope rules   202 / 200 no-op  (plan 02-08)
+    POST /api/appointments/{id}/reschedule   same scope rules   202              (plan 02-08)
 
 Booking is asynchronous (D-07). The POST does everything that must be atomic in
 ONE local transaction (`appointment_repo.accept_booking`: the idempotency claim,
@@ -44,7 +46,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
@@ -65,7 +67,20 @@ from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling import references
 from services.scheduling.api.deps import get_service_tokens, get_temporal_client
 from services.scheduling.db import get_db
-from services.scheduling.domain.contracts import BOOKING_WORKFLOW, BookingInput, booking_workflow_id
+from services.scheduling.config import settings
+from services.scheduling.domain.contracts import (
+    BOOKING_WORKFLOW,
+    CANCEL_WORKFLOW,
+    NO_REFUND,
+    REFUND,
+    RESCHEDULE_WORKFLOW,
+    BookingInput,
+    CancelInput,
+    RescheduleInput,
+    booking_workflow_id,
+    cancel_workflow_id,
+    reschedule_workflow_id,
+)
 from services.scheduling.domain.enums import AppointmentStatus, SlotStatus
 from services.scheduling.domain.errors import IdempotencyKeyReused, PatientOverlap, SlotTaken
 from services.scheduling.domain.schemas import (
@@ -73,6 +88,9 @@ from services.scheduling.domain.schemas import (
     AppointmentHistoryOut,
     AppointmentOut,
     BookingRequest,
+    CancelRequest,
+    ChangeAccepted,
+    RescheduleRequest,
 )
 from services.scheduling.repository import appointment_repo, slot_repo
 from services.scheduling.repository.idempotency_repo import get_idempotency_record
@@ -421,3 +439,192 @@ async def list_appointments(
         limit=limit,
     )
     return [_to_out(a) for a in rows]
+
+
+# --- plan 02-08: cancel and reschedule (SCHED-05, SCHED-06; D-13, D-14) --------
+#
+# Both are Temporal workflows started under `{op}-{id}-{version}`
+# (`start_once`): a repeat while one runs attaches to it, a repeat after it
+# closed is a no-op. Time-dependent policy (started? inside the refund
+# cutoff?) is decided HERE, in the request, so workflow history stays
+# deterministic (research A11). A `pending` appointment is refused with 409
+# "booking in progress" (its booking saga still owns it, research Open
+# Question 3). Unlike booking, nothing is committed before the start, so an
+# unreachable Temporal is a 503 the client may retry.
+
+
+def _conflict(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+def _change_accepted(
+    response: Response, appointment_id: uuid.UUID, current_status: str, operation: str
+) -> ChangeAccepted:
+    status_url = f"/api/appointments/{appointment_id}"
+    response.headers["Location"] = status_url
+    return ChangeAccepted(
+        appointment_id=appointment_id,
+        status=current_status,
+        status_url=status_url,
+        operation=operation,
+    )
+
+
+async def _scoped_appointment(
+    db: AsyncSession,
+    http: httpx.AsyncClient,
+    tokens: ServiceTokenProvider,
+    user: AuthenticatedUser,
+    appointment_id: uuid.UUID,
+) -> Appointment:
+    """The appointment if the caller may act on it, else the same 404 as a
+    missing one (T-02-40): PATIENT own only, staff own clinic, ADMIN anywhere."""
+    appointment = await appointment_repo.get_appointment(db, appointment_id)
+    if appointment is None or not _in_scope(user, appointment.clinic_id):
+        raise _not_found()
+    if user.role == Role.PATIENT:
+        own = await _own_patient_id(http, tokens, user)
+        if own is None or own != appointment.patient_id:
+            raise _not_found()
+    return appointment
+
+
+def _refuse_unchangeable(appointment: Appointment, now: datetime, operation: str) -> None:
+    if appointment.status == AppointmentStatus.PENDING:
+        raise _conflict("booking in progress")
+    if appointment.status != AppointmentStatus.CONFIRMED:
+        raise _conflict(f"appointment not {'cancellable' if operation == 'cancel' else 'reschedulable'}")
+    if appointment.slot_start <= now:
+        raise _conflict("appointment already started")
+
+
+async def _start_change(temporal, workflow: str, arg, *, workflow_id: str) -> None:
+    try:
+        await asyncio.wait_for(
+            start_once(temporal, workflow, arg, workflow_id=workflow_id, task_queue=SCHEDULING_TASK_QUEUE),
+            timeout=START_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 - nothing committed yet; the client retries
+        log.warning("appointment.change_start_failed", workflow=workflow, error=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="workflow service unavailable"
+        ) from exc
+
+
+@router.post("/{appointment_id}/cancel", response_model=ChangeAccepted, status_code=202)
+async def cancel_appointment(
+    appointment_id: uuid.UUID,
+    response: Response,
+    payload: CancelRequest | None = None,
+    user: AuthenticatedUser = Depends(require_role(*BOOKING_ROLES)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
+    tokens: ServiceTokenProvider = Depends(get_service_tokens),
+    temporal=Depends(get_temporal_client),
+) -> ChangeAccepted:
+    payload = payload or CancelRequest()
+    appointment = await _scoped_appointment(db, http, tokens, user, appointment_id)
+    if payload.waive_cutoff and user.role == Role.PATIENT:
+        # T-02-39: only staff may waive the refund cutoff.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="only staff may waive the cancel cutoff"
+        )
+    if appointment.status == AppointmentStatus.CANCELLED:
+        response.status_code = status.HTTP_200_OK
+        log.info("appointment.cancel_noop", appointment_id=str(appointment_id))
+        return _change_accepted(response, appointment_id, AppointmentStatus.CANCELLED, "cancel")
+
+    now = datetime.now(timezone.utc)
+    _refuse_unchangeable(appointment, now, "cancel")
+    before_cutoff = appointment.slot_start - now >= timedelta(hours=settings.cancel_cutoff_hours)
+    refund_policy = REFUND if (payload.waive_cutoff or before_cutoff) else NO_REFUND
+    clinic_id, slot_id, version = appointment.clinic_id, appointment.slot_id, appointment.version
+
+    await _start_change(
+        temporal,
+        CANCEL_WORKFLOW,
+        CancelInput(
+            appointment_id=str(appointment_id),
+            clinic_id=str(clinic_id),
+            slot_id=str(slot_id),
+            refund_policy=refund_policy,
+            actor=f"user:{user.sub}",
+        ),
+        workflow_id=cancel_workflow_id(str(appointment_id), version),
+    )
+    log.info(
+        "appointment.cancel_requested",
+        appointment_id=str(appointment_id),
+        refund_policy=refund_policy,
+        waived=payload.waive_cutoff,
+    )
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="appointment.cancel_requested",
+        entity_type="appointment",
+        entity_id=str(appointment_id),
+        clinic_id=str(clinic_id),
+        outcome="success",
+        changed_fields=["status"],
+    )
+    return _change_accepted(response, appointment_id, appointment.status, "cancel")
+
+
+@router.post("/{appointment_id}/reschedule", response_model=ChangeAccepted, status_code=202)
+async def reschedule_appointment(
+    appointment_id: uuid.UUID,
+    payload: RescheduleRequest,
+    response: Response,
+    user: AuthenticatedUser = Depends(require_role(*BOOKING_ROLES)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
+    tokens: ServiceTokenProvider = Depends(get_service_tokens),
+    temporal=Depends(get_temporal_client),
+) -> ChangeAccepted:
+    appointment = await _scoped_appointment(db, http, tokens, user, appointment_id)
+    now = datetime.now(timezone.utc)
+    _refuse_unchangeable(appointment, now, "reschedule")
+
+    new_slot = await slot_repo.get_slot(db, slot_id=payload.new_slot_id)
+    if new_slot is None or new_slot.clinic_id != appointment.clinic_id:
+        raise _not_found()
+    if new_slot.provider_id != appointment.provider_id:
+        raise HTTPException(status_code=422, detail="reschedule must keep the same provider")
+    if new_slot.status != SlotStatus.AVAILABLE.value or new_slot.start_time <= now:
+        # Early answer only; the hold and the swap's arbiters are the real guard.
+        raise _slot_conflict()
+
+    clinic_id, old_slot_id, version = appointment.clinic_id, appointment.slot_id, appointment.version
+    await _start_change(
+        temporal,
+        RESCHEDULE_WORKFLOW,
+        RescheduleInput(
+            appointment_id=str(appointment_id),
+            clinic_id=str(clinic_id),
+            old_slot_id=str(old_slot_id),
+            new_slot_id=str(payload.new_slot_id),
+            actor=f"user:{user.sub}",
+        ),
+        workflow_id=reschedule_workflow_id(str(appointment_id), version),
+    )
+    log.info(
+        "appointment.reschedule_requested",
+        appointment_id=str(appointment_id),
+        new_slot_id=str(payload.new_slot_id),
+    )
+    await write_audit(
+        mongo,
+        actor_id=user.sub,
+        actor_role=user.role.value,
+        action="appointment.reschedule_requested",
+        entity_type="appointment",
+        entity_id=str(appointment_id),
+        clinic_id=str(clinic_id),
+        outcome="success",
+        changed_fields=["slot_id"],
+    )
+    return _change_accepted(response, appointment_id, appointment.status, "reschedule")

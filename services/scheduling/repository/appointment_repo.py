@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -373,3 +374,219 @@ async def get_history(db: AsyncSession, appointment_id: uuid.UUID) -> list[Appoi
         .order_by(AppointmentStatusHistory.created_at, AppointmentStatusHistory.id)
     )
     return list((await db.scalars(query)).all())
+
+
+# --- plan 02-08: cancel and reschedule (D-13, D-14) -----------------------------
+
+CancelOutcome = Literal["cancelled", "already", "not_cancellable"]
+SwapOutcome = Literal["swapped", "already", "rejected"]
+
+
+async def cancel_appointment(
+    db: AsyncSession, *, appointment_id: uuid.UUID, actor: str
+) -> CancelOutcome:
+    """Appointment `confirmed` -> `cancelled` and its slot `booked` ->
+    `available`, in the caller's ONE transaction, plus one history row.
+
+    The slot released is the one the appointment points at NOW (read under the
+    row lock), so a reschedule that committed first never leaves its new slot
+    booked by a cancelled appointment. "already" when the appointment is
+    already cancelled (a retry or repeat: no second history row);
+    "not_cancellable" for any other state (pending, failed, missing), which is
+    left untouched. A forward transition, never a delete.
+    """
+    row = (
+        await db.execute(
+            text("SELECT status, slot_id FROM appointments WHERE id = :a FOR UPDATE"),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
+    if row is None:
+        return "not_cancellable"
+    if row.status == AppointmentStatus.CANCELLED:
+        return "already"
+    if row.status != AppointmentStatus.CONFIRMED:
+        return "not_cancellable"
+
+    await db.execute(
+        text(
+            """
+            UPDATE appointments
+               SET status = 'cancelled', version = version + 1, updated_at = now()
+             WHERE id = :a AND status = 'confirmed'
+            """
+        ),
+        {"a": appointment_id},
+    )
+    await db.execute(
+        text(
+            """
+            UPDATE provider_slots
+               SET status = 'available', held_until = NULL, held_by_appointment_id = NULL
+             WHERE id = :s AND held_by_appointment_id = :a AND status = 'booked'
+            """
+        ),
+        {"s": row.slot_id, "a": appointment_id},
+    )
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=AppointmentStatus.CONFIRMED,
+        to_status=AppointmentStatus.CANCELLED,
+        actor=actor,
+    )
+    return "cancelled"
+
+
+RESCHEDULED_REASON = "rescheduled"
+
+
+async def swap_slot(
+    db: AsyncSession,
+    *,
+    appointment_id: uuid.UUID,
+    old_slot_id: uuid.UUID,
+    new_slot_id: uuid.UUID,
+    actor: str,
+) -> SwapOutcome:
+    """The reschedule swap (D-14, research Pattern 5), in the caller's ONE
+    transaction: the new slot `held` (by this appointment) -> `booked`, the
+    appointment repointed (`slot_id`, `slot_start`, `slot_end`,
+    `version + 1`), the old slot -> `available`, and one
+    `confirmed -> confirmed` history row with reason `rescheduled`.
+
+    * "swapped"  - done now.
+    * "already"  - the appointment already points at the new slot (a retry):
+                   nothing changes, no second history row.
+    * "rejected" - the appointment is no longer confirmed on the old slot, the
+                   new slot is no longer held by it, or a database arbiter
+                   (`uq_appointments_active_slot`,
+                   `ex_appointments_patient_no_overlap`) refused the move
+                   (research Pitfall 9). The caller MUST roll back (the
+                   transaction may be aborted), which leaves the original
+                   booking untouched.
+    """
+    row = (
+        await db.execute(
+            text("SELECT status, slot_id FROM appointments WHERE id = :a FOR UPDATE"),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
+    if row is None or row.status != AppointmentStatus.CONFIRMED:
+        return "rejected"
+    if row.slot_id == new_slot_id:
+        return "already"
+    if row.slot_id != old_slot_id:
+        return "rejected"
+
+    new_slot = (
+        await db.execute(
+            text(
+                """
+                UPDATE provider_slots
+                   SET status = 'booked', held_until = NULL
+                 WHERE id = :s AND status = 'held' AND held_by_appointment_id = :a
+                RETURNING start_time, end_time
+                """
+            ),
+            {"s": new_slot_id, "a": appointment_id},
+        )
+    ).one_or_none()
+    if new_slot is None:
+        return "rejected"
+
+    try:
+        moved = await db.scalar(
+            text(
+                """
+                UPDATE appointments
+                   SET slot_id = :new, slot_start = :st, slot_end = :en,
+                       version = version + 1, updated_at = now()
+                 WHERE id = :a AND slot_id = :old AND status = 'confirmed'
+                RETURNING id
+                """
+            ),
+            {
+                "a": appointment_id,
+                "old": old_slot_id,
+                "new": new_slot_id,
+                "st": new_slot.start_time,
+                "en": new_slot.end_time,
+            },
+        )
+    except IntegrityError as exc:
+        if is_slot_taken(exc) or is_patient_overlap(exc):
+            return "rejected"
+        raise
+    if moved is None:  # pragma: no cover - the row is locked as confirmed on old above
+        return "rejected"
+
+    await db.execute(
+        text(
+            """
+            UPDATE provider_slots
+               SET status = 'available', held_until = NULL, held_by_appointment_id = NULL
+             WHERE id = :s AND held_by_appointment_id = :a AND status = 'booked'
+            """
+        ),
+        {"s": old_slot_id, "a": appointment_id},
+    )
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=AppointmentStatus.CONFIRMED,
+        to_status=AppointmentStatus.CONFIRMED,
+        reason=RESCHEDULED_REASON,
+        actor=actor,
+    )
+    return "swapped"
+
+
+async def record_history_note(
+    db: AsyncSession,
+    *,
+    appointment_id: uuid.UUID,
+    reason: str,
+    actor: str,
+    bump_version: bool = False,
+) -> bool:
+    """Append a `from_status == to_status` history row carrying `reason` (e.g.
+    `reschedule_failed:SlotUnavailable`), so a change that did not happen is
+    still visible in the appointment's history (D-09, D-14).
+
+    Idempotent per `(reason, actor)`: activities pass their workflow id as the
+    actor, so a retried activity writes one row. `bump_version` also increments
+    `appointments.version` (a failed reschedule frees the next attempt's
+    workflow id). True when a row was written now; False when it already
+    existed or the appointment is missing.
+    """
+    current = await db.scalar(
+        text("SELECT status FROM appointments WHERE id = :a FOR UPDATE"), {"a": appointment_id}
+    )
+    if current is None:
+        return False
+    exists = await db.scalar(
+        text(
+            "SELECT 1 FROM appointment_status_history "
+            "WHERE appointment_id = :a AND reason = :r AND actor = :actor LIMIT 1"
+        ),
+        {"a": appointment_id, "r": reason, "actor": actor},
+    )
+    if exists is not None:
+        return False
+    if bump_version:
+        await db.execute(
+            text(
+                "UPDATE appointments SET version = version + 1, updated_at = now() WHERE id = :a"
+            ),
+            {"a": appointment_id},
+        )
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=current,
+        to_status=current,
+        reason=reason,
+        actor=actor,
+    )
+    return True

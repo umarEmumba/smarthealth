@@ -77,3 +77,25 @@ class AppointmentOut(BaseModel):
     updated_at: datetime
     # Filled on the single-appointment read; empty in list responses.
     history: list[AppointmentHistoryOut] = Field(default_factory=list)
+
+
+# --- plan 02-08: cancel and reschedule ----------------------------------------
+
+
+class CancelRequest(BaseModel):
+    # Staff (FRONT_DESK/ADMIN) may waive the refund cutoff (D-13); a PATIENT
+    # asking for it gets 403.
+    waive_cutoff: bool = False
+
+
+class RescheduleRequest(BaseModel):
+    new_slot_id: uuid.UUID
+
+
+class ChangeAccepted(BaseModel):
+    appointment_id: uuid.UUID
+    # The appointment's CURRENT status ("cancelled" on a cancel no-op).
+    status: str
+    status_url: str
+    # "cancel" or "reschedule"
+    operation: str

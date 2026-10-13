@@ -3,7 +3,9 @@
 A separate process from the API (same image, command override in Compose,
 plan 02-12). It polls `scheduling-tq`, runs `BookingWorkflow`, the maintenance
 workflows (`HoldReaperWorkflow`, `PendingBookingStarterWorkflow`, plan 02-07),
-the `SchedulingActivities` and `MaintenanceActivities`, and authenticates every outgoing `/internal/*` call
+`CancelWorkflow` and `RescheduleWorkflow` (plan 02-08), the
+`SchedulingActivities`, `AppointmentChangeActivities` and
+`MaintenanceActivities`, and authenticates every outgoing `/internal/*` call
 with Scheduling's aud-scoped service tokens (D-06).
 
 Start-up: logging, audit indexes, then an EAGER Temporal connection retried
@@ -44,16 +46,25 @@ from libs.observability.otel import configure_tracer_provider
 from libs.temporal import connect_client
 from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.activities.booking import SchedulingActivities
+from services.scheduling.activities.changes import AppointmentChangeActivities
 from services.scheduling.activities.maintenance import MaintenanceActivities
 from services.scheduling.config import settings
 from services.scheduling.schedules import ensure_schedules
 from services.scheduling.workflows.booking import BookingWorkflow
+from services.scheduling.workflows.cancel import CancelWorkflow
 from services.scheduling.workflows.maintenance import (
     HoldReaperWorkflow,
     PendingBookingStarterWorkflow,
 )
+from services.scheduling.workflows.reschedule import RescheduleWorkflow
 
-WORKFLOWS = [BookingWorkflow, HoldReaperWorkflow, PendingBookingStarterWorkflow]
+WORKFLOWS = [
+    BookingWorkflow,
+    HoldReaperWorkflow,
+    PendingBookingStarterWorkflow,
+    CancelWorkflow,
+    RescheduleWorkflow,
+]
 
 log = get_logger(__name__)
 
@@ -89,9 +100,10 @@ async def _heartbeat(stop: asyncio.Event) -> None:
             await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
 
 
-def build_activities() -> SchedulingActivities:
+def build_activities() -> tuple[SchedulingActivities, AppointmentChangeActivities]:
     """Production wiring: scheduling_db sessions, the process-default
-    timeout-bounded HTTP client, Scheduling's service tokens and Mongo."""
+    timeout-bounded HTTP client, Scheduling's service tokens and Mongo, shared
+    by the booking and the cancel/reschedule (plan 02-08) activities."""
     http = _get_default_client()
     tokens = ServiceTokenProvider(
         "scheduling",
@@ -99,11 +111,11 @@ def build_activities() -> SchedulingActivities:
         settings.identity_service_url,
         http=http,
     )
-    return SchedulingActivities(
-        get_session_factory(settings.database_url),
-        http,
-        tokens,
-        get_mongo_client(),
+    session_factory = get_session_factory(settings.database_url)
+    mongo = get_mongo_client()
+    return (
+        SchedulingActivities(session_factory, http, tokens, mongo),
+        AppointmentChangeActivities(session_factory, http, tokens, mongo),
     )
 
 
@@ -123,7 +135,7 @@ async def main() -> int:
         return 1
 
     try:
-        activities = build_activities()
+        activities, changes = build_activities()
     except ServiceTokenUnavailable:
         # The secret is never logged; only the fact that it could not be read.
         log.error("worker.client_secret_unavailable")
@@ -144,7 +156,7 @@ async def main() -> int:
             client,
             task_queue=SCHEDULING_TASK_QUEUE,
             workflows=WORKFLOWS,
-            activities=[*activities.all(), *maintenance.all()],
+            activities=[*activities.all(), *changes.all(), *maintenance.all()],
             graceful_shutdown_timeout=GRACEFUL_SHUTDOWN,
         ):
             log.info("worker.started", task_queue=SCHEDULING_TASK_QUEUE)

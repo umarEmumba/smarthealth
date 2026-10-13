@@ -58,5 +58,12 @@ class SchedulingSettings(SharedSettings):
         default=30, gt=0, validation_alias="SCHEDULING_STARTER_GRACE_SECONDS"
     )
 
+    # D-13: a cancel at least this many hours before the slot starts is
+    # refunded (refund_pending -> refunded); inside it, no_refund. Staff may
+    # waive the cutoff. Decided in the API request, never in the workflow.
+    cancel_cutoff_hours: int = Field(
+        default=24, ge=0, validation_alias="SCHEDULING_CANCEL_CUTOFF_HOURS"
+    )
+
 
 settings = SchedulingSettings()
