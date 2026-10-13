@@ -31,8 +31,12 @@ BASE = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
 def _slot(
     provider_id: uuid.UUID, start: datetime, minutes: int = 30, status: str = "available"
 ) -> ProviderSlot:
+    # clinic_id/department_id are required since scheduling_0002 (denormalized
+    # at generation, ORG-03); random ids stand in, as for the provider.
     return ProviderSlot(
         provider_id=provider_id,
+        clinic_id=uuid.uuid4(),
+        department_id=uuid.uuid4(),
         start_time=start,
         end_time=start + timedelta(minutes=minutes),
         status=status,

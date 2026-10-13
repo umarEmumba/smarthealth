@@ -108,3 +108,53 @@ async def test_fifty_parallel_accepts_produce_exactly_one_active_appointment(
             assert history == 1
     finally:
         await cleanup_scheduling_rows(engine, [provider_id])
+
+
+async def test_fifty_parallel_raw_inserts_leave_exactly_one_active_row(
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    """Same race with every line of application code bypassed: plain INSERTs,
+    each in its own committed transaction. Only the partial unique index stands
+    between them and a double booking."""
+    from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
+    engine = committed_scheduling_engine
+    provider_id, clinic_id = uuid.uuid4(), uuid.uuid4()
+    start = datetime(2027, 3, 2, 9, 0, tzinfo=timezone.utc)
+    slot_id = await seed_slot(
+        engine, provider_id=provider_id, start=start, clinic_id=clinic_id, department_id=uuid.uuid4()
+    )
+
+    async def raw_insert() -> str:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO appointments (clinic_id, patient_id, provider_id, slot_id, "
+                        "slot_start, slot_end, status, created_by) "
+                        "VALUES (:c, gen_random_uuid(), :p, :s, :st, :en, 'pending', gen_random_uuid())"
+                    ),
+                    {
+                        "c": clinic_id,
+                        "p": provider_id,
+                        "s": slot_id,
+                        "st": start,
+                        "en": start + timedelta(minutes=30),
+                    },
+                )
+            return "won"
+        except IntegrityError as exc:
+            assert "uq_appointments_active_slot" in str(exc.orig)
+            return "lost"
+
+    try:
+        outcomes = await asyncio.gather(*(raw_insert() for _ in range(PARALLELISM)))
+        assert outcomes.count("won") == 1
+        assert outcomes.count("lost") == PARALLELISM - 1
+        async with engine.connect() as conn:
+            rows = await conn.scalar(
+                text("SELECT count(*) FROM appointments WHERE slot_id = :s"), {"s": slot_id}
+            )
+        assert rows == 1
+    finally:
+        await cleanup_scheduling_rows(engine, [provider_id])

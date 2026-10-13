@@ -45,7 +45,12 @@ OWNED_TABLES: dict[str, set[str]] = {
     "organization": {"clinics", "departments"},
     "provider": {"providers", "specialties", "provider_specialties", "availability_templates"},
     "patient": {"patients"},
-    "scheduling": {"provider_slots"},
+    "scheduling": {
+        "provider_slots",
+        "appointments",
+        "idempotency_keys",
+        "appointment_status_history",
+    },
 }
 
 BASES = {
