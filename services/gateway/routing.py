@@ -6,8 +6,9 @@ the whole of the gateway's routing knowledge, and it deliberately contains NO
 from the route map, not "routed but blocked" (RESEARCH anti-pattern; STRIDE
 T-01.1-11). Scheduling's public prefixes (plan 02-04) are `/api/slots`,
 `/api/appointments` and `/api/waitlist`; Billing's (plan 02-05) is the read-only
-`/api/billing`. Like every other service, their `/internal` routes are never in
-this table.
+`/api/billing`; Visit's (plan 02-10) is `/api/visits`. Like every other service,
+their `/internal` routes (e.g. Scheduling's `/internal/appointments`) are never
+in this table.
 
 `is_safe_path` is the first gate every request passes (STRIDE T-01.1-12). The
 gateway forwards the RAW request path, so anything that could be re-interpreted
@@ -35,6 +36,7 @@ ROUTE_TABLE: tuple[tuple[str, str], ...] = (
     ("/api/appointments", "scheduling"),
     ("/api/waitlist", "scheduling"),
     ("/api/billing", "billing"),
+    ("/api/visits", "visit"),
 )
 
 _FORBIDDEN_RAW_SEQUENCES: tuple[bytes, ...] = (b"%2e", b"%2f", b"%5c", b"%00")

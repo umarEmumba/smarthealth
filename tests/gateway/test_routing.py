@@ -76,6 +76,7 @@ def test_route_table_maps_owners_and_has_no_internal_prefix() -> None:
         "/api/appointments": "scheduling",
         "/api/waitlist": "scheduling",
         "/api/billing": "billing",
+        "/api/visits": "visit",
     }
     assert not [prefix for prefix in table if prefix.startswith("/internal")]
 

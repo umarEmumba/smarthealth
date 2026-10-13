@@ -147,3 +147,20 @@ class WaitlistEntryOut(BaseModel):
     attempts: int
     created_at: datetime
     updated_at: datetime
+
+
+# --- plan 02-10: internal appointment lookup for Visit ----------------------
+
+
+class AppointmentRef(BaseModel):
+    """What Visit needs to check an appointment in (D-15): ids, slot times and
+    status only. No coverage reference, no failure reason, no history."""
+
+    id: uuid.UUID
+    clinic_id: uuid.UUID
+    patient_id: uuid.UUID
+    provider_id: uuid.UUID
+    slot_id: uuid.UUID
+    slot_start: datetime
+    slot_end: datetime
+    status: str
