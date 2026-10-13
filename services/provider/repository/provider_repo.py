@@ -101,6 +101,16 @@ async def get_provider(db: AsyncSession, provider_id: uuid.UUID) -> Provider | N
     return result.scalar_one_or_none()
 
 
+async def get_provider_by_user(db: AsyncSession, user_id: uuid.UUID) -> Provider | None:
+    """Fetch the provider profile linked to login account `user_id` (unique), if any."""
+    result = await db.execute(
+        select(Provider)
+        .where(Provider.user_id == user_id)
+        .options(selectinload(Provider.specialties))
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_providers(
     db: AsyncSession,
     department_id: uuid.UUID | None = None,
