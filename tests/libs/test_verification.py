@@ -182,3 +182,53 @@ async def test_key_selection_is_by_kid_not_position(tmp_path: Path) -> None:
     )
     with pytest.raises(TokenError):
         await decode_token(misattributed, expected_types=ACCESS_ONLY, resolver=resolver)
+
+
+# --- audience and required exp (plan 02-01, D-06, review WR-03) --------------------
+
+
+async def test_token_with_aud_decodes_with_matching_audience(
+    key: SigningKey, resolver: StaticKeyResolver
+) -> None:
+    token = _sign(dict(_claims("service"), aud="provider"), key)
+    claims = await decode_token(
+        token, expected_types=INTERNAL_CALLER_TYPES, resolver=resolver, audience="provider"
+    )
+    assert claims["aud"] == "provider"
+
+
+async def test_token_with_aud_rejected_for_other_audience(
+    key: SigningKey, resolver: StaticKeyResolver
+) -> None:
+    token = _sign(dict(_claims("service"), aud="provider"), key)
+    with pytest.raises(TokenError):
+        await decode_token(
+            token, expected_types=INTERNAL_CALLER_TYPES, resolver=resolver, audience="patient"
+        )
+
+
+async def test_token_with_aud_rejected_when_no_audience_expected(
+    key: SigningKey, resolver: StaticKeyResolver
+) -> None:
+    token = _sign(dict(_claims("service"), aud="provider"), key)
+    with pytest.raises(TokenError):
+        await decode_token(token, expected_types=INTERNAL_CALLER_TYPES, resolver=resolver)
+
+
+async def test_token_without_aud_still_decodes_with_an_audience(
+    key: SigningKey, resolver: StaticKeyResolver
+) -> None:
+    """User access tokens carry no aud and must keep working on internal routes;
+    python-jose skips the check, which is why `require_internal_caller` checks
+    `aud` presence itself for service tokens."""
+    claims = await decode_token(
+        _sign(_claims(), key), expected_types=ACCESS_ONLY, resolver=resolver, audience="provider"
+    )
+    assert "aud" not in claims
+
+
+async def test_token_without_exp_rejected(key: SigningKey, resolver: StaticKeyResolver) -> None:
+    claims = _claims()
+    del claims["exp"]
+    with pytest.raises(TokenError):
+        await decode_token(_sign(claims, key), expected_types=ACCESS_ONLY, resolver=resolver)

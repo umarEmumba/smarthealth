@@ -9,8 +9,9 @@ Patient and Provider validate a profile -> account link (`patients.user_id`,
 Design rules (STRIDE T-01.1-24):
   * Not routed by the gateway (it has no `/internal` prefix) and excluded from
     OpenAPI (`include_in_schema=False`).
-  * Authenticated callers only: ADMIN or FRONT_DESK user tokens, or an Identity
-    service token (`require_internal_caller`).
+  * Authenticated callers only: ADMIN or FRONT_DESK user tokens
+    (`require_internal_caller`). No service needs account lookups, so every
+    service token is refused with 403 (plan 02-01, review WR-02).
   * A missing user and a user outside the caller's clinic scope return the
     IDENTICAL 404, so existence cannot be probed across clinics.
   * Minimal fields only. No email and no credential material ever leave Identity
@@ -80,7 +81,7 @@ def _not_found() -> HTTPException:
 async def lookup_user(
     user_id: uuid.UUID,
     caller: InternalCaller = Depends(
-        require_internal_caller(Role.ADMIN, Role.FRONT_DESK, audience="identity", allowed_services=frozenset({"identity"}))
+        require_internal_caller(Role.ADMIN, Role.FRONT_DESK, audience="identity", allowed_services=frozenset())
     ),
     db: AsyncSession = Depends(get_db),
 ) -> UserRef:

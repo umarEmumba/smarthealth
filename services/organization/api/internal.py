@@ -10,6 +10,8 @@ Design rules (STRIDE T-01.1-14):
   * Not routed by the gateway (it has no `/internal` prefix) and excluded from
     OpenAPI (`include_in_schema=False`).
   * Authenticated, role-allowlisted callers only (`require_internal_caller`).
+    Service tokens must carry `aud=organization` and come from an allowed
+    caller: clinics {identity, scheduling}, departments {scheduling} (plan 02-01).
   * A missing id and an out-of-clinic-scope id return the IDENTICAL 404, so
     existence cannot be probed across clinics.
   * INACTIVE rows are reported (`is_active: false`), never hidden: the caller
@@ -58,7 +60,7 @@ def _not_found() -> HTTPException:
 async def lookup_clinic(
     clinic_id: uuid.UUID,
     caller: InternalCaller = Depends(
-        require_internal_caller(Role.ADMIN, Role.FRONT_DESK, audience="organization", allowed_services=frozenset({"identity"}))
+        require_internal_caller(Role.ADMIN, Role.FRONT_DESK, audience="organization", allowed_services=frozenset({"identity", "scheduling"}))
     ),
     db: AsyncSession = Depends(get_db),
 ) -> ClinicRef:
@@ -75,7 +77,7 @@ async def lookup_clinic(
 async def lookup_department(
     department_id: uuid.UUID,
     caller: InternalCaller = Depends(
-        require_internal_caller(Role.ADMIN, Role.PROVIDER, audience="organization", allowed_services=frozenset())
+        require_internal_caller(Role.ADMIN, Role.PROVIDER, audience="organization", allowed_services=frozenset({"scheduling"}))
     ),
     db: AsyncSession = Depends(get_db),
 ) -> DepartmentRef:

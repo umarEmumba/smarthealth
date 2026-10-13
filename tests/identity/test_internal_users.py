@@ -3,8 +3,8 @@
 Patient and Provider call it (plans 01.1-06/07) to validate a profile -> account
 link. Contract under test (STRIDE T-01.1-24): returns exactly `{id, role,
 clinic_id}` (never an email or any credential material); accepts admin/front_desk
-user tokens and service tokens; 401 without a token, 403 for other roles; an
-unknown user and a user outside the caller's clinic scope get the IDENTICAL 404,
+user tokens only (every service token is 403, plan 02-01); 401 without a token,
+403 for other roles; an unknown user and a user outside the caller's clinic scope get the IDENTICAL 404,
 so existence cannot be probed across clinics; the route is excluded from OpenAPI
 and the gateway has no route to it.
 """
@@ -150,9 +150,11 @@ async def test_missing_token_is_401(client: AsyncClient, mesh: httpx.AsyncClient
     assert resp.status_code == 401
 
 
-async def test_service_token_may_look_up_users(
+async def test_service_token_is_refused_on_users_lookup(
     client: AsyncClient, mesh: httpx.AsyncClient
 ) -> None:
+    """No service needs account lookups, so the route allows no service caller
+    (plan 02-01): even a correctly-audienced Identity service token is 403."""
     from services.identity.security.signing import create_service_token  # noqa: PLC0415
 
     admin = await bootstrap_admin_and_login(client)
@@ -160,11 +162,10 @@ async def test_service_token_may_look_up_users(
 
     resp = await mesh.get(
         _internal(patient["id"]),
-        headers={"Authorization": f"Bearer {create_service_token('identity')}"},
+        headers={"Authorization": f"Bearer {create_service_token('identity', audience='identity')}"},
     )
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["id"] == patient["id"]
+    assert resp.status_code == 403, resp.text
 
 
 async def test_route_is_absent_from_identity_openapi(mesh: httpx.AsyncClient) -> None:

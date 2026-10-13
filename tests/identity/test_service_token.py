@@ -4,7 +4,7 @@ registration that needs them (plan 01.1-05, Task 2; STRIDE T-01.1-22).
 Anonymous self-registration has no user token to forward to Organization, so
 Identity signs a short-lived (60 s) service token of its own:
 
-    type=service, sub=service:identity, jti, iat, exp (RS256, kid header)
+    type=service, sub=service:identity, aud=organization, jti, iat, exp (RS256, kid header)
 
 It is never handed to a client. It is accepted ONLY by `require_internal_caller`
 (on `/internal/*`), and every public route still rejects it with 401 because
@@ -65,6 +65,7 @@ def _service_claims(**overrides: Any) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     claims: dict[str, Any] = {
         "sub": "service:identity",
+        "aud": "organization",
         "type": "service",
         "jti": str(uuid.uuid4()),
         "iat": now,
@@ -106,10 +107,11 @@ async def _user_row_exists(email: str) -> bool:
 def test_create_service_token_claims_and_short_ttl() -> None:
     from services.identity.security.signing import create_service_token  # noqa: PLC0415
 
-    claims = verify_identity_token(create_service_token("identity"))
+    claims = verify_identity_token(create_service_token("identity", audience="organization"))
 
-    assert set(claims) == {"sub", "type", "jti", "iat", "exp"}
+    assert set(claims) == {"sub", "aud", "type", "jti", "iat", "exp"}
     assert claims["sub"] == "service:identity"
+    assert claims["aud"] == "organization"
     assert claims["type"] == "service"
     assert claims["exp"] - claims["iat"] == 60
     # No user context of any kind rides in a service token.
@@ -123,7 +125,7 @@ def test_service_token_ttl_follows_the_setting(monkeypatch: pytest.MonkeyPatch) 
     assert identity_settings.service_token_expire_seconds == 60
     monkeypatch.setattr(identity_settings, "service_token_expire_seconds", 15)
 
-    claims = verify_identity_token(create_service_token("identity"))
+    claims = verify_identity_token(create_service_token("identity", audience="organization"))
 
     assert claims["exp"] - claims["iat"] == 15
 
@@ -238,6 +240,7 @@ async def test_anonymous_register_sends_a_short_lived_identity_service_token(
     token = lookup.headers["authorization"].removeprefix("Bearer ")
     claims = verify_identity_token(token)
     assert (claims["type"], claims["sub"]) == ("service", "service:identity")
+    assert claims["aud"] == "organization"
     assert claims["exp"] - claims["iat"] == 60
     # The service token is an internal credential: it never reaches the client.
     assert token not in resp.text
@@ -249,7 +252,7 @@ async def test_anonymous_register_sends_a_short_lived_identity_service_token(
 async def test_service_token_is_rejected_by_public_routes(client: AsyncClient) -> None:
     from services.identity.security.signing import create_service_token  # noqa: PLC0415
 
-    token = create_service_token("identity")
+    token = create_service_token("identity", audience="organization")
 
     ping = await client.get("/api/admin/ping", headers=_bearer(token))
     logout = await client.post("/api/auth/logout", headers=_bearer(token))
@@ -267,7 +270,7 @@ async def test_service_token_is_accepted_on_an_internal_endpoint(
     clinic_id = await _create_clinic(client, admin, "Internal Service Token Clinic")
 
     resp = await mesh.get(
-        _org_clinic_url(clinic_id), headers=_bearer(create_service_token("identity"))
+        _org_clinic_url(clinic_id), headers=_bearer(create_service_token("identity", audience="organization"))
     )
 
     assert resp.status_code == 200, resp.text

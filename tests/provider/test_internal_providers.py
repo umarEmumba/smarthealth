@@ -6,8 +6,8 @@ active before accepting a reference to it. It is called here DIRECTLY over the
 in-process mesh at Provider's internal base URL — the gateway has no route to
 `/internal` at all.
 
-Contract under test: ADMIN user tokens and service tokens only (401 without a
-token, 403 for any other role), identical 404 for an unknown id, inactive rows
+Contract under test: ADMIN user tokens and Scheduling/Visit service tokens with
+`aud=provider` only (401 without a token, 403 for any other role), identical 404 for an unknown id, inactive rows
 REPORTED (`is_active: false`) rather than hidden, minimal fields (id,
 department_id, is_active), and excluded from OpenAPI.
 """
@@ -128,7 +128,7 @@ async def test_service_token_is_accepted(client: AsyncClient, mesh: httpx.AsyncC
 
     resp = await mesh.get(
         _internal(f"/internal/providers/{provider_id}"),
-        headers={"Authorization": f"Bearer {create_service_token('scheduling')}"},
+        headers={"Authorization": f"Bearer {create_service_token('scheduling', audience='provider')}"},
     )
 
     assert resp.status_code == 200, resp.text
