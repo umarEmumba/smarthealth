@@ -25,6 +25,7 @@ from libs.db.mongo import get_mongo_client
 from libs.health import build_health_router
 from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
+from services.patient.api import internal
 from services.patient.api.patients import router as patients_router
 from services.patient.config import settings
 
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
 
     app.include_router(build_health_router("patient", lambda: settings.database_url))
     app.include_router(patients_router)
+    app.include_router(internal.router)
 
     # Every token is verified locally against Identity's cached public JWKS.
     app.state.key_resolver = JwksClient.from_settings(settings)

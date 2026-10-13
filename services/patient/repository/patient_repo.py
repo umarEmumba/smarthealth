@@ -65,6 +65,18 @@ async def get_patient(
     return result.scalar_one_or_none()
 
 
+async def get_patient_by_user(
+    db: AsyncSession, user_id: uuid.UUID, clinic_id: uuid.UUID
+) -> Patient | None:
+    """Fetch the patient profile linked to login account `user_id`, scoped to
+    `clinic_id` — like `get_patient`, there is no unscoped variant.
+    """
+    result = await db.execute(
+        select(Patient).where(Patient.user_id == user_id, Patient.clinic_id == clinic_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_patients(
     db: AsyncSession, clinic_id: uuid.UUID, *, include_inactive: bool = False
 ) -> list[Patient]:
