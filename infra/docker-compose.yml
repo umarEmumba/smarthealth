@@ -83,6 +83,8 @@ services:
       PROVIDER_DB_PASSWORD: ${PROVIDER_DB_PASSWORD:-changeme-provider-local-dev-only}
       PATIENT_DB_PASSWORD: ${PATIENT_DB_PASSWORD:-changeme-patient-local-dev-only}
       SCHEDULING_DB_PASSWORD: ${SCHEDULING_DB_PASSWORD:-changeme-scheduling-local-dev-only}
+      VISIT_DB_PASSWORD: ${VISIT_DB_PASSWORD:-changeme-visit-local-dev-only}
+      BILLING_DB_PASSWORD: ${BILLING_DB_PASSWORD:-changeme-billing-local-dev-only}
     volumes:
       - ./postgres-init:/postgres-init:ro
     entrypoint: ["bash", "/postgres-init/create-service-databases.sh"]

@@ -17,7 +17,7 @@
 # NEVER add `set -x` here: this script handles passwords.
 set -euo pipefail
 
-SERVICES=(identity organization provider patient scheduling)
+SERVICES=(identity organization provider patient scheduling visit billing)
 
 for svc in "${SERVICES[@]}"; do
   upper=$(printf '%s' "$svc" | tr '[:lower:]' '[:upper:]')

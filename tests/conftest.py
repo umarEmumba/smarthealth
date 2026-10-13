@@ -116,6 +116,7 @@ HARNESS_SERVICES: tuple[str, ...] = (
     "patient",
     "provider",
     "scheduling",
+    "billing",
     "gateway",
 )
 ENTRY_SERVICE = "gateway"

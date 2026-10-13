@@ -55,6 +55,8 @@ class SharedSettings(BaseSettings):
     provider_service_url: str = "http://provider:8000"
     patient_service_url: str = "http://patient:8000"
     scheduling_service_url: str = "http://scheduling:8000"
+    visit_service_url: str = "http://visit:8000"
+    billing_service_url: str = "http://billing:8000"
 
     # --- JWKS cache + internal HTTP behaviour ---
     jwks_cache_ttl_seconds: int = 300
