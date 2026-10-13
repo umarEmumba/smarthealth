@@ -91,27 +91,54 @@ coverage:
   - id: D1
     description: "Tracer: front-desk checks in a confirmed appointment through the gateway; history [null -> checked_in]; one visit.check_in audit"
     requirement: VISIT-01
-    test: tests/visit/test_check_in.py::test_front_desk_checks_in_confirmed_appointment
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_check_in.py#test_front_desk_checks_in_confirmed_appointment"
+        status: pass
+    human_judgment: false
   - id: D2
     description: "Check-in refusals (pending/cancelled/failed 409, other clinic identical 404, admin without clinic 422, provider/patient 403), Scheduling down 503 with zero rows, repeat 200, 10 concurrent -> one 201 + nine 200, one row/history/audit"
     requirement: VISIT-01, VISIT-03
-    test: tests/visit/test_check_in.py
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_check_in.py"
+        status: pass
+    human_judgment: false
   - id: D3
     description: "start/complete, repeats and passed targets 200 no-op, skip 409, provider own 200 / other provider identical 404, patient 403, other-clinic front-desk 404, admin, Provider down 503 unchanged, 10 concurrent start/complete change state once"
     requirement: VISIT-02, VISIT-03
-    test: tests/visit/test_transitions.py
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_transitions.py"
+        status: pass
+    human_judgment: false
   - id: D4
     description: "Internal appointment lookup: visit aud=scheduling 200 with exact keys, wrong clinic identical 404, clinic_id required 422, billing token 403, aud=provider 401, no token 401, provider user 403, gateway 404, absent from OpenAPI"
     requirement: VISIT-01
-    test: tests/scheduling/test_internal_appointments.py
+    verification:
+      - kind: integration
+        ref: "tests/scheduling/test_internal_appointments.py"
+        status: pass
+    human_judgment: false
   - id: D5
     description: "Clinic-scoped list: own clinic newest first, status/provider/date filters, limit cap/offset, front-desk other clinic 403, admin with/without clinic, provider/patient 403, provider detail own/other, polling reflects transitions"
     requirement: VISIT-05
-    test: tests/visit/test_visit_list.py
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_visit_list.py"
+        status: pass
+    human_judgment: false
   - id: D6
     description: "Isolation invariants and gateway routing include Visit"
     requirement: VISIT-05
-    test: tests/libs/test_service_isolation.py, tests/gateway/test_routing.py
+    verification:
+      - kind: integration
+        ref: "tests/libs/test_service_isolation.py"
+        status: pass
+      - kind: integration
+        ref: "tests/gateway/test_routing.py"
+        status: pass
+    human_judgment: false
 ---
 
 # Phase 2 Plan 10: Visit Service Summary

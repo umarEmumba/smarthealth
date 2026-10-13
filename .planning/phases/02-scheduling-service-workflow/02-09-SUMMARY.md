@@ -89,23 +89,43 @@ coverage:
   - id: D1
     description: "Tracer: patient joins with own token, another patient's cancellation auto-books them via child BookingWorkflow"
     requirement: SCHED-07
-    test: tests/scheduling/test_waitlist.py::test_patient_joins_waitlist_and_is_auto_booked_on_cancel
+    verification:
+      - kind: integration
+        ref: "tests/scheduling/test_waitlist.py#test_patient_joins_waitlist_and_is_auto_booked_on_cancel"
+        status: pass
+    human_judgment: false
   - id: D2
     description: "FIFO, window, billing rejection -> next, patient overlap -> failed without appointment, lost race at claim, no match, reschedule frees old slot"
     requirement: SCHED-07
-    test: tests/scheduling/test_waitlist.py
+    verification:
+      - kind: integration
+        ref: "tests/scheduling/test_waitlist.py"
+        status: pass
+    human_judgment: false
   - id: D3
     description: "Advance loop in isolation: one claim/child/resolve, lost race stops, business failure moves on, entry_failed and saga failures capped, bounded claim failure"
     requirement: SCHED-07
-    test: tests/workflows/test_waitlist_workflow.py
+    verification:
+      - kind: integration
+        ref: "tests/workflows/test_waitlist_workflow.py"
+        status: pass
+    human_judgment: false
   - id: D4
     description: "Concurrent frees never share an entry (repo level and through the gateway)"
     requirement: SCHED-07
-    test: tests/scheduling/test_waitlist_concurrency.py
+    verification:
+      - kind: integration
+        ref: "tests/scheduling/test_waitlist_concurrency.py"
+        status: pass
+    human_judgment: false
   - id: D5
     description: "Pre-patch histories replay against patched cancel/reschedule; v2 histories carry the marker + child and replay"
     requirement: SCHED-06, SCHED-05
-    test: tests/workflows/test_replay.py
+    verification:
+      - kind: integration
+        ref: "tests/workflows/test_replay.py"
+        status: pass
+    human_judgment: false
 ---
 
 # Phase 2 Plan 09: Waitlist Advance Summary

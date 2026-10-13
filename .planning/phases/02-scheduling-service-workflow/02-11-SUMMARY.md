@@ -79,23 +79,49 @@ coverage:
   - id: D1
     description: "Tracer: complete through the gateway -> 200 completed; visit-completed-{id} finalizes billing, records both intents; marker set; one followup.requested and one analytics.intent_recorded audit"
     requirement: VISIT-04, BILL-02
-    test: tests/visit/test_downstream.py::test_complete_returns_200_and_downstream_finalizes_billing
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_downstream.py#test_complete_returns_200_and_downstream_finalizes_billing"
+        status: pass
+    human_judgment: false
   - id: D2
     description: "Non-blocking: no worker on visit-tq -> 200, workflow RUNNING, billing still verified, marker set"
     requirement: VISIT-04
-    test: tests/visit/test_downstream.py::test_complete_does_not_wait_for_downstream_work
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_downstream.py#test_complete_does_not_wait_for_downstream_work"
+        status: pass
+    human_judgment: false
   - id: D3
     description: "Lost trigger: Temporal down -> 200 with marker NULL; sweep inside grace skips it; after aging completed_at by SQL the sweep starts it, billing finalized, one finalize audit after a second sweep"
     requirement: VISIT-04
-    test: tests/visit/test_downstream.py::test_lost_trigger_is_recovered_by_the_sweep_exactly_once
+    verification:
+      - kind: integration
+        ref: "tests/visit/test_downstream.py#test_lost_trigger_is_recovered_by_the_sweep_exactly_once"
+        status: pass
+    human_judgment: false
   - id: D4
     description: "ensure_visit_schedules creates {prefix}-downstream-sweeper (SKIP, interval, visit-tq) then is a no-op; sweeper workflow runs ACT_SWEEP once"
     requirement: VISIT-04
-    test: tests/workflows/test_visit_schedules.py
+    verification:
+      - kind: integration
+        ref: "tests/workflows/test_visit_schedules.py"
+        status: pass
+    human_judgment: false
   - id: D5
     description: "Branch independence with stubs; Visit contracts round-trip ids-only; visit_completed_v1.json replays and is free of coverage/Bearer/DENY-"
     requirement: VISIT-04, BILL-02
-    test: tests/workflows/test_visit_completed.py, tests/workflows/test_contracts.py, tests/workflows/test_replay.py
+    verification:
+      - kind: integration
+        ref: "tests/workflows/test_visit_completed.py"
+        status: pass
+      - kind: integration
+        ref: "tests/workflows/test_contracts.py"
+        status: pass
+      - kind: integration
+        ref: "tests/workflows/test_replay.py"
+        status: pass
+    human_judgment: false
 ---
 
 # Phase 2 Plan 11: Visit Completion Downstream Summary

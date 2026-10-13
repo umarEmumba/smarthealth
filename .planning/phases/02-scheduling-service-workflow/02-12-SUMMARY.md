@@ -75,27 +75,55 @@ coverage:
   - id: D1
     description: "Compose brings up billing, visit, scheduling-worker and visit-worker healthy (APIs via /health, workers via heartbeat); compose_healthcheck.sh OK; booking through the published gateway is confirmed by the containerized worker"
     requirement: SCHED-01, SCHED-02
-    test: tests/e2e/test_phase2_flows.py::test_booking_confirmed_via_gateway
+    verification:
+      - kind: e2e
+        ref: "tests/e2e/test_phase2_flows.py#test_booking_confirmed_via_gateway"
+        status: pass
+    human_judgment: false
   - id: D2
     description: "Forced billing denial (DENY-e2e-0001) -> failed/BillingRejected, slot available again, billing pending -> failed -> voided, on the deployed stack"
     requirement: SCHED-08, BILL-01
-    test: tests/e2e/test_phase2_flows.py::test_forced_billing_failure_compensates
+    verification:
+      - kind: e2e
+        ref: "tests/e2e/test_phase2_flows.py#test_forced_billing_failure_compensates"
+        status: pass
+    human_judgment: false
   - id: D3
     description: "Cancel -> cancelled, billing refund_pending -> refunded; waitlisted patient auto-booked and confirmed on the freed slot"
     requirement: SCHED-06, SCHED-07, BILL-02
-    test: tests/e2e/test_phase2_flows.py::test_cancel_frees_slot_and_waitlist_advances
+    verification:
+      - kind: e2e
+        ref: "tests/e2e/test_phase2_flows.py#test_cancel_frees_slot_and_waitlist_advances"
+        status: pass
+    human_judgment: false
   - id: D4
     description: "Check-in 201 -> start 200 -> complete 200; billing finalized by visit-worker; completed visit listed"
     requirement: VISIT-01, VISIT-02, VISIT-04, VISIT-05
-    test: tests/e2e/test_phase2_flows.py::test_visit_lifecycle_finalizes_billing
+    verification:
+      - kind: e2e
+        ref: "tests/e2e/test_phase2_flows.py#test_visit_lifecycle_finalizes_billing"
+        status: pass
+    human_judgment: false
   - id: D5
     description: "Demo: 20 parallel bookings -> 1 accepted, 19 conflicts, winner confirmed, 1 active appointment"
     requirement: SCHED-03
-    test: tests/e2e/test_demo_concurrent_booking.py
+    verification:
+      - kind: e2e
+        ref: "tests/e2e/test_demo_concurrent_booking.py"
+        status: pass
+    human_judgment: false
   - id: D6
     description: "Dashboard self-contained, >= 4 accessible inline SVG state diagrams, v3 · Phase 2, required Phase 2 content and Q&A, roadmap; 15 requirements map to existing test files"
     requirement: all 15 (traceability)
-    test: tests/docs/test_dashboard.py, tests/docs/test_requirement_traceability.py
+    verification:
+      - kind: integration
+        ref: "tests/docs/test_dashboard.py"
+        status: pass
+      - kind: integration
+        ref: "tests/docs/test_requirement_traceability.py"
+        status: pass
+    human_judgment: true
+    rationale: "Dashboard and docs need a visual check by a person (02-12 Task 5); the automated dashboard and traceability tests do not cover layout or readability."
 ---
 
 # Phase 2 Plan 12: Compose Wiring, Real-Stack E2E, Demo and Docs Summary
