@@ -58,6 +58,12 @@ class SharedSettings(BaseSettings):
     visit_service_url: str = "http://visit:8000"
     billing_service_url: str = "http://billing:8000"
 
+    # --- Temporal (plan 02-06, D-05) ---
+    # The API process connects lazily (it must boot and serve reads while
+    # Temporal is down); workers connect eagerly with bounded retries.
+    temporal_address: str = "temporal:7233"
+    temporal_namespace: str = "default"
+
     # --- JWKS cache + internal HTTP behaviour ---
     jwks_cache_ttl_seconds: int = 300
     jwks_miss_backoff_seconds: int = 30

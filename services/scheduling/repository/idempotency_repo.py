@@ -67,17 +67,20 @@ async def claim_idempotency_key(
 
 
 async def get_idempotency_record(
-    db: AsyncSession, *, caller_user_id: uuid.UUID, key: str
+    db: AsyncSession, *, caller_user_id: uuid.UUID, key: str, live_only: bool = False
 ) -> tuple[str, uuid.UUID] | None:
-    """`(request_hash, appointment_id)` stored for the key, or None."""
+    """`(request_hash, appointment_id)` stored for the key, or None.
+
+    `live_only=True` (the API's early replay check, plan 02-06) ignores an
+    expired claim, which the next `claim_idempotency_key` overwrites."""
+    sql = (
+        "SELECT request_hash, appointment_id FROM idempotency_keys "
+        "WHERE caller_user_id = :caller_user_id AND key = :key"
+    )
+    if live_only:
+        sql += " AND expires_at >= now()"
     row = (
-        await db.execute(
-            text(
-                "SELECT request_hash, appointment_id FROM idempotency_keys "
-                "WHERE caller_user_id = :caller_user_id AND key = :key"
-            ),
-            {"caller_user_id": caller_user_id, "key": key},
-        )
+        await db.execute(text(sql), {"caller_user_id": caller_user_id, "key": key})
     ).one_or_none()
     if row is None:
         return None

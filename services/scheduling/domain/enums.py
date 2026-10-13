@@ -48,10 +48,16 @@ class AppointmentStatus:
 
 
 class FailureReason:
-    """Machine-readable `appointments.failure_reason` vocabulary (D-09)."""
+    """Machine-readable `appointments.failure_reason` vocabulary (D-09).
+
+    The saga stores the failing activity's `ApplicationError.type` verbatim
+    (plan 02-06), so the business reasons use the error-type spelling.
+    """
 
     SLOT_UNAVAILABLE = "SlotUnavailable"
     BILLING_REJECTED = "BillingRejected"
     REFERENCE_INVALID = "ReferenceInvalid"
     HOLD_EXPIRED = "hold_expired"
-    CONFIRM_LOST_HOLD = "confirm_lost_hold"
+    CONFIRM_LOST_HOLD = "ConfirmLostHold"
+    ACTIVITY_TIMEOUT = "activity_timeout"
+    ACTIVITY_FAILED = "activity_failed"

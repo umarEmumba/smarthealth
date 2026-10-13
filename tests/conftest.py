@@ -121,6 +121,12 @@ HARNESS_SERVICES: tuple[str, ...] = (
 )
 ENTRY_SERVICE = "gateway"
 
+# Shared Temporal fixtures (plan 02-06): `temporal_env`, `scheduling_worker`,
+# `booking_world`. Registered here, at the root, because pytest does not share
+# one folder's conftest fixtures with a sibling folder (tests/workflows and
+# tests/scheduling both need them).
+pytest_plugins = ["tests.temporal_fixtures"]
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(

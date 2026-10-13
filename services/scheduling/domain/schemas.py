@@ -1,4 +1,4 @@
-"""Scheduling's public request/response models (plan 02-04).
+"""Scheduling's public request/response models (plans 02-04, 02-06).
 
 Slot payloads carry ids and UTC instants only: no names, no PHI, and no data
 enriched from another service (Phase 1.1 D-07).
@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SlotGenerateRequest(BaseModel):
@@ -34,3 +34,46 @@ class SlotOut(BaseModel):
     start_time: datetime
     end_time: datetime
     status: str
+
+
+# --- plan 02-06: booking ------------------------------------------------------
+
+
+class BookingRequest(BaseModel):
+    slot_id: uuid.UUID
+    # Staff must name the patient; a PATIENT books for themselves (resolved
+    # from their login) and may only repeat their own id here.
+    patient_id: uuid.UUID | None = None
+    # Opaque billing reference: stored on the appointment for the billing
+    # activity, never logged, audited, echoed back or put in workflow I/O.
+    coverage_ref: str | None = Field(default=None, max_length=64)
+
+
+class AppointmentAccepted(BaseModel):
+    appointment_id: uuid.UUID
+    status: str
+    status_url: str
+
+
+class AppointmentHistoryOut(BaseModel):
+    from_status: str | None
+    to_status: str
+    reason: str | None
+    created_at: datetime
+
+
+class AppointmentOut(BaseModel):
+    id: uuid.UUID
+    clinic_id: uuid.UUID
+    patient_id: uuid.UUID
+    provider_id: uuid.UUID
+    slot_id: uuid.UUID
+    slot_start: datetime
+    slot_end: datetime
+    status: str
+    failure_reason: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    # Filled on the single-appointment read; empty in list responses.
+    history: list[AppointmentHistoryOut] = Field(default_factory=list)

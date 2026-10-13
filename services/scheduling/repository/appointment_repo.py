@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -272,3 +272,74 @@ async def mark_appointment_failed(
         text("SELECT status FROM appointments WHERE id = :a"), {"a": appointment_id}
     )
     return current == AppointmentStatus.FAILED
+
+
+# --- plan 02-06: workflow-start marker and reads for /api/appointments --------
+
+
+async def mark_workflow_started(db: AsyncSession, *, appointment_id: uuid.UUID) -> bool:
+    """Record that the booking workflow has been started (research Pattern 8).
+
+    Conditional (`WHERE workflow_started_at IS NULL`), so a repeat or a race
+    with the starter sweeper (plan 02-07) is harmless: True when this call set
+    the marker. Flushes only; the caller commits.
+    """
+    marked = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET workflow_started_at = now()
+             WHERE id = :a AND workflow_started_at IS NULL
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id},
+    )
+    return marked is not None
+
+
+async def get_appointment(db: AsyncSession, appointment_id: uuid.UUID) -> Appointment | None:
+    return await db.get(Appointment, appointment_id)
+
+
+async def list_appointments(
+    db: AsyncSession,
+    *,
+    clinic_id: uuid.UUID | None = None,
+    patient_id: uuid.UUID | None = None,
+    status: str | None = None,
+    provider_id: uuid.UUID | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    limit: int = 100,
+) -> list[Appointment]:
+    """Appointments matching every given filter, ordered by slot start.
+
+    `start`/`end` bound `slot_start` as `[start, end)`. Scope filters
+    (`clinic_id`, `patient_id`) are applied by the caller from the user's role.
+    """
+    query = select(Appointment)
+    if clinic_id is not None:
+        query = query.where(Appointment.clinic_id == clinic_id)
+    if patient_id is not None:
+        query = query.where(Appointment.patient_id == patient_id)
+    if status is not None:
+        query = query.where(Appointment.status == status)
+    if provider_id is not None:
+        query = query.where(Appointment.provider_id == provider_id)
+    if start is not None:
+        query = query.where(Appointment.slot_start >= start)
+    if end is not None:
+        query = query.where(Appointment.slot_start < end)
+    query = query.order_by(Appointment.slot_start, Appointment.id).limit(limit)
+    return list((await db.scalars(query)).all())
+
+
+async def get_history(db: AsyncSession, appointment_id: uuid.UUID) -> list[AppointmentStatusHistory]:
+    """The appointment's transitions, oldest first."""
+    query = (
+        select(AppointmentStatusHistory)
+        .where(AppointmentStatusHistory.appointment_id == appointment_id)
+        .order_by(AppointmentStatusHistory.created_at, AppointmentStatusHistory.id)
+    )
+    return list((await db.scalars(query)).all())

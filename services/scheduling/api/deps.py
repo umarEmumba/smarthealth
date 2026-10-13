@@ -1,4 +1,4 @@
-"""Scheduling API dependencies (plan 02-04).
+"""Scheduling API dependencies (plans 02-04, 02-06).
 
 `get_service_tokens` hands a route the process's one `ServiceTokenProvider`
 for Scheduling's outgoing `/internal/*` reads (D-06). It is built lazily on
@@ -16,8 +16,10 @@ provider is rebuilt so it never holds a closed or stale client.
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Request, status
+from temporalio.client import Client
 
 from libs.auth.service_tokens import ServiceTokenProvider, ServiceTokenUnavailable, load_client_secret
+from libs.temporal import connect_client
 from services.scheduling.config import settings
 
 SERVICE_NAME = "scheduling"
@@ -47,3 +49,18 @@ async def get_service_tokens(request: Request) -> ServiceTokenProvider:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="service credentials unavailable",
         ) from exc
+
+
+async def get_temporal_client(request: Request) -> Client:
+    """FastAPI dependency (plan 02-06): the app's Temporal client.
+
+    Connected LAZILY on first use and cached on `app.state.temporal_client`:
+    the API boots and serves reads while Temporal is down, and a failed start
+    is deferred to the starter sweeper (research Pitfall 4). Tests inject the
+    test environment's client (or a failing stand-in) on the same attribute.
+    """
+    client = getattr(request.app.state, "temporal_client", None)
+    if client is None:
+        client = await connect_client(lazy=True)
+        request.app.state.temporal_client = client
+    return client

@@ -37,5 +37,11 @@ class SchedulingSettings(SharedSettings):
         default=31, gt=0, validation_alias="SCHEDULING_SLOT_MAX_RANGE_DAYS"
     )
 
+    # D-03: how long the booking saga's reserve step holds a slot. Must
+    # comfortably exceed the saga's bounded worst case (the sum of the forward
+    # activities' schedule_to_close timeouts, about 4.5 minutes), so the reaper
+    # never frees a slot under a live saga in normal operation.
+    hold_ttl_minutes: int = Field(default=10, gt=0, validation_alias="SCHEDULING_HOLD_TTL_MINUTES")
+
 
 settings = SchedulingSettings()
