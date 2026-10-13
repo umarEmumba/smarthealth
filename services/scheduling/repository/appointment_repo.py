@@ -159,3 +159,116 @@ async def accept_booking(
             raise PatientOverlap() from exc
         raise
     return AcceptResult(appointment_id=appointment_id, replayed=False)
+
+
+async def confirm_booking(
+    db: AsyncSession,
+    *,
+    appointment_id: uuid.UUID,
+    slot_id: uuid.UUID,
+    actor: str = WORKFLOW_ACTOR,
+) -> bool:
+    """Final saga step: slot `held` -> `booked` and appointment `pending` ->
+    `confirmed`, in the caller's single transaction.
+
+    True when the booking is now confirmed (including a repeat: no second
+    history row). False when the hold was lost (reaped, or taken by another
+    appointment) or the appointment is no longer pending; then nothing changes
+    and the saga compensates (research Pitfall 5).
+
+    The appointment row is locked first so the two updates cannot be split by
+    a concurrent transition of the same appointment.
+    """
+    current = await db.scalar(
+        text("SELECT status FROM appointments WHERE id = :a FOR UPDATE"), {"a": appointment_id}
+    )
+    if current == AppointmentStatus.CONFIRMED:
+        booked = await db.scalar(
+            text(
+                "SELECT 1 FROM provider_slots "
+                "WHERE id = :s AND status = 'booked' AND held_by_appointment_id = :a"
+            ),
+            {"s": slot_id, "a": appointment_id},
+        )
+        return booked is not None
+    if current != AppointmentStatus.PENDING:
+        return False
+
+    slot = await db.scalar(
+        text(
+            """
+            UPDATE provider_slots
+               SET status = 'booked', held_until = NULL
+             WHERE id = :s AND status = 'held' AND held_by_appointment_id = :a
+            RETURNING id
+            """
+        ),
+        {"s": slot_id, "a": appointment_id},
+    )
+    if slot is None:
+        return False
+
+    confirmed = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET status = 'confirmed', version = version + 1, updated_at = now()
+             WHERE id = :a AND status = 'pending'
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id},
+    )
+    if confirmed is None:  # pragma: no cover - the row is locked as pending above
+        raise RuntimeError("appointment left 'pending' while locked")
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=AppointmentStatus.PENDING,
+        to_status=AppointmentStatus.CONFIRMED,
+        actor=actor,
+    )
+    return True
+
+
+async def mark_appointment_failed(
+    db: AsyncSession,
+    *,
+    appointment_id: uuid.UUID,
+    reason: str,
+    actor: str,
+) -> bool:
+    """Compensation: `pending` -> `failed` with a machine-readable reason
+    (`FailureReason`), plus one history row. A forward transition, never a
+    delete.
+
+    True when the appointment is now failed (a repeat appends no second history
+    row); False when it is in another state (e.g. already confirmed), which is
+    left untouched.
+    """
+    failed = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET status = 'failed', failure_reason = :r,
+                   version = version + 1, updated_at = now()
+             WHERE id = :a AND status = 'pending'
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id, "r": reason},
+    )
+    if failed is not None:
+        await append_status_history(
+            db,
+            appointment_id=appointment_id,
+            from_status=AppointmentStatus.PENDING,
+            to_status=AppointmentStatus.FAILED,
+            reason=reason,
+            actor=actor,
+        )
+        return True
+    current = await db.scalar(
+        text("SELECT status FROM appointments WHERE id = :a"), {"a": appointment_id}
+    )
+    return current == AppointmentStatus.FAILED
