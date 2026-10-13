@@ -18,11 +18,21 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from tests.conftest import bootstrap_admin_and_login, service_base_url
 
 
-def test_scheduling_owns_only_provider_slots_without_a_foreign_key() -> None:
+def test_scheduling_owns_its_tables_without_a_cross_service_foreign_key() -> None:
     from services.scheduling.repository.models import ProviderSlot, SchedulingBase  # noqa: PLC0415
 
-    assert set(SchedulingBase.metadata.tables) == {"provider_slots"}
+    # Phase 2 (plan 02-02) adds the booking data layer alongside the slots.
+    assert set(SchedulingBase.metadata.tables) == {
+        "provider_slots",
+        "appointments",
+        "idempotency_keys",
+        "appointment_status_history",
+    }
     assert not ProviderSlot.__table__.c.provider_id.foreign_keys
+    # Only intra-service foreign keys: provider/patient/clinic ids are plain UUIDs.
+    for table in SchedulingBase.metadata.tables.values():
+        for fk in table.foreign_keys:
+            assert fk.column.table.name in SchedulingBase.metadata.tables, fk.target_fullname
     names = {c.name for c in ProviderSlot.__table__.constraints}
     assert "ex_provider_slots_no_overlap" in names
     assert "ck_provider_slots_status_valid" in names
