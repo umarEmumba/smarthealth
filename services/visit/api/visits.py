@@ -1,7 +1,9 @@
 """Visit's public routes, reached through the gateway (plan 02-10, D-15, D-17, D-18).
 
-    POST /api/visits              check in a CONFIRMED appointment (front-desk, admin)
-    GET  /api/visits/{visit_id}   the visit plus its state history
+    POST /api/visits                     check in a CONFIRMED appointment (front-desk, admin)
+    GET  /api/visits/{visit_id}          the visit plus its state history
+    POST /api/visits/{visit_id}/start    checked_in -> in_progress
+    POST /api/visits/{visit_id}/complete in_progress -> completed
 
 Check-in (VISIT-01, D-15):
   * Front-desk acts in its own clinic (from the token); a body `clinic_id`
@@ -16,6 +18,16 @@ Check-in (VISIT-01, D-15):
   * `INSERT ... ON CONFLICT (appointment_id) DO NOTHING` arbitrates concurrent
     check-ins: one 201 (audited `visit.check_in`), the rest 200.
 
+Transitions (VISIT-02/03, D-15): the visit's provider (resolved from the
+caller's login through Provider's by-user lookup, aud=provider), or
+front-desk/admin within the clinic. A provider acting on another provider's
+visit gets the identical 404 a missing visit gets; Provider unreachable is 503
+with nothing changed. `transition_visit` is a conditional UPDATE plus a
+history row in one transaction: applied -> commit, then audit
+`visit.start` / `visit.complete` LAST; the current or an already-passed target
+-> 200 no-op (no history, no audit); a skipped state -> 409. Completion leaves
+`downstream_started_at` NULL for plan 02-11.
+
 Clinic scope (D-18): front-desk sees only its own clinic; anything outside it
 answers exactly like a missing visit (404 "not found"). Responses carry ids,
 statuses and timestamps only. Reads are not audited (existing convention);
@@ -29,6 +41,7 @@ import uuid
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from pymongo import AsyncMongoClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
@@ -48,7 +61,8 @@ from services.visit.domain.schemas import (
     VisitHistoryOut,
     VisitOut,
 )
-from services.visit.references import get_appointment_ref
+from services.visit.domain.states import PREVIOUS, TransitionOutcome, VisitStatus
+from services.visit.references import get_appointment_ref, get_provider_by_user
 from services.visit.repository import visit_repo
 from services.visit.repository.models import Visit
 
@@ -57,6 +71,7 @@ router = APIRouter(prefix="/api/visits", tags=["visits"])
 log = get_logger(__name__)
 
 STAFF_ROLES = (Role.FRONT_DESK, Role.ADMIN)
+VISIT_ROLES = (Role.PROVIDER, Role.FRONT_DESK, Role.ADMIN)
 ENTITY_TYPE = "visit"
 APPOINTMENT_CONFIRMED = "confirmed"
 
@@ -185,13 +200,126 @@ async def check_in(
     return _to_out(visit)
 
 
-@router.get("/{visit_id}", response_model=VisitDetailOut)
-async def get_visit(
+async def _visible_visit(
+    db: AsyncSession,
+    user: AuthenticatedUser,
     visit_id: uuid.UUID,
-    user: AuthenticatedUser = Depends(require_role(*STAFF_ROLES)),
-    db: AsyncSession = Depends(get_db),
-) -> VisitDetailOut:
+    http: httpx.AsyncClient,
+    tokens: ServiceTokenProvider,
+) -> Visit:
+    """The visit if `user` may act on it, else the identical 404.
+
+    A PROVIDER caller is resolved to its provider profile FIRST (before the
+    visit is even read), so the answer never depends on whether the visit
+    exists in some other clinic or belongs to someone else."""
+    if user.role == Role.PROVIDER:
+        try:
+            provider = await get_provider_by_user(http, tokens, user_id=uuid.UUID(user.sub))
+        except (UpstreamServiceUnavailable, ServiceTokenUnavailable) as exc:
+            log.warning("visit.provider_lookup_failed", error=type(exc).__name__)
+            raise _unavailable("provider") from exc
+        visit = await visit_repo.get_visit(db, visit_id)
+        if provider is None or visit is None or str(visit.provider_id) != str(provider["id"]):
+            raise _not_found()
+        return visit
+
     visit = await visit_repo.get_visit(db, visit_id)
     if visit is None or not _staff_in_scope(user, visit.clinic_id):
         raise _not_found()
+    return visit
+
+
+@router.get("/{visit_id}", response_model=VisitDetailOut)
+async def get_visit(
+    visit_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(*VISIT_ROLES)),
+    db: AsyncSession = Depends(get_db),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
+    tokens: ServiceTokenProvider = Depends(get_service_tokens),
+) -> VisitDetailOut:
+    visit = await _visible_visit(db, user, visit_id, http, tokens)
     return await _detail(db, visit)
+
+
+async def _transition(
+    *,
+    visit_id: uuid.UUID,
+    target: str,
+    action: str,
+    user: AuthenticatedUser,
+    db: AsyncSession,
+    mongo: AsyncMongoClient,
+    http: httpx.AsyncClient,
+    tokens: ServiceTokenProvider,
+) -> VisitOut:
+    await _visible_visit(db, user, visit_id, http, tokens)
+    try:
+        outcome = await visit_repo.transition_visit(
+            db, visit_id=visit_id, target=target, actor=f"user:{user.sub}"
+        )
+    except IntegrityError:
+        # Belt and braces: the conditional UPDATE already serialises movers, so
+        # `uq_visit_history_visit_to` should never fire. If it does, nothing of
+        # this request is kept and it answers like any other duplicate.
+        await db.rollback()
+        log.warning("visit.duplicate_history_suppressed", visit_id=str(visit_id), target=target)
+        outcome = TransitionOutcome.NOOP
+
+    if outcome == TransitionOutcome.APPLIED:
+        await db.commit()
+    else:
+        await db.rollback()
+    if outcome == TransitionOutcome.SKIPPED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"visit must be {PREVIOUS[target]} before {target}",
+        )
+
+    visit = await visit_repo.get_visit(db, visit_id)
+    assert visit is not None  # visits are never deleted
+    log.info("visit.transition", visit_id=str(visit_id), target=target, outcome=outcome)
+    if outcome == TransitionOutcome.APPLIED:
+        await _audit(mongo, user, visit, action)
+    return _to_out(visit)
+
+
+@router.post("/{visit_id}/start", response_model=VisitOut)
+async def start_visit(
+    visit_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(*VISIT_ROLES)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
+    tokens: ServiceTokenProvider = Depends(get_service_tokens),
+) -> VisitOut:
+    return await _transition(
+        visit_id=visit_id,
+        target=VisitStatus.IN_PROGRESS,
+        action="visit.start",
+        user=user,
+        db=db,
+        mongo=mongo,
+        http=http,
+        tokens=tokens,
+    )
+
+
+@router.post("/{visit_id}/complete", response_model=VisitOut)
+async def complete_visit(
+    visit_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(*VISIT_ROLES)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
+    tokens: ServiceTokenProvider = Depends(get_service_tokens),
+) -> VisitOut:
+    return await _transition(
+        visit_id=visit_id,
+        target=VisitStatus.COMPLETED,
+        action="visit.complete",
+        user=user,
+        db=db,
+        mongo=mongo,
+        http=http,
+        tokens=tokens,
+    )
