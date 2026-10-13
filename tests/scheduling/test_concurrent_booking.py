@@ -8,6 +8,10 @@ that bypasses all application code with raw INSERTs must give the same result.
 
 Parallelism is 50 against a pool of 20 connections: the test proves the
 constraint, not pool sizing (research Pitfall 11).
+
+Plan 02-07 adds the HTTP tier (research Code Example 5 b): 20 parallel
+bookings through the gateway with the saga running, one 202 and one confirmed
+appointment.
 """
 
 from __future__ import annotations
@@ -158,3 +162,75 @@ async def test_fifty_parallel_raw_inserts_leave_exactly_one_active_row(
         assert rows == 1
     finally:
         await cleanup_scheduling_rows(engine, [provider_id])
+
+
+# --- plan 02-07: the same proof at the HTTP layer (SCHED-03, D-19) -------------
+
+HTTP_PARALLELISM = 20
+
+
+async def test_twenty_parallel_http_bookings_for_one_slot_yield_one_202_and_one_confirmed(
+    client, booking_world, scheduling_worker, temporal_env, committed_scheduling_engine
+) -> None:
+    """Research Code Example 5 tier (b): 20 front-desk POST /api/appointments
+    through the gateway, distinct Idempotency-Keys and distinct patients of the
+    same clinic, all for ONE slot, while a Temporal test worker runs the saga.
+    Exactly one request is accepted; the rest are 409; after the winner's saga,
+    exactly one appointment for the slot is confirmed and the slot is booked.
+    Parallelism stays at 20 (research Pitfall 11); the suite lifts the gateway
+    rate limits (tests/conftest.py)."""
+    from services.scheduling.domain.contracts import BookingResult, booking_workflow_id  # noqa: PLC0415
+    from tests.scheduling.seed import auth  # noqa: PLC0415
+
+    world = booking_world
+    patient_ids = [str(world.patient_id)]
+    for i in range(HTTP_PARALLELISM - 1):
+        created = await client.post(
+            "/api/patients",
+            json={
+                "clinic_id": str(world.clinic_id),
+                "full_name": f"Zzyzx Race Synthetic {i}",
+                "date_of_birth": "1990-01-01",
+            },
+            headers=auth(world.front_desk),
+        )
+        assert created.status_code == 201, created.text
+        patient_ids.append(created.json()["id"])
+
+    start, end = world.local_day_bounds(world.last_day)
+    slots = await client.get(
+        "/api/slots",
+        params={"provider_id": str(world.provider_id), "start": start.isoformat(), "end": end.isoformat()},
+        headers=auth(world.admin),
+    )
+    slot_id = slots.json()[0]["id"]
+
+    async def book(patient_id: str):
+        return await client.post(
+            "/api/appointments",
+            json={"slot_id": slot_id, "patient_id": patient_id},
+            headers=auth(world.front_desk) | {"Idempotency-Key": f"race-{uuid.uuid4().hex}"},
+        )
+
+    responses = await asyncio.gather(*(book(p) for p in patient_ids))
+
+    codes = sorted(r.status_code for r in responses)
+    assert codes == [202] + [409] * (HTTP_PARALLELISM - 1), [r.text for r in responses if r.status_code not in (202, 409)]
+    assert {r.json()["detail"] for r in responses if r.status_code == 409} == {"slot not available"}
+    winner = next(r for r in responses if r.status_code == 202).json()["appointment_id"]
+
+    handle = temporal_env.client.get_workflow_handle(booking_workflow_id(winner), result_type=BookingResult)
+    async with temporal_env.time_skipping_unlocked():
+        assert (await handle.result()).outcome == "confirmed"
+
+    async with committed_scheduling_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("SELECT id, status FROM appointments WHERE slot_id = :s"), {"s": uuid.UUID(slot_id)}
+            )
+        ).all()
+        slot_status = await conn.scalar(
+            text("SELECT status FROM provider_slots WHERE id = :s"), {"s": uuid.UUID(slot_id)}
+        )
+    assert [(str(r.id), r.status) for r in rows] == [(winner, "confirmed")]
+    assert slot_status == "booked"
