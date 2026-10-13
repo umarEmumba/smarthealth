@@ -2,9 +2,10 @@ name: smarthealth
 
 # Full local-dev stack for SmartHealth Part A. Postgres/Mongo/Redis are the
 # application's live dependencies (Phase 1). Kafka/Schema-Registry/RabbitMQ/
-# Temporal/Jaeger/Prometheus/Grafana are scaffolding this phase — OBS-04
-# requires them to reach a passing health status even though no app code
-# talks to them until Phase 2/3.
+# Temporal/Jaeger/Prometheus/Grafana were scaffolding in Phase 1. From Phase 2
+# Temporal is live: the scheduling and visit APIs start workflows on it and the
+# scheduling-worker / visit-worker containers execute them. Kafka/RabbitMQ stay
+# scaffolding until Phase 3.
 
 # --- Shared building blocks for the application services (YAML anchors) ------
 # Every application container gets the same container-network URLs for the
@@ -275,11 +276,20 @@ services:
       # image, never in an env var, never given to any other service).
       JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
       JWT_KEY_ID: ${JWT_KEY_ID:-smarthealth-identity-1}
+      # Service-token mint (plan 02-01, D-06): Identity reads `<client>.secret`
+      # from this directory for every client named in SERVICE_TOKEN_AUDIENCES.
+      # The files arrive as Compose secrets, never as env values or image content.
+      # Billing calls no other service, so it has no secret here.
+      SERVICE_CLIENT_SECRETS_DIR: /run/secrets
     depends_on: *app-depends-on
     healthcheck: *app-healthcheck
     secrets:
       - source: jwt_private_key
         target: jwt_private.pem
+      - source: scheduling_client_secret
+        target: scheduling.secret
+      - source: visit_client_secret
+        target: visit.secret
 
   # Organization: clinics and departments. No host port; reached via the gateway.
   organization:
@@ -351,13 +361,19 @@ services:
         condition: service_healthy
       scheduling:
         condition: service_healthy
+      visit:
+        condition: service_healthy
+      billing:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck: *app-healthcheck
 
-  # Scheduling (D-03): owns provider_slots and its double-booking exclusion
-  # constraint on scheduling_db. No /api routes this phase, so no host port and
-  # no gateway route; reachable only on the Compose network.
+  # Scheduling (D-03): slots, appointments, waitlist and the booking /
+  # cancel / reschedule / waitlist-advance sagas' API side. Reached through the
+  # gateway (/api/slots, /api/appointments, /api/waitlist); no host port. The
+  # API starts workflows on Temporal and authenticates its /internal calls with
+  # its own client secret (a Compose secret, D-06). It runs Alembic on start.
   scheduling:
     build:
       context: ..
@@ -365,11 +381,122 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
+    environment: &scheduling-env
       <<: *app-env
       SCHEDULING_DATABASE_URL: postgresql+asyncpg://scheduling_svc:${SCHEDULING_DB_PASSWORD:-changeme-scheduling-local-dev-only}@postgres:5432/scheduling_db
+      SCHEDULING_CLIENT_SECRET_PATH: /run/secrets/scheduling.secret
+      SCHEDULING_HOLD_TTL_MINUTES: ${SCHEDULING_HOLD_TTL_MINUTES:-10}
+      SCHEDULING_CANCEL_CUTOFF_HOURS: ${SCHEDULING_CANCEL_CUTOFF_HOURS:-24}
+      TEMPORAL_ADDRESS: temporal:7233
     depends_on: *app-depends-on
     healthcheck: *app-healthcheck
+    secrets: &scheduling-secrets
+      - source: scheduling_client_secret
+        target: scheduling.secret
+
+  # Scheduling's Temporal worker (D-05): same image, separate process. Polls
+  # scheduling-tq, registers the hold-reaper / pending-starter Schedules, and
+  # never runs migrations: it starts only once the API is healthy, i.e. after
+  # Alembic. No HTTP listener, so liveness is a heartbeat file the worker
+  # touches every 10 s (stale after 30 s = unhealthy).
+  scheduling-worker:
+    build:
+      context: ..
+      dockerfile: services/scheduling/Dockerfile
+    command: ["python", "-m", "services.scheduling.worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *scheduling-env
+    depends_on:
+      scheduling:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    secrets: *scheduling-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/scheduling-worker.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # Billing (D-10): simulated pre-check and the billing record state machine.
+  # Answers Scheduling and Visit only (/internal/billing/*) plus a read-only
+  # /api/billing route; calls no other service, so no client secret. A
+  # coverage_ref starting with BILLING_PRECHECK_FAIL_PREFIX is denied.
+  billing:
+    build:
+      context: ..
+      dockerfile: services/billing/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *app-env
+      BILLING_DATABASE_URL: postgresql+asyncpg://billing_svc:${BILLING_DB_PASSWORD:-changeme-billing-local-dev-only}@postgres:5432/billing_db
+      BILLING_PRECHECK_FAIL_PREFIX: ${BILLING_PRECHECK_FAIL_PREFIX:-DENY-}
+    depends_on: *app-depends-on
+    healthcheck: *app-healthcheck
+
+  # Visit (D-15/D-16): check-in -> start -> complete; a completion starts the
+  # VisitCompletedWorkflow after its commit. Reached via /api/visits; no host port.
+  visit:
+    build:
+      context: ..
+      dockerfile: services/visit/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment: &visit-env
+      <<: *app-env
+      VISIT_DATABASE_URL: postgresql+asyncpg://visit_svc:${VISIT_DB_PASSWORD:-changeme-visit-local-dev-only}@postgres:5432/visit_db
+      VISIT_CLIENT_SECRET_PATH: /run/secrets/visit.secret
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on: *app-depends-on
+    healthcheck: *app-healthcheck
+    secrets: &visit-secrets
+      - source: visit_client_secret
+        target: visit.secret
+
+  # Visit's Temporal worker (D-05): polls visit-tq (downstream fan-out after a
+  # completion) and registers the visit-downstream-sweeper Schedule. Same
+  # heartbeat liveness as scheduling-worker.
+  visit-worker:
+    build:
+      context: ..
+      dockerfile: services/visit/Dockerfile
+    command: ["python", "-m", "services.visit.worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *visit-env
+    depends_on:
+      visit:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    secrets: *visit-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/visit-worker.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
 
 volumes:
   postgres_data:
@@ -386,3 +513,10 @@ volumes:
 secrets:
   jwt_private_key:
     file: ./secrets/jwt_private.pem
+  # Per-service client secrets for the service-token mint (plan 02-01, D-06),
+  # written by scripts/generate_service_secrets.py into the gitignored
+  # infra/secrets/service-clients/. Identity gets both; each caller only its own.
+  scheduling_client_secret:
+    file: ./secrets/service-clients/scheduling.secret
+  visit_client_secret:
+    file: ./secrets/service-clients/visit.secret

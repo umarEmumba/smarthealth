@@ -29,3 +29,14 @@ scrape_configs:
   - job_name: "smarthealth-scheduling"
     static_configs:
       - targets: ["scheduling:8000"]
+
+  - job_name: "smarthealth-billing"
+    static_configs:
+      - targets: ["billing:8000"]
+
+  - job_name: "smarthealth-visit"
+    static_configs:
+      - targets: ["visit:8000"]
+
+# scheduling-worker and visit-worker have no HTTP listener in Phase 2, so no
+# scrape job: Temporal SDK metrics and worker dashboards are Phase 3 (OBS) work.

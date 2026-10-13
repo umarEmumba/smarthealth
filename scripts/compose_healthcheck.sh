@@ -7,8 +7,9 @@
 #   --wait SECONDS   poll every 5s until everything checked is healthy, or fail
 #                    once SECONDS have elapsed (default: check once, no waiting).
 #   service ...      check ONLY these services (each must be present and healthy).
-#                    With no names, the six application services
-#                    (gateway identity organization provider patient scheduling)
+#                    With no names, the application services and workers
+#                    (gateway identity organization provider patient scheduling
+#                    billing visit scheduling-worker visit-worker)
 #                    must be present AND healthy, and every other service that
 #                    declares a healthcheck must be healthy too. A required
 #                    service that is missing is a failure, not a skip.
@@ -18,7 +19,7 @@
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-infra/docker-compose.yml}"
-REQUIRED_DEFAULT=(gateway identity organization provider patient scheduling)
+REQUIRED_DEFAULT=(gateway identity organization provider patient scheduling billing visit scheduling-worker visit-worker)
 POLL_SECONDS=5
 
 WAIT_SECONDS=0
@@ -34,7 +35,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,17p' "$0"
+      sed -n '2,18p' "$0"
       exit 0
       ;;
     -*)
