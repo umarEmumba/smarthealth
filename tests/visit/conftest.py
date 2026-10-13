@@ -58,10 +58,16 @@ async def confirmed_appointment(
     *,
     status: str = "confirmed",
     provider_id: uuid.UUID | None = None,
+    with_billing: bool = False,
+    mesh: httpx.AsyncClient | None = None,
 ) -> str:
     """Insert (and COMMIT) one appointment in `status` on a fresh slot of the
     world's provider (or `provider_id`, which must be in the world's clinic);
-    return its id. Active appointments get a `booked` slot."""
+    return its id. Active appointments get a `booked` slot.
+
+    `with_billing=True` (plan 02-11) also creates its `verified` (self-pay)
+    billing record through Billing's internal pre-check over `mesh`, with a
+    service token minted for Scheduling (the only allowed caller)."""
     world = vw.world
     provider_id = provider_id or world.provider_id
     start = vw.next_slot_start()
@@ -99,6 +105,14 @@ async def confirmed_appointment(
                 text("UPDATE provider_slots SET held_by_appointment_id = :a WHERE id = :s"),
                 {"a": appointment_id, "s": slot_id},
             )
+    if with_billing:
+        from tests.billing.conftest import precheck, service_token  # noqa: PLC0415
+
+        assert mesh is not None, "with_billing needs the mesh"
+        token = await service_token(mesh, "scheduling")
+        resp = await precheck(mesh, token, str(world.clinic_id), appointment_id=str(appointment_id))
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["status"] == "verified"
     return str(appointment_id)
 
 
@@ -227,6 +241,32 @@ async def _visit_world(client: AsyncClient, mesh: httpx.AsyncClient) -> AsyncIte
         await cleanup_visit_rows(vw.provider_ids)
         await cleanup_scheduling_rows(engine, vw.provider_ids)
         await engine.dispose()
+
+
+class _DownTemporal:
+    """Stands in for an unreachable Temporal server: every start fails."""
+
+    async def start_workflow(self, *args: Any, **kwargs: Any) -> None:
+        from temporalio.service import RPCError, RPCStatusCode  # noqa: PLC0415
+
+        raise RPCError("temporal unavailable", RPCStatusCode.UNAVAILABLE, b"")
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _visit_temporal_down() -> AsyncIterator[None]:
+    """By default the Visit app's Temporal is "down" (plan 02-11), so a
+    completion in a test never lazily connects to the Compose Temporal and
+    leaves a stray workflow there; the downstream start is deferred (marker
+    NULL). `visit_worker` swaps in the test server's client for its block."""
+    from tests.conftest import harness_apps  # noqa: PLC0415
+
+    app = harness_apps()["visit"]
+    previous = getattr(app.state, "temporal_client", None)
+    app.state.temporal_client = _DownTemporal()
+    try:
+        yield
+    finally:
+        app.state.temporal_client = previous
 
 
 @pytest_asyncio.fixture

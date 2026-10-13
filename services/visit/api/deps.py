@@ -18,8 +18,10 @@ the provider is rebuilt so it never holds a closed or stale client.
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Request, status
+from temporalio.client import Client
 
 from libs.auth.service_tokens import ServiceTokenProvider, ServiceTokenUnavailable, load_client_secret
+from libs.temporal import connect_client
 from services.visit.config import settings
 
 SERVICE_NAME = "visit"
@@ -49,3 +51,19 @@ async def get_service_tokens(request: Request) -> ServiceTokenProvider:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="service credentials unavailable",
         ) from exc
+
+
+async def get_temporal_client(request: Request) -> Client:
+    """FastAPI dependency (plan 02-11): the app's Temporal client.
+
+    Connected LAZILY on first use and cached on `app.state.temporal_client`
+    (Scheduling's pattern): the API boots and serves while Temporal is down,
+    and a failed downstream start after a completion is deferred to the
+    sweeper. Tests inject the test environment's client (or a failing
+    stand-in) on the same attribute.
+    """
+    client = getattr(request.app.state, "temporal_client", None)
+    if client is None:
+        client = await connect_client(lazy=True)
+        request.app.state.temporal_client = client
+    return client

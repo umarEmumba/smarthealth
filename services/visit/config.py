@@ -31,6 +31,16 @@ class VisitSettings(SharedSettings):
         default="infra/secrets/service-clients/visit.secret",
         validation_alias="VISIT_CLIENT_SECRET_PATH",
     )
+    # Downstream sweeper (plan 02-11, D-16): the Temporal Schedule's interval,
+    # and how old a completed visit with no started downstream workflow must be
+    # before the sweeper treats its trigger as lost (the API normally starts the
+    # workflow right after the commit; the grace keeps the two from racing).
+    sweeper_interval_seconds: int = Field(
+        default=60, ge=1, validation_alias="VISIT_SWEEPER_INTERVAL_SECONDS"
+    )
+    sweeper_grace_seconds: int = Field(
+        default=30, ge=0, validation_alias="VISIT_SWEEPER_GRACE_SECONDS"
+    )
 
 
 settings = VisitSettings()

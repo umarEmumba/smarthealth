@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,4 +172,43 @@ async def list_visits(
     if date_to is not None:
         query = query.where(Visit.checked_in_at < date_to)
     query = query.order_by(Visit.created_at.desc(), Visit.id).limit(limit).offset(offset)
+    return list((await db.scalars(query)).all())
+
+
+async def mark_downstream_started(db: AsyncSession, *, visit_id: uuid.UUID) -> bool:
+    """Record that the visit's downstream workflow has been started (plan 02-11,
+    D-16). Conditional (`WHERE downstream_started_at IS NULL`), so a repeat or
+    a race with the sweeper is harmless: True when this call set the marker.
+    Flushes only; the caller commits."""
+    marked = await db.execute(
+        update(Visit)
+        .where(Visit.id == visit_id, Visit.downstream_started_at.is_(None))
+        .values(downstream_started_at=func.now())
+        .returning(Visit.id)
+        .execution_options(synchronize_session=False)
+    )
+    return marked.first() is not None
+
+
+async def list_downstream_unstarted(
+    db: AsyncSession, *, older_than_seconds: int, limit: int = 100
+) -> list[Visit]:
+    """Completed visits whose downstream workflow was never started (plan
+    02-11): `status = 'completed' AND downstream_started_at IS NULL AND
+    completed_at < now() - older_than_seconds`, oldest first, at most `limit`.
+    Served by the partial index `ix_visits_downstream_pending`. No row lock:
+    the sweeper calls Temporal per row, and a duplicate start is a no-op."""
+    query = (
+        select(Visit)
+        .where(
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.downstream_started_at.is_(None),
+            Visit.completed_at
+            < text("now() - make_interval(secs => :grace)").bindparams(
+                grace=float(older_than_seconds)
+            ),
+        )
+        .order_by(Visit.completed_at)
+        .limit(limit)
+    )
     return list((await db.scalars(query)).all())

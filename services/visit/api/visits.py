@@ -26,8 +26,15 @@ visit gets the identical 404 a missing visit gets; Provider unreachable is 503
 with nothing changed. `transition_visit` is a conditional UPDATE plus a
 history row in one transaction: applied -> commit, then audit
 `visit.start` / `visit.complete` LAST; the current or an already-passed target
--> 200 no-op (no history, no audit); a skipped state -> 409. Completion leaves
-`downstream_started_at` NULL for plan 02-11.
+-> 200 no-op (no history, no audit); a skipped state -> 409.
+
+Completion is non-blocking (plan 02-11, VISIT-04, D-16): the transition
+commits with `downstream_started_at` NULL, then the route starts
+`visit-completed-{visit_id}` (`ensure_downstream_started`: start-once, then the
+marker) and returns 200 without awaiting it. Temporal unreachable -> logged
+`visit.downstream_start_deferred` and still 200; the visit worker's sweeper
+starts it later. A repeated complete whose marker is still NULL retries the
+start opportunistically.
 
 List (VISIT-05, D-17): ops staff poll it (no cache, no push), filtered by
 status, provider and check-in time (`date_from` inclusive, `date_to`
@@ -47,7 +54,7 @@ import uuid
 from datetime import datetime
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
 from pymongo import AsyncMongoClient
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,8 +68,9 @@ from libs.db.mongo import get_mongo
 from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
 from libs.service_client import UpstreamServiceUnavailable
-from services.visit.api.deps import get_service_tokens
+from services.visit.api.deps import get_service_tokens, get_temporal_client
 from services.visit.db import get_db
+from services.visit.downstream import ensure_downstream_started
 from services.visit.domain.schemas import (
     CheckInRequest,
     VisitDetailOut,
@@ -296,8 +304,21 @@ async def get_visit(
     return await _detail(db, visit)
 
 
+async def _start_downstream(request: Request, db: AsyncSession, visit: Visit) -> None:
+    """After the completion committed: start the downstream workflow and set
+    the marker. Never fails the request; a lost start is the sweeper's job."""
+    visit_id = str(visit.id)
+    try:
+        client = await get_temporal_client(request)
+        await ensure_downstream_started(client, db, visit)
+    except Exception as exc:  # noqa: BLE001 - Temporal RPC/connection trouble defers to the sweeper
+        await db.rollback()
+        log.warning("visit.downstream_start_deferred", visit_id=visit_id, error=type(exc).__name__)
+
+
 async def _transition(
     *,
+    request: Request | None = None,
     visit_id: uuid.UUID,
     target: str,
     action: str,
@@ -335,6 +356,15 @@ async def _transition(
     log.info("visit.transition", visit_id=str(visit_id), target=target, outcome=outcome)
     if outcome == TransitionOutcome.APPLIED:
         await _audit(mongo, user, visit, action)
+    if (
+        request is not None
+        and target == VisitStatus.COMPLETED
+        and visit.status == VisitStatus.COMPLETED
+        and visit.downstream_started_at is None
+    ):
+        out = _to_out(visit)  # captured first: a deferred start rolls the session back
+        await _start_downstream(request, db, visit)
+        return out
     return _to_out(visit)
 
 
@@ -361,6 +391,7 @@ async def start_visit(
 
 @router.post("/{visit_id}/complete", response_model=VisitOut)
 async def complete_visit(
+    request: Request,
     visit_id: uuid.UUID,
     user: AuthenticatedUser = Depends(require_role(*VISIT_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -369,6 +400,7 @@ async def complete_visit(
     tokens: ServiceTokenProvider = Depends(get_service_tokens),
 ) -> VisitOut:
     return await _transition(
+        request=request,
         visit_id=visit_id,
         target=VisitStatus.COMPLETED,
         action="visit.complete",

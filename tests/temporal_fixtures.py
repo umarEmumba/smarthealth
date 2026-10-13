@@ -21,6 +21,14 @@ not share a sibling folder's conftest fixtures.
 * `booking_world`      - `seed_bookable_world` plus clean-up of the Scheduling
                          rows it (and the bookings made in it) created.
 
+* `visit_worker`       - (plan 02-11) a real `Worker` on `visit-tq` running
+                         `services.visit.worker.WORKFLOWS` with `VisitActivities`
+                         (yielded) wired to the mesh, visit_db, the test Mongo
+                         client and the test server's client (for the sweep).
+                         While it runs, the Visit app's `state.temporal_client`
+                         is the test server's client, so `POST /api/visits/{id}/
+                         complete` starts the downstream workflow it executes.
+
 `running_scheduling_worker(client, http, mongo)` is the same wiring as an async
 context manager, for tests that need a differently built client (the trace
 test wraps the test server's client with `TracingInterceptor`).
@@ -118,3 +126,45 @@ async def booking_world(client: AsyncClient, mesh: httpx.AsyncClient) -> AsyncIt
             await cleanup_scheduling_rows(engine, [world.provider_id])
         finally:
             await engine.dispose()
+
+
+@asynccontextmanager
+async def running_visit_worker(
+    client: Client, http: httpx.AsyncClient, mongo: AsyncMongoClient
+) -> AsyncIterator[object]:
+    """Run Visit's worker on `client` for the block (plan 02-11) and point the
+    Visit app's `state.temporal_client` at `client`."""
+    from libs.auth.service_tokens import ServiceTokenProvider, load_client_secret  # noqa: PLC0415
+    from libs.db.postgres import get_session_factory  # noqa: PLC0415
+    from libs.temporal_policies import VISIT_TASK_QUEUE  # noqa: PLC0415
+    from services.visit.activities.downstream import VisitActivities  # noqa: PLC0415
+    from services.visit.config import settings  # noqa: PLC0415
+    from services.visit.worker import WORKFLOWS  # noqa: PLC0415
+
+    tokens = ServiceTokenProvider(
+        "visit",
+        load_client_secret(settings.client_secret_path),
+        settings.identity_service_url,
+        http=http,
+    )
+    activities = VisitActivities(
+        get_session_factory(settings.database_url), http, tokens, mongo, client
+    )
+    app = harness_apps()["visit"]
+    previous = getattr(app.state, "temporal_client", None)
+    app.state.temporal_client = client
+    try:
+        async with Worker(
+            client, task_queue=VISIT_TASK_QUEUE, workflows=WORKFLOWS, activities=activities.all()
+        ):
+            yield activities
+    finally:
+        app.state.temporal_client = previous
+
+
+@pytest_asyncio.fixture
+async def visit_worker(
+    temporal_env: WorkflowEnvironment, mesh: httpx.AsyncClient, mongo_client: AsyncMongoClient
+) -> AsyncIterator[object]:
+    async with running_visit_worker(temporal_env.client, mesh, mongo_client) as activities:
+        yield activities
