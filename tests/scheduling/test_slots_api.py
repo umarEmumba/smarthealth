@@ -17,9 +17,12 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from pymongo import AsyncMongoClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from libs.audit.writer import AUDIT_COLLECTION_NAME
+from libs.config import shared_settings
 from tests.conftest import degraded_mesh, unique_email
 from tests.scheduling.conftest import cleanup_scheduling_rows
 from tests.scheduling.seed import PASSWORD, World, auth, seed_bookable_world
@@ -225,3 +228,138 @@ async def test_inactive_provider_is_409(client: AsyncClient, world: World) -> No
 
     assert resp.status_code == 409
     assert resp.json() == {"detail": "provider inactive"}
+
+
+# --- plan 02-04 Task 3: on-demand extension and withdrawal -------------------
+
+
+async def _audit_actions(entity_id: str, action: str) -> list[dict]:
+    mongo: AsyncMongoClient = AsyncMongoClient(shared_settings.mongo_url)
+    try:
+        audit = mongo[shared_settings.mongo_db_name][AUDIT_COLLECTION_NAME]
+        return await audit.find({"entity_id": entity_id, "action": action}).to_list(None)
+    finally:
+        await mongo.close()
+
+
+async def test_search_beyond_the_generated_range_generates_missing_days_first(
+    client: AsyncClient, world: World, committed_scheduling_engine: AsyncEngine
+) -> None:
+    first = world.first_day + timedelta(days=5)
+    start, _ = world.local_day_bounds(first)
+    _, end = world.local_day_bounds(first + timedelta(days=2))
+
+    resp = await _search(client, world, world.patient, start, end)
+
+    assert resp.status_code == 200, resp.text
+    slots = resp.json()
+    assert len(slots) == 18  # three newly generated local days x six slots
+    assert {datetime.fromisoformat(s["start_time"]).astimezone(world.tz).date() for s in slots} == {
+        first,
+        first + timedelta(days=1),
+        first + timedelta(days=2),
+    }
+    assert all(s["status"] == "available" for s in slots)
+    # The days in between were filled too (no hole between ranges).
+    assert await _count(committed_scheduling_engine, world) == 8 * 6
+    audits = await _audit_actions(str(world.provider_id), "slots.generate")
+    assert {a["actor_role"] for a in audits} >= {"admin", "patient"}
+    assert all(a["changes"] == {"fields": ["provider_slots"]} for a in audits)
+
+
+async def test_search_entirely_beyond_the_horizon_generates_nothing(
+    client: AsyncClient, world: World, committed_scheduling_engine: AsyncEngine
+) -> None:
+    start = datetime.now(timezone.utc) + timedelta(days=29)
+
+    resp = await _search(client, world, world.patient, start, start + timedelta(days=3))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == []
+    assert await _count(committed_scheduling_engine, world) == 18
+
+
+async def test_search_still_answers_when_extension_fails(
+    client: AsyncClient,
+    world: World,
+    committed_scheduling_engine: AsyncEngine,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    start, _ = world.local_day_bounds(world.first_day)
+    _, end = world.local_day_bounds(world.first_day + timedelta(days=9))
+    capsys.readouterr()
+
+    async with degraded_mesh("provider"):
+        resp = await _search(client, world, world.patient, start, end)
+
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()) == 18  # the existing slots, nothing new
+    assert await _count(committed_scheduling_engine, world) == 18
+    assert "slots.extend_failed" in capsys.readouterr().out
+
+
+async def test_withdraw_available_slot_then_repeat_is_a_noop(
+    client: AsyncClient, world: World
+) -> None:
+    start, end = world.local_day_bounds(world.first_day)
+    slot_id = (await _search(client, world, world.front_desk, start, end)).json()[0]["id"]
+
+    first = await client.post(f"/api/slots/{slot_id}/cancel", headers=auth(world.front_desk))
+    repeat = await client.post(f"/api/slots/{slot_id}/cancel", headers=auth(world.admin))
+
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == "cancelled"
+    assert repeat.status_code == 200, repeat.text
+    assert repeat.json()["status"] == "cancelled"
+    remaining = (await _search(client, world, world.patient, start, end)).json()
+    assert slot_id not in {s["id"] for s in remaining}
+    audits = await _audit_actions(slot_id, "slot.withdraw")
+    assert len(audits) == 1  # the repeat changed nothing and wrote nothing
+    assert audits[0]["outcome"] == "success"
+    assert audits[0]["clinic_id"] == str(world.clinic_id)
+
+
+@pytest.mark.parametrize("held_status", ["held", "booked"])
+async def test_withdrawing_a_held_or_booked_slot_is_409(
+    client: AsyncClient, world: World, committed_scheduling_engine: AsyncEngine, held_status: str
+) -> None:
+    start, end = world.local_day_bounds(world.first_day)
+    slot_id = (await _search(client, world, world.admin, start, end)).json()[0]["id"]
+    async with committed_scheduling_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE provider_slots SET status = CAST(:st AS varchar), held_by_appointment_id = :a, "
+                "held_until = CASE WHEN CAST(:st AS varchar) = 'held' "
+                "THEN now() + interval '10 minutes' END "
+                "WHERE id = :s"
+            ),
+            {"s": uuid.UUID(slot_id), "a": uuid.uuid4(), "st": held_status},
+        )
+
+    resp = await client.post(f"/api/slots/{slot_id}/cancel", headers=auth(world.admin))
+
+    assert resp.status_code == 409
+    async with committed_scheduling_engine.connect() as conn:
+        status_now = await conn.scalar(
+            text("SELECT status FROM provider_slots WHERE id = :s"), {"s": uuid.UUID(slot_id)}
+        )
+    assert status_now == held_status
+
+
+async def test_withdraw_out_of_clinic_or_unknown_slot_is_404_and_patient_is_403(
+    client: AsyncClient, world: World
+) -> None:
+    start, end = world.local_day_bounds(world.first_day)
+    slot_id = (await _search(client, world, world.admin, start, end)).json()[0]["id"]
+    outsider = await _other_clinic_front_desk(client, world.admin)
+
+    out_of_clinic = await client.post(f"/api/slots/{slot_id}/cancel", headers=auth(outsider))
+    unknown = await client.post(f"/api/slots/{uuid.uuid4()}/cancel", headers=auth(world.admin))
+    patient = await client.post(f"/api/slots/{slot_id}/cancel", headers=auth(world.patient))
+
+    assert out_of_clinic.status_code == 404
+    assert unknown.status_code == 404
+    assert out_of_clinic.json() == unknown.json() == {"detail": "not found"}
+    assert patient.status_code == 403
+    still = (await _search(client, world, world.admin, start, end)).json()
+    assert slot_id in {s["id"] for s in still}

@@ -20,8 +20,8 @@ an unknown one. Every upstream failure is a 503 raised before any write
 Bounds (T-02-17): no generate/search range may exceed `slot_max_range_days`
 (422). A search reaching past the generated range, within now +
 `slot_horizon_days`, first generates the missing days on demand (no scheduler
-until Phase 3). That extension never fails the read: errors are logged as
-`slots.extend_failed` and the existing slots are still returned.
+until Phase 3). That extension never fails the read: errors are logged (an
+`extend_failed` warning) and the existing slots are still returned.
 
 Mutations are audited with field NAMES only (`provider_slots`); responses and
 logs carry ids and UTC instants only.
@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +49,7 @@ from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
 from libs.service_client import UpstreamServiceUnavailable
 from services.scheduling import references
-from services.scheduling.api.deps import get_service_tokens
+from services.scheduling.api.deps import build_service_tokens, get_service_tokens
 from services.scheduling.config import settings
 from services.scheduling.db import get_db
 from services.scheduling.domain.enums import SlotStatus
@@ -245,8 +245,78 @@ async def generate_slots(
     return SlotGenerateResponse(created=result.created, considered=result.considered)
 
 
+async def _extend_on_demand(
+    request: Request,
+    *,
+    http: httpx.AsyncClient,
+    db: AsyncSession,
+    mongo: AsyncMongoClient,
+    user: AuthenticatedUser,
+    provider_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+) -> None:
+    """D-01: generate the days a search asks for beyond the generated range,
+    clamped to now + horizon and to the max range. Never raises."""
+    now = datetime.now(timezone.utc)
+    horizon_end = now + timedelta(days=settings.slot_horizon_days)
+    if start >= horizon_end:
+        return
+
+    try:
+        latest = await slot_repo.latest_generated_start(db, provider_id=provider_id)
+        if latest is not None and end <= latest:
+            return
+        # Dates are UTC dates here; the generator reads them as clinic-local
+        # dates. Starting at the latest slot's UTC date (not the day after) can
+        # re-run one day, which is idempotent, and never skips a local day in a
+        # negative-offset timezone.
+        from_date = max(latest.date() if latest is not None else start.date(), now.date())
+        to_date = min((end - timedelta(microseconds=1)).date(), horizon_end.date())
+        to_date = min(to_date, from_date + timedelta(days=settings.slot_max_range_days))
+        if to_date < from_date:
+            return
+
+        tokens = build_service_tokens(request.app)
+        result = await generate_for_provider(
+            http=http,
+            tokens=tokens,
+            db=db,
+            user=user,
+            provider_id=provider_id,
+            from_date=from_date,
+            to_date=to_date,
+            enforce_scope=False,
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - reads must stay available (D-01)
+        await db.rollback()
+        log.warning(
+            "slots.extend_failed",
+            provider_id=str(provider_id),
+            error=type(exc).__name__,
+            status=getattr(exc, "status_code", None),
+        )
+        return
+
+    if result.created:
+        try:
+            await _audit_generate(
+                mongo, user, provider_id=provider_id, clinic_id=result.clinic_id, outcome="success"
+            )
+        except Exception as exc:  # noqa: BLE001 - the slots are committed; keep the read up
+            log.warning("slots.extend_audit_failed", provider_id=str(provider_id), error=type(exc).__name__)
+    log.info(
+        "slots.extend.success",
+        provider_id=str(provider_id),
+        created=result.created,
+        considered=result.considered,
+    )
+
+
 @router.get("", response_model=list[SlotOut])
 async def search_slots(
+    request: Request,
     provider_id: uuid.UUID,
     start: datetime,
     end: datetime,
@@ -254,12 +324,25 @@ async def search_slots(
     slot_status: str = Query(default=SlotStatus.AVAILABLE.value, alias="status"),
     user: AuthenticatedUser = Depends(require_role(*ALL_ROLES)),
     db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> list[SlotOut]:
     if start.tzinfo is None or end.tzinfo is None:
         raise HTTPException(status_code=422, detail="start and end must include a UTC offset")
     if slot_status != ANY_STATUS and slot_status not in {s.value for s in SlotStatus}:
         raise HTTPException(status_code=422, detail="unknown slot status")
     _check_range_days(end - start)
+
+    await _extend_on_demand(
+        request,
+        http=http,
+        db=db,
+        mongo=mongo,
+        user=user,
+        provider_id=provider_id,
+        start=start,
+        end=end,
+    )
 
     slots = await slot_repo.search_slots(
         db,
@@ -269,3 +352,49 @@ async def search_slots(
         status=None if slot_status == ANY_STATUS else slot_status,
     )
     return [_to_out(s) for s in slots]
+
+
+@router.post("/{slot_id}/cancel", response_model=SlotOut)
+async def withdraw_slot(
+    slot_id: uuid.UUID,
+    user: AuthenticatedUser = Depends(require_role(*STAFF_ROLES)),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+) -> SlotOut:
+    slot = await slot_repo.get_slot(db, slot_id=slot_id)
+    if slot is None or not _in_scope(user, slot.clinic_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    clinic_id = slot.clinic_id  # read before a rollback expires the instance
+
+    outcome = await slot_repo.withdraw_slot(db, slot_id=slot_id)
+    if outcome == "not_available":
+        await db.rollback()
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="slot.withdraw",
+            entity_type="slot",
+            entity_id=str(slot_id),
+            clinic_id=str(clinic_id),
+            outcome="failure",
+        )
+        log.info("slot.withdraw.not_available", slot_id=str(slot_id))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="slot is not available")
+
+    await db.commit()
+    await db.refresh(slot)
+    if outcome == "withdrawn":
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action="slot.withdraw",
+            entity_type="slot",
+            entity_id=str(slot_id),
+            clinic_id=str(slot.clinic_id),
+            outcome="success",
+            changed_fields=["status"],
+        )
+    log.info("slot.withdraw.success", slot_id=str(slot_id), outcome=outcome)
+    return _to_out(slot)

@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -226,5 +227,40 @@ async def search_slots(
     return list((await db.scalars(query)).all())
 
 
+async def latest_generated_start(db: AsyncSession, *, provider_id: uuid.UUID) -> datetime | None:
+    """Start of the provider's latest slot (any status), or None if none."""
+    return await db.scalar(
+        select(func.max(ProviderSlot.start_time)).where(ProviderSlot.provider_id == provider_id)
+    )
+
+
 async def get_slot(db: AsyncSession, *, slot_id: uuid.UUID) -> ProviderSlot | None:
     return await db.get(ProviderSlot, slot_id)
+
+
+WithdrawOutcome = Literal["withdrawn", "already", "not_available"]
+
+
+async def withdraw_slot(db: AsyncSession, *, slot_id: uuid.UUID) -> WithdrawOutcome:
+    """Admin withdrawal of a generated slot (research Pitfall 14).
+
+    One conditional UPDATE `WHERE status = 'available'` (a forward transition to
+    `cancelled`, never a delete): "withdrawn" when it changed the row now,
+    "already" when the slot was already cancelled (a repeat is a no-op), and
+    "not_available" when it is held or booked (or missing). The cancelled slot
+    keeps its `(provider_id, start_time)` key, so re-generation never
+    resurrects it. Flushes only; the caller commits.
+    """
+    changed = await db.scalar(
+        text(
+            "UPDATE provider_slots SET status = 'cancelled' "
+            "WHERE id = :s AND status = 'available' RETURNING id"
+        ),
+        {"s": slot_id},
+    )
+    if changed is not None:
+        return "withdrawn"
+    current = await db.scalar(text("SELECT status FROM provider_slots WHERE id = :s"), {"s": slot_id})
+    if current == SlotStatus.CANCELLED.value:
+        return "already"
+    return "not_available"
