@@ -10,6 +10,10 @@ Started by `POST /api/appointments/{id}/reschedule` as
                               available, history `rescheduled`
     3. billing_relink         billing history re-link, no refund
     4. schedule_notification  best effort (D-11), `booking_rescheduled`
+    5. waitlist advance       (plan 02-09, D-12/D-14) start
+                              `WaitlistAdvanceWorkflow` for the OLD slot as an
+                              ABANDONed child; not awaited. A failed reschedule
+                              starts nothing (the old slot was never freed).
 
 If step 1 or 2 fails (`SlotUnavailable`, `SwapRejected` from a lost state or a
 database arbiter, or exhausted infrastructure retries) the new hold is released,
@@ -22,7 +26,9 @@ a billing re-link that does not land in its budget is recorded as
 
 Changing this code once histories exist (D-19): guard any change to the
 command sequence with `workflow.patched(...)` and prove it with the replay test
-(`tests/workflows/histories/reschedule_v1.json`).
+(`tests/workflows/histories/reschedule_v1.json`). Step 5 runs only behind
+the `WAITLIST_PATCH_ID` patch marker (plan 02-09), so `reschedule_v1.json`
+still replays and `reschedule_waitlist_v2.json` proves the patched path.
 """
 
 from __future__ import annotations
@@ -46,10 +52,16 @@ with workflow.unsafe.imports_passed_through():
         ChangeResult,
         NotifyInput,
         RescheduleInput,
+        WAITLIST_PATCH_ID,
     )
 
 # Sandbox-safe sibling (temporalio + the pure contracts only): imported normally.
-from services.scheduling.workflows.cancel import failure_reason, notify, record_outcome
+from services.scheduling.workflows.cancel import (
+    failure_reason,
+    notify,
+    record_outcome,
+    start_waitlist_advance,
+)
 
 
 @workflow.defn(name=RESCHEDULE_WORKFLOW)
@@ -106,6 +118,9 @@ class RescheduleWorkflow:
                 notification_type=NOTIFY_RESCHEDULED,
             )
         )
+        # The swap committed, so the old slot is free: offer it to the waitlist.
+        if workflow.patched(WAITLIST_PATCH_ID):
+            await start_waitlist_advance(inp.old_slot_id, inp.clinic_id)
         if not billing_done:
             return ChangeResult(outcome=OUTCOME_RESCHEDULED, reason=BILLING_PENDING)
         return ChangeResult(outcome=OUTCOME_RESCHEDULED)
