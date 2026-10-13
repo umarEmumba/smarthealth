@@ -27,6 +27,10 @@ Scheduling workflows, and the v2 histories (`cancel_waitlist_v2.json`,
 replay too. `waitlist_advance_booked_v1.json` is the advance itself (claim,
 child BookingWorkflow, resolve), for its own future changes.
 
+Plan 02-11: `visit_completed_v1.json` is Visit's `VisitCompletedWorkflow`
+(billing finalized, both intents recorded), captured from the gateway tracer
+scenario (recorder `-k record_visit`).
+
 Re-record (only for a deliberate, versioned change; add `_v2` files and keep
 the old ones replaying):
     SMARTHEALTH_RECORD_HISTORIES=1 pytest tests/workflows/test_replay.py -k record
@@ -42,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import httpx
 from httpx import AsyncClient
 from temporalio import workflow
 from temporalio.client import WorkflowHistory
@@ -66,6 +71,8 @@ from services.scheduling.workflows.booking import BookingWorkflow
 from services.scheduling.workflows.cancel import CancelWorkflow
 from services.scheduling.workflows.reschedule import RescheduleWorkflow
 from services.scheduling.workflows.waitlist_advance import WaitlistAdvanceWorkflow
+from services.visit.domain.contracts import VisitCompletedResult, visit_completed_workflow_id
+from services.visit.workflows.visit_completed import VisitCompletedWorkflow
 from tests.scheduling.seed import World, auth
 
 HISTORIES = Path(__file__).parent / "histories"
@@ -394,3 +401,51 @@ async def test_record_waitlist_histories(
     )
     async with temporal_env.time_skipping_unlocked():
         assert (await handle.result()).outcome == "booked"
+
+
+
+# --- plan 02-11: Visit's downstream workflow ---------------------------------
+
+VISIT_FIXTURES = ["visit_completed_v1.json"]
+
+
+@pytest.mark.parametrize("name", VISIT_FIXTURES)
+async def test_recorded_visit_history_replays_against_current_code(name: str) -> None:
+    result = await Replayer(workflows=[VisitCompletedWorkflow]).replay_workflow(_load(name))
+    assert result.replay_failure is None
+
+
+@pytest.mark.parametrize("name", VISIT_FIXTURES)
+def test_visit_history_fixtures_carry_no_coverage_or_token(name: str) -> None:
+    raw = (HISTORIES / name).read_text()
+    for forbidden in FORBIDDEN:
+        assert forbidden not in raw, f"{name} contains {forbidden!r}"
+    assert "stackTrace" not in raw
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("SMARTHEALTH_RECORD_HISTORIES") != "1",
+    reason="re-records the committed history fixtures; opt in with SMARTHEALTH_RECORD_HISTORIES=1",
+)
+async def test_record_visit_history(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    from tests.visit.conftest import _visit_world  # noqa: PLC0415
+    from tests.visit.test_downstream import _completed_visit  # noqa: PLC0415
+
+    async for vw in _visit_world(client, mesh):
+        visit, _, completed = await _completed_visit(client, mesh, vw)
+        assert completed.status_code == 200, completed.text
+        handle = temporal_env.client.get_workflow_handle(
+            visit_completed_workflow_id(visit["id"]), result_type=VisitCompletedResult
+        )
+        async with temporal_env.time_skipping_unlocked():
+            assert (await handle.result()).billing == "finalized"
+        history = await handle.fetch_history()
+        document = _scrub(history.to_json_dict())
+        HISTORIES.mkdir(exist_ok=True)
+        (HISTORIES / VISIT_FIXTURES[0]).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")

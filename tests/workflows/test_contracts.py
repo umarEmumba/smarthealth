@@ -20,16 +20,22 @@ import pytest
 from temporalio.converter import DataConverter
 
 from services.scheduling.domain import contracts
+from services.visit.domain import contracts as visit_contracts
 
 FORBIDDEN_FIELD_FRAGMENTS = ("coverage", "token", "jwt", "phone", "address", "date_of_birth")
 ALLOWED_IMPORTS = {"__future__", "dataclasses", "typing"}
 
 
+# Plan 02-11: Visit's contracts (services.visit.domain.contracts) obey the same rules.
+CONTRACT_MODULES = (contracts, visit_contracts)
+
+
 def contract_classes() -> list[type]:
     return [
         obj
-        for _, obj in inspect.getmembers(contracts, inspect.isclass)
-        if dataclasses.is_dataclass(obj) and obj.__module__ == contracts.__name__
+        for module in CONTRACT_MODULES
+        for _, obj in inspect.getmembers(module, inspect.isclass)
+        if dataclasses.is_dataclass(obj) and obj.__module__ == module.__name__
     ]
 
 
@@ -98,9 +104,10 @@ def test_no_contract_field_carries_phi_coverage_or_credentials(cls: type) -> Non
         )
 
 
-def test_contracts_module_is_pure() -> None:
+@pytest.mark.parametrize("module", CONTRACT_MODULES, ids=lambda m: m.__name__)
+def test_contracts_module_is_pure(module: object) -> None:
     """Sandbox-safe: only dataclasses/typing imports, so workflow code can load it."""
-    tree = ast.parse(inspect.getsource(contracts))
+    tree = ast.parse(inspect.getsource(module))
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -112,3 +119,7 @@ def test_contracts_module_is_pure() -> None:
 
 def test_booking_workflow_id_is_deterministic() -> None:
     assert contracts.booking_workflow_id("abc") == "booking-abc"
+
+
+def test_visit_completed_workflow_id_is_deterministic() -> None:
+    assert visit_contracts.visit_completed_workflow_id("abc") == "visit-completed-abc"
