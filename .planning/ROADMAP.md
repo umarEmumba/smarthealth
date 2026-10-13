@@ -133,53 +133,55 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 **Plans:** 12 plans (sequential waves — shared working tree and shared live test infrastructure)
 
+**Execution status (2026-10-13):** all 12 plans executed (each has a SUMMARY). Phase NOT yet complete: phase verification — the full non-e2e regression, the deferred tests listed in the 02-1x SUMMARY files and the 02-12 human dashboard check — is pending by user request.
+
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Internal auth foundations: Identity client-credentials service-token mint, per-audience `aud` + required `exp`, allowed-caller checks, write-capable internal client, idempotent audit writer (SCHED-01/02/08)
+- [x] 02-01-PLAN.md — Internal auth foundations: Identity client-credentials service-token mint, per-audience `aud` + required `exp`, allowed-caller checks, write-capable internal client, idempotent audit writer (SCHED-01/02/08)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — Scheduling data layer: appointments/idempotency/history tables, active-slot unique index, patient-overlap EXCLUDE, one-transaction accept, retry-safe state steps, 1-of-50 concurrency proof (SCHED-03/04/08)
+- [x] 02-02-PLAN.md — Scheduling data layer: appointments/idempotency/history tables, active-slot unique index, patient-overlap EXCLUDE, one-transaction accept, retry-safe state steps, 1-of-50 concurrency proof (SCHED-03/04/08)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-03-PLAN.md — Internal reference lookups: Patient internal router, Provider availability + by-user, clinic IANA timezone (SCHED-01, VISIT-02)
+- [x] 02-03-PLAN.md — Internal reference lookups: Patient internal router, Provider availability + by-user, clinic IANA timezone (SCHED-01, VISIT-02)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 02-04-PLAN.md — Slot supply: DST-safe on-demand generation over a 28-day horizon, search, withdrawal, Scheduling gateway routes, shared seed helper (SCHED-01)
+- [x] 02-04-PLAN.md — Slot supply: DST-safe on-demand generation over a 28-day horizon, search, withdrawal, Scheduling gateway routes, shared seed helper (SCHED-01)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 02-05-PLAN.md — Billing service: deterministic pre-check and refund/finalize state machine, visit_db/billing_db provisioning, gateway row (BILL-01/02)
+- [x] 02-05-PLAN.md — Billing service: deterministic pre-check and refund/finalize state machine, visit_db/billing_db provisioning, gateway row (BILL-01/02)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] 02-06-PLAN.md — Temporal booking saga: temporalio checkpoint + pin, async 202 booking API, BookingWorkflow with reverse-order compensation, scheduling worker, contract/trace tests (SCHED-01/02/04, BILL-01)
+- [x] 02-06-PLAN.md — Temporal booking saga: temporalio checkpoint + pin, async 202 booking API, BookingWorkflow with reverse-order compensation, scheduling worker, contract/trace tests (SCHED-01/02/04, BILL-01)
 
 **Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] 02-07-PLAN.md — Failure hardening: forced-billing-failure compensation, hold reaper + pending-starter Schedules, HTTP single-winner proof, history replay, worker-crash e2e (SCHED-03/04/08)
+- [x] 02-07-PLAN.md — Failure hardening: forced-billing-failure compensation, hold reaper + pending-starter Schedules, HTTP single-winner proof, history replay, worker-crash e2e (SCHED-03/04/08)
 
 **Wave 8** *(blocked on Wave 7 completion)*
 
-- [ ] 02-08-PLAN.md — Cancel and reschedule workflows: cutoff refund policy, 409 while pending, atomic reserve-then-swap with billing re-link (SCHED-05/06, BILL-02)
+- [x] 02-08-PLAN.md — Cancel and reschedule workflows: cutoff refund policy, 409 while pending, atomic reserve-then-swap with billing re-link (SCHED-05/06, BILL-02)
 
 **Wave 9** *(blocked on Wave 8 completion)*
 
-- [ ] 02-09-PLAN.md — Waitlist: FIFO SKIP LOCKED claim, auto-book via child BookingWorkflow, failure skip and lost-race put-back, cancel/reschedule advance behind `workflow.patched` with replay proof (SCHED-07)
+- [x] 02-09-PLAN.md — Waitlist: FIFO SKIP LOCKED claim, auto-book via child BookingWorkflow, failure skip and lost-race put-back, cancel/reschedule advance behind `workflow.patched` with replay proof (SCHED-07)
 
 **Wave 10** *(blocked on Wave 9 completion)*
 
-- [ ] 02-10-PLAN.md — Visit service: check-in against Scheduling's internal appointment lookup, duplicate-safe state machine, provider ownership, clinic-scoped visit list (VISIT-01/02/03/05)
+- [x] 02-10-PLAN.md — Visit service: check-in against Scheduling's internal appointment lookup, duplicate-safe state machine, provider ownership, clinic-scoped visit list (VISIT-01/02/03/05)
 
 **Wave 11** *(blocked on Wave 10 completion)*
 
-- [ ] 02-11-PLAN.md — Non-blocking visit completion: VisitCompletedWorkflow (billing finalize, follow-up/analytics intents), visit worker, sweeper Schedule + run-on-start (VISIT-04, BILL-02)
+- [x] 02-11-PLAN.md — Non-blocking visit completion: VisitCompletedWorkflow (billing finalize, follow-up/analytics intents), visit worker, sweeper Schedule + run-on-start (VISIT-04, BILL-02)
 
 **Wave 12** *(blocked on Wave 11 completion)*
 
-- [ ] 02-12-PLAN.md — Compose wiring for Billing/Visit APIs and both workers, real-stack e2e flows, one-command concurrent-booking demo, docs + dashboard v3, requirement-coverage gate, human dashboard check (all 15)
+- [x] 02-12-PLAN.md — Compose wiring for Billing/Visit APIs and both workers, real-stack e2e flows, one-command concurrent-booking demo, docs + dashboard v3, requirement-coverage gate, human dashboard check (all 15)
 
 ### Phase 3: Event-Driven System + Observability
 
@@ -204,5 +206,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
-| 2. Scheduling + Service Workflow | 0/12 | Planned | - |
+| 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

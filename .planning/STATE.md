@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Scheduling + Service Workflow
-status: planning
-stopped_at: Phase 2 context gathered
-last_updated: "2026-10-12T13:28:35.484Z"
-last_activity: 2026-10-12
-last_activity_desc: Phase 1.1 complete, transitioned to Phase 2
+status: executed-verification-pending
+stopped_at: Phase 2 plans 12/12 executed; verification (full regression + deferred tests + human dashboard check) pending by user request
+last_updated: "2026-10-13T15:30:00.000Z"
+last_activity: 2026-10-13
+last_activity_desc: 02-12 executed (Compose wiring, real-stack e2e, demo, docs, dashboard v3)
 state_head: ff24916b05bb7b4b1f4a9bbf91640b61ece02534
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 17
-  completed_plans: 17
+  total_plans: 29
+  completed_plans: 29
   percent: 25
 ---
 
@@ -23,14 +23,18 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-09)
 
 **Core value:** Booking, updating, and completing an appointment is reliable and consistent under load — partial failures never corrupt scheduling state, and every operational data model stays accurate, durable, and queryable.
-**Current focus:** Phase 1.1 — Microservice Re-architecture
+**Current focus:** Phase 2 — Scheduling + Service Workflow (all 12 plans executed; verification pending)
 
 ## Current Position
 
 Phase: 2 — Scheduling + Service Workflow
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-10-12 — Phase 1.1 complete, transitioned to Phase 2
+Plan: 12 of 12 executed (02-01 .. 02-12, each with a SUMMARY)
+Status: Executed — NOT complete. Verification pending by user request: full non-e2e regression
+(`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
+tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
+human visual check of the dashboard/docs.
+Last activity: 2026-10-13 — 02-12 executed: Compose runs billing/visit + both workers healthy,
+real-stack e2e 7 passed, demo 1 winner of 50, docs + dashboard v3
 
 Progress: [███░░░░░░░] 25%
 
@@ -38,7 +42,7 @@ Progress: [███░░░░░░░] 25%
 
 **Velocity:**
 
-- Total plans completed: 17
+- Total plans completed: 29 (Phase 2 plans executed, phase verification pending)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -48,6 +52,7 @@ Progress: [███░░░░░░░] 25%
 |-------|-------|-------|----------|
 | 01 | 7 | - | - |
 | 1.1 | 10 | - | - |
+| 02 | 12 (executed) | - | - |
 
 **Recent Trend:**
 
@@ -131,15 +136,23 @@ Recent decisions affecting current work:
 - [Phase 01.1]: Plan 01.1-09: isolation invariants scan live code via ast (docstrings may mention HS256); role isolation is proven against live Postgres with the refusal reason pinned
 - [Phase 01.1]: Plan 01.1-09: gateway /metrics is served only on an internal :9100 listener decided by the ASGI server scope, 404 on the published :8000; Prometheus scrapes gateway:9100
 - [Phase 01.1]: Plan 01.1-09: gateway body-size cap, shared-Redis and service-token aud gap deferred to deferred-items.md; .env.example edit blocked by harness, variable table in the 01.1-09 SUMMARY
+- [Phase 02]: 02-12: workers reuse their API image with a command override, no host port, heartbeat-file healthcheck, depend on their API (so Alembic ran); per-service client secrets only as Compose secrets (identity reads /run/secrets); Billing has no client secret and workers no Prometheus job
+- [Phase 02]: 02-12: e2e/demo runs need the gateway auth budget raised (GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000) as well as the default budget
+- [Phase 02]: 02-12: booking saga order as built is validate -> reserve hold -> billing pre-check -> notification intent (best-effort) -> confirm (D-09 vs SCHED-02 order note recorded in docs and dashboard)
 - [Phase 01.1]: 01.1-10: Documentation lists unverified items (real-socket outages, cold start, Jaeger UI view, key rotation, bootstrap creation branch) beside the claims they qualify; nothing is described as production-hardened
 
 ### Pending Todos
 
-None yet.
+- Phase 2 verification (deferred at the user's request): run the full regression
+  `pytest tests -m "not e2e"` (background + poll, ~17+ min) and `SMARTHEALTH_E2E_REQUIRE_STACK=1 pytest tests/e2e -m e2e`
+  with the stack up (gateway with `GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000`).
+- Write the deferred tests listed under "Deferred tests" in 02-11-SUMMARY.md and 02-12-SUMMARY.md (and any earlier SUMMARY that lists them).
+- 02-12 Task 5: human visual check of docs/architecture-dashboard.html (offline, narrow width), README demo run.
+- Semgrep has not been run in the executor environment (not installed).
 
 ### Blockers/Concerns
 
-- Phase 2 planning: Temporal SDK↔server version compatibility has no official strict matrix per research (ARCHITECTURE.md/SUMMARY.md) — re-verify against docs.temporal.io/develop/python/versioning before locking a submission version.
+- Phase 2: temporalio 1.34.0 SDK runs against the auto-setup 1.29.7 server in Compose (in-process suites, worker-crash e2e and the 02-12 real-stack flows all pass); there is still no official compatibility matrix.
 - Phase 3 planning: Outbox relay mechanism (Debezium CDC vs. custom polling publisher) is an open architectural tradeoff per research — decide explicitly and document in the Architecture & Decision dashboard, not a default assumption.
 - Phase 1 planning: Decide auto-setup vs. production-shaped Temporal deployment (temporalio/auto-setup vs. temporalio/server + schema-setup) even though Temporal isn't wired until Phase 2 — affects the Phase 1 Docker Compose skeleton.
 - Deferred from 01.1-04: gateway request-body size cap (proxy.forward buffers whole body) and unauthenticated /metrics on public ingress (plan 01.1-09)
@@ -159,6 +172,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-12T13:28:35.413Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-scheduling-service-workflow/02-CONTEXT.md
+Last session: 2026-10-13T15:30:00.000Z
+Stopped at: Phase 2 plans 12/12 executed; verification pending (full regression, deferred tests, human dashboard check)
+Resume file: .planning/phases/02-scheduling-service-workflow/02-12-SUMMARY.md
