@@ -25,6 +25,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from libs.config import SharedSettings
+from services.billing.config import BillingSettings
+from services.billing.repository.models import BillingBase
 from services.identity.config import IdentitySettings
 from services.identity.repository.models import IdentityBase
 from services.organization.config import OrganizationSettings
@@ -51,6 +53,7 @@ OWNED_TABLES: dict[str, set[str]] = {
         "idempotency_keys",
         "appointment_status_history",
     },
+    "billing": {"billing_records", "billing_status_history"},
 }
 
 BASES = {
@@ -59,6 +62,7 @@ BASES = {
     "provider": ProviderBase,
     "patient": PatientBase,
     "scheduling": SchedulingBase,
+    "billing": BillingBase,
 }
 
 SETTINGS = {
@@ -67,6 +71,7 @@ SETTINGS = {
     "provider": ProviderSettings,
     "patient": PatientSettings,
     "scheduling": SchedulingSettings,
+    "billing": BillingSettings,
 }
 
 # Every deployable service package, including the gateway (which owns no data

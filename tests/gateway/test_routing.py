@@ -75,6 +75,7 @@ def test_route_table_maps_owners_and_has_no_internal_prefix() -> None:
         "/api/slots": "scheduling",
         "/api/appointments": "scheduling",
         "/api/waitlist": "scheduling",
+        "/api/billing": "billing",
     }
     assert not [prefix for prefix in table if prefix.startswith("/internal")]
 
@@ -93,6 +94,11 @@ def test_route_table_maps_owners_and_has_no_internal_prefix() -> None:
         ("/api/slots/generate", "scheduling"),
         ("/api/appointments/abc/cancel", "scheduling"),
         ("/api/waitlist", "scheduling"),
+        ("/api/billing/records", "billing"),
+        ("/api/billing/records/abc", "billing"),
+        ("/api/billingX", None),
+        ("/internal/billing/prechecks", None),
+        ("/internal/billing/records/abc/transitions", None),
         ("/api/slotsX", None),
         ("/internal/appointments/abc", None),
         ("/internal/slots", None),
@@ -151,6 +157,9 @@ async def test_internal_paths_are_404_and_never_forwarded(
         "/internal/clinics/x",
         "/internal/departments/x",
         "/internal/appointments/x",
+        "/internal/billing/prechecks",
+        "/internal/billing/records/x/transitions",
+        "/internal/billing/records/x/relink",
         "/internal",
     ):
         response = await gateway.get(path)
