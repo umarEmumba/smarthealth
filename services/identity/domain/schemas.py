@@ -1,18 +1,19 @@
-"""Pydantic v2 request/response models for the auth router.
+"""Pydantic v2 request/response models for Identity's auth router.
 
-`RegisterRequest`/`LoginRequest` are the only PHI-adjacent-free auth
-payloads Phase 1's tracer needs (no patient PHI fields belong in the auth
-router — that's Plan 04/05 CRUD scope).
+Identity stores accounts only — no patient PHI fields belong here. The
+clinic/department/patient/provider/availability schemas (including the
+*Update PATCH models) left with their owning services; the Phase 1 originals
+remain readable at reference commit 7ce4490.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, time
+from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field
 
-from services.identity.domain.enums import Role
+from libs.auth.roles import Role
 
 
 class RegisterRequest(BaseModel):
@@ -83,95 +84,13 @@ class UserOut(BaseModel):
     clinic_id: uuid.UUID | None = None
 
 
-# --- Gap-closure Plan 01-07: partial-update (PATCH) payloads ---------------
-#
-# Every *Update schema below has all-optional fields (partial update — only
-# supplied fields change) and rejects a fully-empty body with 422 via a
-# shared `_reject_empty_body` model validator, per the plan's must_haves.
-# These live in schemas.py (not inline in the router files, unlike the
-# *Create schemas from Plans 04/05) because the empty-body-rejection
-# validator is identical across all five resources and is worth sharing
-# from one place rather than five near-duplicate copies.
+class ServiceTokenRequest(BaseModel):
+    """Body of `POST /internal/service-tokens`: the ONE service the token is for."""
+
+    audience: str = Field(min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9_-]*$")
 
 
-def _reject_empty_body(model: BaseModel) -> BaseModel:
-    if not model.model_fields_set:
-        raise ValueError("update body must include at least one field")
-    return model
-
-
-class ClinicUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    timezone: str | None = Field(default=None, min_length=1, max_length=64)
-
-    @model_validator(mode="after")
-    def _check_not_empty(self) -> "ClinicUpdate":
-        return _reject_empty_body(self)  # type: ignore[return-value]
-
-
-class DepartmentUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-
-    @model_validator(mode="after")
-    def _check_not_empty(self) -> "DepartmentUpdate":
-        return _reject_empty_body(self)  # type: ignore[return-value]
-
-
-class PatientUpdate(BaseModel):
-    """PHI-bearing partial-update payload — never log/audit these field
-    VALUES (same PHI boundary as `PatientCreate` in patients.py).
-    """
-
-    full_name: str | None = Field(default=None, min_length=1, max_length=255)
-    date_of_birth: date | None = None
-    phone: str | None = Field(default=None, max_length=32)
-    address: str | None = Field(default=None, max_length=2000)
-
-    @model_validator(mode="after")
-    def _check_not_empty(self) -> "PatientUpdate":
-        return _reject_empty_body(self)  # type: ignore[return-value]
-
-
-class ProviderUpdate(BaseModel):
-    full_name: str | None = Field(default=None, min_length=1, max_length=255)
-    specialties: list[str] | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def _check_not_empty(self) -> "ProviderUpdate":
-        return _reject_empty_body(self)  # type: ignore[return-value]
-
-
-class AvailabilityTemplateUpdate(BaseModel):
-    """Partial update of a weekly availability template.
-
-    Window-consistency validation mirrors `AvailabilityTemplateCreate`
-    (availability.py): if `start_time`/`end_time` are BOTH supplied in
-    the same PATCH, end must be strictly after start; if only one of the
-    pair is supplied, the router validates against the existing stored
-    value before persisting (a partial update must never leave the row in
-    an inconsistent state). Likewise `effective_from`/`effective_to`.
-    """
-
-    day_of_week: int | None = Field(default=None, ge=0, le=6)
-    start_time: time | None = None
-    end_time: time | None = None
-    slot_duration_minutes: int | None = Field(default=None, gt=0)
-    effective_from: date | None = None
-    effective_to: date | None = None
-
-    @model_validator(mode="after")
-    def _check_not_empty(self) -> "AvailabilityTemplateUpdate":
-        _reject_empty_body(self)
-        if (
-            self.start_time is not None
-            and self.end_time is not None
-            and self.end_time <= self.start_time
-        ):
-            raise ValueError("end_time must be strictly after start_time")
-        if (
-            self.effective_from is not None
-            and self.effective_to is not None
-            and self.effective_from > self.effective_to
-        ):
-            raise ValueError("effective_from must be on or before effective_to")
-        return self
+class ServiceTokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["Bearer"]
+    expires_in: int

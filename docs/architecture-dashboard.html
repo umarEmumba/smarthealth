@@ -344,6 +344,31 @@
   footer code { font-family: var(--mono); }
 
   .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 24px; }
+
+  /* ---- State diagrams (inline SVG, Phase 2) ---- */
+  .sd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 16px; }
+  figure.sd {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 16px 12px;
+  }
+  figure.sd figcaption { font-weight: 620; font-size: 14.5px; margin-bottom: 8px; }
+  figure.sd figcaption code { font-family: var(--mono); font-size: 12px; color: var(--accent-ink); font-weight: 500; }
+  .sd-scroll { overflow-x: auto; }
+  figure.sd svg { display: block; width: 100%; min-width: 460px; height: auto; }
+  .sd-st { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.2; }
+  .sd-term { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+  .sd-note { fill: none; stroke: var(--border-strong); stroke-dasharray: 4 3; }
+  .sd-tx { font: 600 12.5px var(--mono); fill: var(--ink); text-anchor: middle; }
+  .sd-lb { font: 11px var(--sans); fill: var(--muted); }
+  .sd-ln { stroke: var(--accent-ink); stroke-width: 1.4; fill: none; }
+  .sd-comp { stroke: var(--warn); stroke-dasharray: 5 4; }
+  .sd-head { fill: var(--muted); }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .callout.warn b { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -352,10 +377,10 @@
   <div class="wrap">
     <p class="eyebrow">SmartHealth · Part A · MediNova</p>
     <h1>Architecture &amp; Decision Dashboard</h1>
-    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary.</p>
+    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; this version adds Phase 2: scheduling, visits and billing on Temporal.</p>
     <div class="meta-row">
       <span>Milestone <b>Part A — Core Platform</b></span>
-      <span>Dashboard <b>v1 · Phase 1</b></span>
+      <span>Dashboard <b>v3 · Phase 2</b></span>
       <span>Core value <b>reliable scheduling, no corrupted state</b></span>
     </div>
   </div>
@@ -397,65 +422,99 @@
   <!-- ARCHITECTURE -->
   <section id="architecture">
     <div class="sec-head"><span class="sec-num">02</span><h2>System architecture</h2></div>
-    <p class="sec-sub">Phase 1 delivers a working, wired vertical slice: FastAPI + PostgreSQL (system of record) + MongoDB (audit trail) + Redis (cache + auth-revocation), fully implemented and tested. Temporal, Kafka + Schema Registry, Celery + RabbitMQ, and the Prometheus/Grafana/Jaeger observability stack are running in Docker Compose with passing health checks (OBS-04) but are <strong>not yet wired into application code</strong> — that integration is Phase 2 (Temporal saga, billing/notification jobs) and Phase 3 (Kafka outbox, full observability). The diagram below marks each layer <span class="chip high" style="display:inline">wired</span> or <span class="chip med" style="display:inline">scaffolding only</span> accordingly.</p>
+    <p class="sec-sub">Phase 1.1 re-delivered the Phase 1 monolith as independently deployable services after the week-1 mentor review. <strong>Phase 2</strong> turns Scheduling into a real service and adds <strong>Visit</strong> and <strong>Billing</strong>: an API Gateway at the edge, seven FastAPI services each with its own PostgreSQL database and role, and two Temporal worker containers (<code>scheduling-worker</code>, <code>visit-worker</code>) that execute the sagas. Tokens are RS256 and verified locally against Identity's JWKS; workers call other services with short-lived, audience-scoped service tokens. MongoDB (<code>audit_log</code>) and Redis are shared cross-cutting infrastructure. Temporal is live; Kafka + Schema Registry and Celery + RabbitMQ still run only as healthy containers until Phase 3. Each layer is marked <span class="chip high" style="display:inline">wired</span> or <span class="chip med" style="display:inline">scaffolding only</span>.</p>
     <div class="diagram">
 
       <div class="layer">
         <div class="layer-label">Clients</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Patient / Front-desk / Provider / Admin</div><div class="n-role">Role-scoped API consumers (patient, provider, front-desk, admin).</div></div>
+          <div class="node"><div class="n-name">Patient / Front-desk / Provider / Admin</div><div class="n-role">Role-scoped API consumers (patient, provider, front-desk, admin). They only ever talk to the gateway.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">API &amp; Auth &mdash; wired, Phase 1</div>
+        <div class="layer-label">Edge &mdash; wired, Phase 1.1</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">API service</div><div class="n-tech">FastAPI</div><div class="n-role">Request validation (Pydantic), authentication, RBAC enforcement, OpenAPI surface.</div></div>
-          <div class="node accent"><div class="n-name">Auth &amp; RBAC</div><div class="n-tech">Access + refresh JWT (python-jose, HS256)</div><div class="n-role">Access token (~15min: sub/role/clinic_id/jti) validated on every protected request; refresh token (~7days: sub/jti only) re-derives role/clinic from the current DB row. <code>require_role(*roles)</code> server-side guard on every mutating route.</div></div>
+          <div class="node accent"><div class="n-name">API Gateway</div><div class="n-tech">FastAPI + httpx proxy &middot; the only published application port</div><div class="n-role">Route table: <code>/api/auth</code>, <code>/api/admin</code>, <code>/.well-known/jwks.json</code> &rarr; Identity; <code>/api/clinics</code> &rarr; Organization; <code>/api/providers</code> &rarr; Provider; <code>/api/patients</code> &rarr; Patient; <code>/api/slots</code>, <code>/api/appointments</code>, <code>/api/waitlist</code> &rarr; Scheduling; <code>/api/visits</code> &rarr; Visit; <code>/api/billing</code> &rarr; Billing. <code>/internal/*</code> and unsafe paths (dot segments, encoded slashes, NUL) answer 404 &mdash; there is no internal route to block. Per-IP fixed-window rate limits in Redis (auth endpoints 20/min, everything else 300/min) that <strong>fail open</strong> on a Redis outage, visibly (warning log + counter). Upstream failures map to 503/504. It does <strong>not</strong> verify JWTs and does <strong>not</strong> aggregate responses.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Orchestration &mdash; scaffolding only, not yet wired (Phase 2)</div>
+        <div class="layer-label">Services &mdash; wired, Phase 1.1 + Phase 2</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>)</div><div class="n-role">Container runs and reports healthy; no workflow/activity code exists yet. Will own booking, cancel/reschedule, and visit-lifecycle sagas from Phase 2 onward.</div></div>
+          <div class="node accent"><div class="n-name">Identity</div><div class="n-tech">FastAPI &middot; RS256 signer</div><div class="n-role">Accounts (credentials, role, clinic_id), register/login/refresh/logout, token issuance, the JWKS endpoint, the Redis denylist writer, 60 s service tokens, <code>/internal/users</code>. The only holder of the private key.</div></div>
+          <div class="node accent"><div class="n-name">Organization</div><div class="n-tech">FastAPI</div><div class="n-role">Clinics and departments (soft-delete, clinic-scoped), <code>/internal/clinics</code> and <code>/internal/departments</code> lookups.</div></div>
+          <div class="node accent"><div class="n-name">Provider</div><div class="n-tech">FastAPI</div><div class="n-role">Providers, specialties, weekly availability templates, <code>/internal/providers</code>. Holds no clinic data.</div></div>
+          <div class="node accent"><div class="n-name">Patient</div><div class="n-tech">FastAPI</div><div class="n-role">Patient profiles &mdash; the <strong>only</strong> service and database that hold patient PHI.</div></div>
+          <div class="node accent"><div class="n-name">Scheduling</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Slots generated on demand from Provider templates, appointments (202 + <code>Idempotency-Key</code>), cancel, reschedule, waitlist. Starts the booking, cancel and reschedule workflows; <code>/internal/appointments</code> for Visit.</div></div>
+          <div class="node accent"><div class="n-name">Visit</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Check-in &rarr; in progress &rarr; completed; a clinic-scoped status list for ops. Completion commits first, then starts the downstream workflow.</div></div>
+          <div class="node accent"><div class="n-name">Billing</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Deterministic simulated pre-check and the billing record state machine. Answers only Scheduling and Visit (<code>/internal/billing/*</code>); read-only <code>/api/billing</code>. Calls no one.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Data stores &mdash; wired, Phase 1</div>
+        <div class="layer-label">Cross-service contracts &mdash; wired, Phase 1.1</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">System of record</div><div class="n-tech">PostgreSQL</div><div class="n-role">users, patients, providers, specialties, clinics, departments, availability_templates, and an <strong>empty</strong> provider_slots table carrying a live GiST exclusion constraint (designed and proven now, populated by Phase 2's slot-generation job).</div></div>
-          <div class="node accent"><div class="n-name">Operational documents</div><div class="n-tech">MongoDB</div><div class="n-role">Append-only <code>audit_log</code> collection — every mutating action, success and failure, field names only (never PHI values). Indexed by entity, actor, and clinic.</div></div>
-          <div class="node accent"><div class="n-name">Cache &amp; auth revocation</div><div class="n-tech">Redis</div><div class="n-role">jti-denylist for JWT revocation (<code>revoked:{jti}</code>, TTL = remaining token life) — the live Phase 1 use. Hot-read caching and slot-reservation locks are Phase 2 additions once booking exists.</div></div>
+          <div class="node accent" style="flex-basis:100%"><div class="n-name">Three contracts hold the services together</div><div class="n-role"><strong>1. Token verification:</strong> every service verifies the RS256 signature itself from a cached JWKS (<code>kid</code>-selected, 300 s TTL, 30 s backoff on an unknown <code>kid</code>) and checks the shared Redis denylist; no per-request call to Identity. <strong>2. Synchronous reference checks (D-05):</strong> at write time the owning service is asked with a GET to its <code>/internal</code> endpoint, forwarding the caller's JWT &mdash; Identity&rarr;Organization (clinic), Patient&rarr;Organization (clinic) and Patient&rarr;Identity (user), Provider&rarr;Organization (department) and Provider&rarr;Identity (user). Missing or inactive &rarr; 422; owner unreachable or erroring &rarr; 503 with nothing written; no cascade on deactivation. <strong>3. Trace propagation:</strong> W3C <code>traceparent</code> on every hop (OpenTelemetry propagator + httpx client spans) so one request is one connected trace.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Messaging &amp; background work &mdash; scaffolding only, not yet wired (Phase 2/3)</div>
+        <div class="layer-label">Data &mdash; one database per service &mdash; wired, Phase 1.1</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry</div><div class="n-role">Containers healthy, no producer/consumer code yet. Transactional-outbox-fed domain events are Phase 3 scope.</div></div>
-          <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Containers healthy, no tasks defined yet. Notifications/reminders/follow-ups are Phase 2/3 scope.</div></div>
+          <div class="node accent"><div class="n-name">identity_db</div><div class="n-tech">PostgreSQL &middot; role identity_svc</div><div class="n-role"><code>users</code></div></div>
+          <div class="node accent"><div class="n-name">organization_db</div><div class="n-tech">PostgreSQL &middot; role organization_svc</div><div class="n-role"><code>clinics</code>, <code>departments</code></div></div>
+          <div class="node accent"><div class="n-name">provider_db</div><div class="n-tech">PostgreSQL &middot; role provider_svc</div><div class="n-role"><code>providers</code>, <code>specialties</code>, <code>provider_specialties</code>, <code>availability_templates</code></div></div>
+          <div class="node accent"><div class="n-name">patient_db</div><div class="n-tech">PostgreSQL &middot; role patient_svc</div><div class="n-role"><code>patients</code> (PHI columns live only here)</div></div>
+          <div class="node accent"><div class="n-name">scheduling_db</div><div class="n-tech">PostgreSQL &middot; role scheduling_svc</div><div class="n-role"><code>provider_slots</code>, <code>appointments</code> (<code>uq_appointments_active_slot</code>), <code>idempotency_keys</code>, <code>appointment_status_history</code>, <code>waitlist_entries</code></div></div>
+          <div class="node accent"><div class="n-name">visit_db</div><div class="n-tech">PostgreSQL &middot; role visit_svc</div><div class="n-role"><code>visits</code> (one per appointment), <code>visit_state_history</code></div></div>
+          <div class="node accent"><div class="n-name">billing_db</div><div class="n-tech">PostgreSQL &middot; role billing_svc</div><div class="n-role"><code>billing_records</code>, <code>billing_status_history</code></div></div>
+        </div>
+        <div class="nodes" style="margin-top:10px">
+          <div class="node accent"><div class="n-name">Shared audit sink</div><div class="n-tech">MongoDB</div><div class="n-role">One append-only <code>audit_log</code> collection written by every service through the shared <code>libs/audit</code> writer; field names only, never PHI values. A dedicated Audit service is Phase 3.</div></div>
+          <div class="node accent"><div class="n-name">Shared Redis</div><div class="n-tech">Redis</div><div class="n-role">JWT jti denylist (Identity writes, every service reads) and the gateway's rate-limit counters &mdash; one instance, a recorded risk (see below).</div></div>
+        </div>
+        <div class="n-role" style="margin-top:10px;color:var(--muted);font-size:12.5px">One Postgres container hosts all seven databases (and Temporal's two). Each role can connect only to its own database; <code>PUBLIC</code> connect is revoked; the idempotent <code>db-init</code> job creates them. No foreign key crosses a service: cross-service references are plain UUIDs.</div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Orchestration &mdash; wired, Phase 2</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>, SDK 1.34.0)</div><div class="n-role">Task queues <code>scheduling-tq</code> and <code>visit-tq</code>. Schedules replace cron: hold reaper, pending-booking starter, visit downstream sweeper. <code>auto-setup</code> is a local-dev image, not the production topology.</div></div>
+          <div class="node accent"><div class="n-name">scheduling-worker</div><div class="n-tech">same image as Scheduling &middot; own container</div><div class="n-role">Booking, Cancel, Reschedule, WaitlistAdvance and the maintenance workflows. Never runs migrations; starts after its API is healthy; heartbeat-file healthcheck.</div></div>
+          <div class="node accent"><div class="n-name">visit-worker</div><div class="n-tech">same image as Visit &middot; own container</div><div class="n-role">VisitCompleted (billing finalize, follow-up and analytics intents) and the sweeper.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Observability (cross-cutting) &mdash; scaffolding only, not yet wired (Phase 3)</div>
+        <div class="layer-label">Messaging &amp; background work &mdash; scaffolding only, not yet wired (Phase 3)</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">Containers healthy; prometheus-fastapi-instrumentator exposes <code>/metrics</code>, dashboards not yet built (Phase 3, OBS-01..03).</div></div>
-          <div class="node"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry</div><div class="n-role">OTel FastAPI auto-instrumentation is wired and exports OTLP toward Jaeger with graceful degradation if Jaeger is down (confirmed in Plan 03); full connected HTTP&rarr;Temporal&rarr;Kafka&rarr;Celery trace is Phase 3 scope. Body capture is disabled.</div></div>
-          <div class="node accent"><div class="n-name">Logs</div><div class="n-tech">structlog JSON</div><div class="n-role">Wired, Phase 1: every log line carries trace_id/span_id; identifiers only, no PHI field values — enforced by a dedicated test, not just convention.</div></div>
+          <div class="node"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry</div><div class="n-role">Containers healthy, no producer/consumer code yet. Transactional-outbox-fed domain events &mdash; and the event-fed local copies that will replace today's synchronous reference checks &mdash; are Phase 3 scope.</div></div>
+          <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Containers healthy, no tasks defined yet. In Phase 2 notifications and follow-ups are stub activities (the seam); Phase 3 moves their bodies onto Celery.</div></div>
+        </div>
+      </div>
+      <div class="flow-arrow">&#9662;</div>
+
+      <div class="layer">
+        <div class="layer-label">Observability (cross-cutting) &mdash; tracing and metrics wired per service, dashboards Phase 3</div>
+        <div class="nodes">
+          <div class="node accent"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">One Prometheus scrape job per API service (eight <code>smarthealth-&lt;service&gt;</code> jobs incl. billing and visit); the two workers have no HTTP listener and no metrics yet. The gateway serves <code>/metrics</code> only on an internal listener (:9100, never published). Grafana dashboards are not yet built (Phase 3, OBS-01..03).</div></div>
+          <div class="node accent"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry (OTLP)</div><div class="n-role">Traces are now connected across services: a provider create produced one trace spanning gateway, provider, organization and (JWKS fetch) identity, confirmed through Jaeger's query API. Body capture is disabled. Connected HTTP&rarr;Temporal&rarr;Kafka&rarr;Celery tracing is Phase 3 scope.</div></div>
+          <div class="node accent"><div class="n-name">Logs</div><div class="n-tech">structlog JSON</div><div class="n-role">Every log line carries trace_id/span_id; identifiers only, no PHI field values &mdash; enforced by a dedicated test, not just convention.</div></div>
         </div>
       </div>
 
     </div>
-    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
-    <div class="callout"><b>Modeling assumption &mdash; users vs. patients:</b> <code>users</code> (login/auth identity: email, password hash, role) and <code>patients</code> (operational profile: name, DOB, contact info) are deliberately <strong>separate tables</strong>, with <code>patients.user_id</code> nullable. This lets front-desk/admin create a patient record with no login (walk-in, phone-booked) while still supporting self-registering patient accounts (IAM-01) — one model can't satisfy both without this split.</div>
+    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL &mdash; now in the database of the service that owns it; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
+    <div class="callout"><b>Modeling assumption &mdash; accounts vs. profiles (D-04):</b> login accounts live in <strong>Identity</strong> (<code>users</code>: email, password hash, role, clinic_id); operational profiles live in <strong>Patient</strong> and <strong>Provider</strong>. A profile stores <code>user_id</code> as a plain nullable UUID (no foreign key), validated against Identity at write time. This lets front-desk/admin create a patient with no login (walk-in, phone-booked) while self-registering patient accounts (IAM-01) still work, and it keeps PHI out of Identity and credentials out of Patient and Provider. Creating a profile never creates the account.</div>
+    <div class="callout warn"><b>Interim mechanisms &mdash; Phase 3 replaces them.</b> Phase 2 ships deliberate stand-ins, each labelled: <strong>(1)</strong> the <strong>pending-booking starter</strong> and the <strong>visit downstream sweeper</strong> recover a workflow start lost between a database commit and <code>start_workflow</code> &mdash; <em>Phase 3 replaces</em> them with a transactional <strong>outbox</strong>; <strong>(2)</strong> notification, follow-up and analytics steps are <strong>stubs</strong> (a PHI-free log line plus an audit entry) &mdash; <em>Phase 3 replaces</em> them with Celery jobs and Kafka events; <strong>(3)</strong> clients <strong>poll</strong> status URLs &mdash; <em>Phase 3 replaces</em> polling with events; <strong>(4)</strong> Temporal runs from the <code>auto-setup</code> image &mdash; the <em>production topology</em> is <code>temporalio/server</code> with a separate schema job. Also open: workers expose no metrics; Mongo audit is written after the Postgres commit and is not atomic with it (WR-04); the waitlist tries at most 5 entries per freed slot and has no priority.</div>
+    <div class="callout"><b>Open deferrals and recorded risks carried from Phase 1.1</b> (none of these is hidden; all are in <code>deferred-items.md</code> and the Phase 1.1 summaries): <strong>(1)</strong> the gateway buffers whole request bodies with no size cap &mdash; the rate limiter bounds request count, not size; <strong>(2)</strong> one shared Redis holds both the denylist and rate-limit counters &mdash; a Redis outage fails the limiter open and token verification closed (503), and a flush would drop revocations; <strong>(3)</strong> service tokens carried no <code>aud</code> claim &mdash; <em>closed in Phase 2</em>: tokens are now audience-scoped and every internal route names its allowed callers; <strong>(4)</strong> application containers run as root; <strong>(5)</strong> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a human look at the Jaeger UI, and the bootstrap_admin.py admin-creation branch (only its no-op path is tested) have not been verified; <strong>(6)</strong> three flagged assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain holds only through write-time validation (ORG-03), overlapping availability templates remain allowed (PPL-03), and a client combining services may briefly see stale cross-service state (PPL-04). Nothing here is claimed as production-hardened.</div>
   </section>
 
   <!-- DECISIONS -->
@@ -471,28 +530,87 @@
     <div class="grid">
 
       <div class="card">
+        <div class="card-top"><h3>Why Temporal, not Celery, for the saga</h3><span class="chip high">high</span></div>
+        <div class="chosen">Temporal workflows per aggregate owner; Celery keeps single-step jobs (Phase 3)</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains/chords &middot; a hand-rolled database state machine with a poller &middot; choreography over Kafka events</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v"><strong>Durable execution:</strong> a booking is five steps across three services; if a worker dies mid-saga the workflow resumes on another worker from its recorded history (proven by the worker-crash test on the Compose Temporal). <strong>Replay:</strong> workflow code is deterministic and replay-tested against recorded histories, and changes go behind <code>workflow.patched</code>. <strong>Compensation</strong> is ordinary code in the workflow (reverse order, forward transitions) instead of callbacks spread over tasks. <strong>Retries and timeouts</strong> are per-activity policies, with business outcomes marked non-retryable. <strong>Schedules</strong> replace cron for the hold reaper, the pending-booking starter and the visit sweeper. Celery would need all of this built by hand on top of at-least-once tasks.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">One more runtime with its own determinism discipline (no wall clock, randomness or I/O in workflow code; a sandbox enforces it) and a versioning discipline for in-flight histories. The namespace keeps closed workflows for 24 h only, so the database &mdash; not the workflow id &mdash; is the long-term idempotency arbiter. Celery still gets the discrete jobs (send a reminder, run a follow-up) in Phase 3; in Phase 2 nothing is delegated to it yet.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Placement</span><span class="v muted">A workflow lives with the service that owns its aggregate (D-05): booking/cancel/reschedule/waitlist in Scheduling on <code>scheduling-tq</code>, visit completion in Visit on <code>visit-tq</code>; Billing has no workflow. One worker container per service, so activities touch only their own database.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Layered idempotency</h3><span class="chip high">high</span></div>
+        <div class="chosen">Database arbiters first, workflow id second, idempotent activities throughout</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Redis idempotency cache only &middot; rely on Temporal workflow-id dedup alone &middot; client-side retry discipline</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v"><strong>1. Database arbiters:</strong> the partial unique index <code>uq_appointments_active_slot</code> (one active appointment per slot), the <code>idempotency_keys</code> row keyed by (caller, key) with a SHA-256 of the body (a replay returns the original appointment; a different body is 422), conditional updates (<code>UPDATE &hellip; WHERE status = expected</code>) for every transition, and history uniques (<code>uq_visit_history_visit_to</code>, <code>uq_billing_history_record_key</code>). <strong>2. Workflow id:</strong> deterministic ids (<code>booking-&lt;id&gt;</code>, <code>visit-completed-&lt;id&gt;</code>, &hellip;) started with use-existing / reject-duplicate, so a second start is a no-op. <strong>3. Activities:</strong> every Billing call carries an <code>Idempotency-Key</code>, and every audit write a <code>dedupe_key</code>, so Temporal&rsquo;s at-least-once retries are safe.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Keys live in Postgres, not Redis, so they survive a cache flush, at the cost of a write per booking. Workflow-id dedup is bounded by the 24 h namespace retention; beyond that only the database rules hold &mdash; which is why they come first.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Monolith &rarr; microservices</h3><span class="chip high">high</span></div>
+        <div class="chosen">Full cut &mdash; six independently deployable services, one database each</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Keep the Phase 1 modular monolith &middot; lean cut with a merged Provider Directory (Organization + Provider in one service) &middot; full cut (chosen)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The week-1 mentor review asked for a <em>true</em> microservice architecture, so Phase 1.1 re-delivers the working monolith as gateway + Identity + Organization + Provider + Patient + Scheduling (D-01). The boundaries are clear bounded contexts &mdash; the Organization/Provider split was a deliberate preference for finer boundaries over fewer calls. It buys independent deployment and scaling per service, confines PHI to one service and one database (Patient), and a compromised non-Identity service can no longer mint tokens because only Identity holds the signing key. Phase 1 behaviour was carried over and re-tested, with one deliberate change: a provider under a missing department now returns 422 (was 404) per D-05.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">The costs are real and accepted: <strong>extra network hops</strong> on every write that crosses a boundary; <strong>availability coupling</strong> from synchronous checks &mdash; a provider write needs Organization (and Identity) up and otherwise fails closed with 503; <strong>no distributed transactions and no cascading deactivation</strong> (D-06), so deactivating a clinic leaves existing references in place and only blocks new ones; clients must combine id-only reads themselves (D-07) because no service enriches another's data; and about six more containers to run locally. Eventual-consistency work that would remove the coupling (event-fed local copies) is deferred to Phase 3 (D-08).</span></p>
+        <p class="kv"><span class="k">Reversibility</span><span class="v muted">Costly &mdash; merging or splitting services later means moving tables between service databases and rewriting the internal calls between them.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Verification status</span><span class="v muted">Behaviour is covered by in-process suites across all services plus a real-stack smoke test through the published gateway port. Not yet verified: how the synchronous checks behave when a real container goes down mid-request, a cold start from an empty volume, and a person viewing the connected trace in the Jaeger UI.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>API gateway</h3><span class="chip high">high</span></div>
+        <div class="chosen">Thin FastAPI + httpx proxy, per-IP Redis rate limits</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Self-hosted Traefik or Nginx &middot; managed/SaaS API gateways &middot; no gateway (clients call each service directly)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">A thin FastAPI proxy is the most reviewable choice: the whole routing knowledge is a short Python route table with tests, in the same stack and language as the services, with no extra configuration dialect to defend. The table maps <code>/api/auth</code>, <code>/api/admin</code> and <code>/.well-known/jwks.json</code> to Identity, <code>/api/clinics</code> to Organization, <code>/api/providers</code> to Provider and <code>/api/patients</code> to Patient &mdash; and deliberately has <strong>no <code>/internal</code> prefix</strong>, so internal lookup endpoints are absent from the edge rather than routed-then-blocked. Unsafe paths (dot segments, encoded slashes, NUL) are refused before routing, hop-by-hop headers are stripped, upstream failures map to 503/504, and the gateway never retries (a retried POST could double-apply a write). Limits are per client IP in fixed one-minute windows &mdash; a stricter 20/min budget for login/register/refresh, 300/min for everything else &mdash; counted by one atomic Lua script, keyed on the socket peer address only (a client-supplied <code>X-Forwarded-For</code> is never trusted). The limiter <strong>deliberately fails open</strong> when Redis is unreachable, never silently: a warning log and the <code>gateway_ratelimit_fail_open_total</code> counter (RESEARCH A1 &mdash; a counter store must not take the whole platform down). The gateway does <strong>not</strong> verify JWTs (every service verifies for itself, so no service trusts the edge) and does <strong>not</strong> aggregate responses (D-07).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Less capable than Traefik/Nginx: it buffers the whole request body with <strong>no size cap yet</strong> (open deferral &mdash; the limiter bounds request count, not size) and does not stream. Fixed windows allow a burst across a window boundary. While Redis is down the edge has no rate protection (fail-open is a chosen availability-over-protection tradeoff). It is a single local ingress and a single point of failure, and if it were ever placed behind another proxy the peer address it limits on would be that proxy&rsquo;s. Its <code>/metrics</code> is served only on an internal listener (:9100, not published).</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Cross-service integrity</h3><span class="chip high">high</span></div>
+        <div class="chosen">Synchronous owner check at write time now; event-fed local copies in Phase 3</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Cross-database foreign keys (not possible across databases) &middot; event-fed local copies of reference data &middot; sagas / distributed transactions</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Once tables live in different databases a foreign key can no longer express "this clinic exists". Kafka and the outbox do not exist until Phase 3 (D-08), so the simplest correct option today is a synchronous GET to the owning service&rsquo;s <code>/internal</code> endpoint at write time (D-05), forwarding the caller&rsquo;s JWT so the callee re-applies RBAC and clinic scope (a 60 s service token is used only where there is no user context). The edges are Identity&rarr;Organization (clinic), Patient&rarr;Organization (clinic) and Patient&rarr;Identity (user), Provider&rarr;Organization (department) and Provider&rarr;Identity (user). A missing or inactive target is <strong>422</strong>; an owner that is unreachable or answers 401/403/5xx is <strong>503</strong> &mdash; so an auth misconfiguration is never mistaken for a missing record &mdash; and in both cases nothing is written (<em>fail closed</em>). Retries are bounded to three attempts with backoff, GET only, transport errors only. Deactivation never cascades (D-06): existing references keep their ids and only new writes pointing at an inactive target are refused. Reads return ids only (D-07); clients combine them.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Writes depend on the owner&rsquo;s availability: a provider write needs Organization and Identity up. Each cross-boundary write pays extra latency. The check happens once, at write time, so a department deactivated afterwards leaves existing providers pointing at it, and a client combining services may briefly see stale state &mdash; both are flagged assumptions awaiting mentor confirmation (ORG-03, PPL-04). Phase 3 removes the availability coupling with event-fed local copies, at the price of an eventual-consistency window. <em>Not yet verified:</em> behaviour against a genuinely failing container (the suites simulate an unreachable owner with a transport that raises ConnectError).</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Database per service</h3><span class="chip high">high</span></div>
+        <div class="chosen">One Postgres container, one database and one role per service</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">One container per database &middot; one shared database with a schema per service &middot; keep the single Phase 1 database</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Isolation is enforced by the server, not by convention: each service role can connect only to its own database (<code>PUBLIC</code> connect is revoked), and a live test shows all 20 cross-role connections refused with &ldquo;permission denied&rdquo;. Invariant tests also assert that no foreign key crosses a service, no service imports another, PHI columns exist only in Patient and the private key is loaded only by Identity. One container keeps local resource use tractable. An idempotent <code>db-init</code> job creates roles and databases (an init script would silently do nothing on an existing volume); each service has its own migrations directory with a fresh Alembic baseline. The legacy <code>smarthealth</code> database is <strong>left untouched and not migrated</strong> &mdash; dev data is treated as disposable (RESEARCH A2) and dropping it is an operator decision. MongoDB <code>audit_log</code> and Redis stay shared as cross-cutting infrastructure, not service databases (D-02).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">One container is one failure domain and one connection budget &mdash; <code>max_connections</code> had to be raised to 300 because Temporal plus six application pools exhausted the default 100 &mdash; so this is the local shape, not production isolation. There are no cross-database joins by design. The shared Mongo and shared Redis remain coupling points (a recorded risk). The legacy database still contains stray empty objects from an early migration run.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Scheduling skeleton now</h3><span class="chip high">high</span></div>
+        <div class="chosen">A health-only Scheduling service that already owns provider_slots</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Create the service only in Phase 2 &middot; keep provider_slots in Provider (or Identity)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v"><code>provider_slots</code>, the <code>btree_gist</code> extension and the <code>ex_provider_slots_no_overlap</code> exclusion constraint were recreated in <code>scheduling_db</code> verbatim from Phase 1 minus the foreign key, so Phase 2 never has to move a table between services (D-03). The constraint is proven live there: overlapping non-cancelled slots for one provider are rejected by Postgres, while a cancelled overlap, another provider and back-to-back slots are accepted; creating availability templates materializes no slots. <code>provider_id</code> is a plain UUID that Phase 2 will validate against Provider&rsquo;s <code>/internal/providers/{id}</code> (D-05).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A service with no public routes cost a container, an image, a migration and a Compose entry for a phase. It paid off in Phase 2: slots, appointments and the saga were added without moving a table, and the service-token <code>aud</code> claim was added (plan 02-01) before Scheduling started calling Provider. Slot generation tolerates overlapping templates with <code>ON CONFLICT (provider_id, start_time) DO NOTHING</code>.</span></p>
+      </div>
+
+      <div class="card">
         <div class="card-top"><h3>Workflow orchestration</h3><span class="chip high">high</span></div>
         <div class="chosen">Temporal</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains only · hand-rolled DB state machine · AWS Step Functions</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Booking is a multi-step transaction (validate → reserve → conflict-check → notify → billing → confirm). Temporal makes it durable and resumable, and models failure recovery as first-class compensation — directly satisfying "partial failures never corrupt scheduling state."</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Booking is a multi-step transaction (validate &rarr; reserve hold &rarr; billing pre-check &rarr; notification intent &rarr; confirm). Temporal makes it durable and resumable, and models failure recovery as first-class compensation — directly satisfying "partial failures never corrupt scheduling state." See <em>Why Temporal, not Celery</em> above for the Phase 2 rationale as built.</span></p>
         <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Another infra component + a determinism discipline (no wall-clock/random in workflow code). Worth it for the graded reliability core.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Phase 1 status</span><span class="v muted">Running via the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; used here only because Temporal isn't wired into application code until Phase 2 and auto-setup's schema auto-provisioning saves local-dev time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 2 status</span><span class="v muted">Wired: five Scheduling workflows and two Visit workflows run on two worker containers. Still the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; it is kept for local dev because its schema auto-provisioning saves set-up time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Auth &amp; session model</h3><span class="chip high">high</span></div>
-        <div class="chosen">Access + refresh JWT, Redis jti-denylist</div>
-        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Access-only JWT (no refresh) · access+refresh with no revocation list · server-side session store only</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Access token (~15min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>type=access</code>) is validated on every protected request; refresh token (~7days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only, no role/clinic claims) re-derives role/clinic from the current DB row on exchange, so a role change takes effect on next refresh, not just next login. Logout writes the access token's <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life, self-expiring) — an access-only or no-revocation-list design can't support a working logout, and Redis is already in the mandated stack so the marginal cost is low.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">One extra Redis round-trip per authenticated request (the denylist EXISTS check); bounded, self-expiring memory use since entries carry the token's own remaining TTL.</span></p>
+        <div class="chosen">RS256 access + refresh JWT, JWKS verification in every service, Redis jti-denylist</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">A shared symmetric secret distributed to every service &middot; per-request token introspection at Identity &middot; opaque tokens &middot; access-only JWT with no refresh or revocation list</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Identity alone holds the RSA private key and signs tokens with <code>kid</code> <code>smarthealth-identity-1</code>; the public key is published at <code>/.well-known/jwks.json</code>. Every service verifies signatures locally against a cached JWKS (300 s TTL, 30 s backoff after an unknown <code>kid</code>), so there is no per-request call to Identity and a compromised non-Identity service cannot forge tokens &mdash; which a shared symmetric secret would allow for any holder. The access token (~15 min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>type=access</code>) is validated on every protected request; the refresh token (~7 days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only) re-derives role and clinic from the current account row, so a role change takes effect on next refresh. Logout writes the <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life) that every service checks, failing closed with 503 if Redis is unreachable. Calls with no user context use 60 s service tokens minted only by Identity. The private key is generated by <code>scripts/generate_jwt_keypair.py</code>, gitignored, and delivered only to the Identity container as a Compose secret; Identity refuses to start without it.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Key-file management: the key must be generated before the first <code>docker compose up</code> and never committed. Rotation is mechanically supported by <code>kid</code> but has <strong>not been exercised</strong>. A service may use a stale JWKS for up to the cache TTL. One Redis round-trip per authenticated request in every service. Service tokens carried no <code>aud</code> claim in Phase 1.1; Phase 2 (plan 02-01) made them audience-scoped, with a per-service client secret delivered as a Compose secret and an explicit allowed-caller set on every internal route.</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Availability &amp; slot model</h3><span class="chip high">high</span></div>
         <div class="chosen">Weekly availability templates now, provider_slots exclusion constraint designed now</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Generate concrete bookable slot rows in Phase 1 (e.g. next 90 days materialized) · free-text working hours (unstructured) · concrete slots only, no template</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">PPL-03 ("configure availability windows") is a configuration requirement, not a booking-generation requirement — a weekly <code>availability_templates</code> row (day_of_week/start_time/end_time/slot_duration/effective dates) satisfies it without deciding a materialization horizon that has no consumer until Phase 2's booking saga exists. <code>provider_slots</code> is created now but left <b>empty</b> — its <code>EXCLUDE USING gist (provider_id WITH =, tstzrange(start_time,end_time) WITH &amp;&amp;) WHERE (status &lt;&gt; 'cancelled')</code> constraint (<code>btree_gist</code> extension) is live and proven by an integration test today, so Phase 2's double-booking guarantee is inherited as a tested invariant, not a Phase-2 to-do under saga-implementation pressure.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Phase 1 ships no bookable slots yet (by design — nothing consumes them until Phase 2's Temporal saga). The constraint's correctness is proven independent of any booking code, which is the point.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">PPL-03 ("configure availability windows") is a configuration requirement, not a booking-generation requirement — a weekly <code>availability_templates</code> row (day_of_week/start_time/end_time/slot_duration/effective dates) satisfies it without deciding a materialization horizon that has no consumer until Phase 2's booking saga exists. <code>provider_slots</code> is created now (since Phase 1.1 in the Scheduling service&rsquo;s own <code>scheduling_db</code>) but left <b>empty</b> &mdash; its <code>EXCLUDE USING gist (provider_id WITH =, tstzrange(start_time,end_time) WITH &amp;&amp;) WHERE (status &lt;&gt; 'cancelled')</code> constraint (<code>btree_gist</code> extension) is live and proven by an integration test today, so Phase 2's double-booking guarantee is inherited as a tested invariant, not a Phase-2 to-do under saga-implementation pressure.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Phase 1 shipped no bookable slots (by design). Phase 2 materializes slots on demand over a rolling 28-day horizon from the templates, in the clinic&rsquo;s IANA timezone, and adds the appointment-level arbiter <code>uq_appointments_active_slot</code> on top of the slot exclusion constraint.</span></p>
       </div>
 
       <div class="card">
@@ -513,17 +631,17 @@
 
       <div class="card">
         <div class="card-top"><h3>System of record</h3><span class="chip high">high</span></div>
-        <div class="chosen">PostgreSQL</div>
+        <div class="chosen">PostgreSQL &mdash; one database per service</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">MongoDB for everything · MySQL</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant, and the transactional outbox rides the same commit.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Rigid schema vs documents — which is exactly why non-transactional data goes to MongoDB instead.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant (it lives in <code>scheduling_db</code>), and the transactional outbox will ride the same commit inside the owning service&rsquo;s database. Each service owns its tables in its own database (identity_db, organization_db, provider_db, patient_db, scheduling_db) &mdash; see <em>Database per service</em>.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Rigid schema vs documents &mdash; which is exactly why non-transactional data goes to MongoDB instead. With the split, referential integrity across services is no longer enforced by the database; see <em>Cross-service integrity</em>.</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Operational document store</h3><span class="chip high">high</span></div>
         <div class="chosen">MongoDB</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Postgres JSONB · Elasticsearch</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean. Delivered in Phase 1 as an append-only <code>audit_log</code> collection (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean. Delivered in Phase 1 as an append-only <code>audit_log</code> collection, and since Phase 1.1 one shared collection written by every service through the shared audit library (D-02; a dedicated Audit service is Phase 3) (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A second datastore to run. Confirmed in Phase 1 that the append-heavy, no-retention-policy-yet audit use case fits a document model well; JSONB remains a valid simpler alternative if the volume never grows beyond what a single Postgres table would need.</span></p>
       </div>
 
@@ -531,8 +649,8 @@
         <div class="card-top"><h3>Cache &amp; coordination</h3><span class="chip high">high</span></div>
         <div class="chosen">Redis</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">In-process cache · Postgres advisory locks</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Caches hot provider-availability reads during peak booking, stores idempotency keys for the fast dedup path, and provides short-lived locks.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A Redis lock is defense-in-depth, <em>not</em> the correctness backstop — TTL expiry can race. The Postgres constraint is the real guarantee.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Planned for caching hot provider-availability reads and short-lived locks. Live today: the JWT jti denylist every service reads, and the gateway&rsquo;s per-IP rate-limit counters. Booking idempotency keys deliberately live in Postgres, not Redis, so a cache flush cannot cause a duplicate booking.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A Redis lock is defense-in-depth, <em>not</em> the correctness backstop — TTL expiry can race. The Postgres constraint is the real guarantee. Today one shared Redis holds both the denylist and the rate-limit counters, so an outage fails the limiter open and token verification closed (503), and a flush would drop revocations &mdash; accepted for local scope; a production split would use separate instances or ACL users.</span></p>
       </div>
 
       <div class="card">
@@ -545,9 +663,11 @@
 
       <div class="card">
         <div class="card-top"><h3>Observability</h3><span class="chip high">high</span></div>
-        <div class="chosen">Prometheus + Grafana · Jaeger · OpenTelemetry</div>
-        <p class="kv"><span class="k">Decision</span><span class="v">Instrument once with OpenTelemetry; export traces to Jaeger over <strong>OTLP</strong> (not the deprecated Jaeger exporter), metrics to Prometheus, visualize in Grafana.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Why it matters</span><span class="v muted">Observability is explicitly graded. The hard part is propagating trace context across async boundaries — see the consistency patterns below.</span></p>
+        <div class="chosen">Prometheus + Grafana &middot; Jaeger &middot; OpenTelemetry</div>
+        <p class="kv"><span class="k">Decision</span><span class="v">Instrument once with OpenTelemetry; export traces to Jaeger over <strong>OTLP</strong> (not the deprecated Jaeger exporter), metrics to Prometheus, visualize in Grafana. Since Phase 1.1 traces connect across services (W3C <code>traceparent</code> on every internal hop) and every service has its own OTel service name and its own Prometheus scrape job.</span></p>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Vendor APM agents &middot; logs-only correlation by request id &middot; the deprecated Jaeger-native exporter</span></p>
+        <p class="kv"><span class="k">Why it matters</span><span class="v muted">Observability is explicitly graded. With six services a request is only debuggable if it is one connected trace; the hard part is propagating context across hops &mdash; see the consistency patterns below.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Every internal hop must propagate W3C context explicitly (an httpx client span plus the propagator), and in-process tests need the propagator path because the ASGI test transport is not instrumented. A connected trace for a provider create was confirmed through Jaeger&rsquo;s query API; nobody has yet looked at it in the Jaeger UI.</span></p>
       </div>
 
     </div>
@@ -561,14 +681,14 @@
     <div class="two-col">
       <div class="card">
         <div class="card-top"><h3>Who does what</h3></div>
-        <p class="kv"><span class="k">Temporal</span><span class="v">Multi-step <em>orchestration</em> with compensation — the booking / cancel / visit sagas. Knows the whole transaction.</span></p>
+        <p class="kv"><span class="k">Temporal</span><span class="v">Multi-step <em>orchestration</em> with compensation — the booking / cancel / reschedule / waitlist / visit-completion workflows (live since Phase 2). Knows the whole transaction.</span></p>
         <p class="kv"><span class="k">Kafka</span><span class="v">Durable <em>facts that already happened</em> — broadcast to independent consumers (analytics, audit, notifications). Replayable.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Celery</span><span class="v">Discrete <em>single-step jobs</em>, usually triggered by a Temporal activity or a Kafka consumer — send an email, compute a projection.</span></p>
       </div>
       <div class="card">
         <div class="card-top"><h3>Three patterns that keep state honest</h3></div>
-        <p class="kv"><span class="k">Transactional outbox</span><span class="v">Business row + event row commit in one Postgres transaction; a relay publishes to Kafka after. No dual-write gap.</span></p>
-        <p class="kv"><span class="k">Layered idempotency</span><span class="v">Redis key (fast) + Temporal workflow-id dedup + Postgres unique constraint (backstop). At-least-once delivery becomes effectively-once.</span></p>
+        <p class="kv"><span class="k">Transactional outbox (Phase 3)</span><span class="v">Business row + event row commit in one Postgres transaction; a relay publishes to Kafka after. No dual-write gap. Until then the commit-then-start gap is covered by the pending-booking starter and the visit sweeper.</span></p>
+        <p class="kv"><span class="k">Layered idempotency</span><span class="v">Postgres arbiters first (partial unique index, idempotency-key row, conditional updates), Temporal workflow-id dedup second, idempotent activities throughout. At-least-once delivery becomes effectively-once.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Saga compensation</span><span class="v">On failure, run <em>forward</em> transactions (release slot, reverse billing, notify) — never a hard delete or silent rollback. Audit history stays intact.</span></p>
       </div>
     </div>
@@ -577,43 +697,179 @@
   <!-- FLOWS -->
   <section id="flows">
     <div class="sec-head"><span class="sec-num">05</span><h2>Core flows</h2></div>
-    <p class="sec-sub">The booking saga is the heart of the system. Steps 1–6 are the happy path Temporal drives; the compensation step is what runs on failure. Cancel/reschedule and the visit lifecycle are shown as designed — implemented in Phase 2.</p>
+    <p class="sec-sub">As built in Phase 2. Every multi-step change is a Temporal workflow in the service that owns the aggregate (<code>scheduling-tq</code> for appointments and the waitlist, <code>visit-tq</code> for visits), executed by its own worker container. Each step is an idempotent activity that writes one audit entry; failures compensate with forward state transitions and nothing is ever deleted. Clients poll a status URL.</p>
 
     <div class="flow">
       <h3>Appointment booking saga</h3>
-      <p class="flow-sub">Orchestrated by Temporal · appointment is <code>confirmed</code> only after step 6.</p>
+      <p class="flow-sub"><code>POST /api/appointments</code> (with <code>Idempotency-Key</code>) writes the appointment as <code>pending</code> in the same transaction as the idempotency row, starts <code>booking-&lt;appointment id&gt;</code> and answers <strong>202</strong>. The appointment is <code>confirmed</code> only after step 5.</p>
       <ol class="steps">
-        <li><div class="s-title">Validate</div><div class="s-desc">Check patient eligibility and request details. Reject early on bad input.</div></li>
-        <li><div class="s-title">Reserve slot</div><div class="s-desc">Reserve the provider slot; the Postgres exclusion constraint makes a concurrent double-book impossible, not just unlikely.</div></li>
-        <li><div class="s-title">Prevent conflicts</div><div class="s-desc">Confirm no overlapping hold for this provider/time; honor the idempotency key so a retry returns the same appointment.</div></li>
-        <li><div class="s-title">Schedule notifications</div><div class="s-desc">Hand a reminder job to Celery — asynchronous, never blocking the booking transaction.</div></li>
-        <li><div class="s-title">Billing pre-check</div><div class="s-desc">Run the modeled eligibility check (<code>pending → verified/failed</code>). No live payment gateway.</div></li>
-        <li><div class="s-title">Confirm</div><div class="s-desc">Mark the appointment <code>confirmed</code> and emit <code>AppointmentBooked</code> via the outbox.</div></li>
-        <li class="compensate"><div class="s-title">Compensate (on any failure)</div><div class="s-desc">Run forward compensations — release the slot, reverse the billing hold, notify the patient. State is left clean, history preserved.</div></li>
+        <li><div class="s-title">Validate</div><div class="s-desc">Patient, provider and clinic exist, are active and belong together &mdash; checked through their owners&rsquo; <code>/internal</code> routes with Scheduling&rsquo;s aud-scoped service token. A missing reference is a business failure (<code>ReferenceInvalid</code>), an unreachable owner is retried.</div></li>
+        <li><div class="s-title">Reserve hold</div><div class="s-desc">Slot <code>available &rarr; held</code> with <code>held_until</code> (10 min) and the appointment id, by a conditional update. Conflicts were already closed when the request was accepted: <code>uq_appointments_active_slot</code> lets exactly one active appointment exist per slot.</div></li>
+        <li><div class="s-title">Billing pre-check</div><div class="s-desc">Billing creates the record <code>pending</code> and resolves it <code>verified</code> or <code>failed</code> with a deterministic rule (a <code>coverage_ref</code> starting <code>DENY-</code> is denied). <code>Idempotency-Key</code> on every call, so a retry never double-applies.</div></li>
+        <li><div class="s-title">Notification intent (best-effort)</div><div class="s-desc">A stub activity writes a PHI-free log line and a <code>notification.requested</code> audit entry. It retries, but its failure never fails or compensates the booking. Phase 3 replaces its body with outbox + Celery.</div></li>
+        <li><div class="s-title">Confirm</div><div class="s-desc">One transaction: slot <code>held &rarr; booked</code>, appointment <code>pending &rarr; confirmed</code>, a history row and an audit entry. A lost hold (reaper got there first) is <code>ConfirmLostHold</code> and compensates.</div></li>
+        <li class="compensate"><div class="s-title">Compensate, in reverse order (on any failure)</div><div class="s-desc"><strong>Void billing</strong> (<code>failed/verified &rarr; voided</code>) &rarr; <strong>release the hold</strong> (<code>held &rarr; available</code>) &rarr; <strong>mark the appointment <code>failed</code></strong> with the error type as a machine-readable reason. Forward transitions only, one audit entry per step (<code>dedupe_key = &lt;workflow id&gt;:&lt;step&gt;</code>), so a failed booking is fully reconstructable from audit plus the Temporal history.</div></li>
       </ol>
-      <div class="callout"><b>Evaluation hook:</b> "Under a concurrent load test, parallel bookings against the same slot never produce more than one confirmed appointment" is a Phase 2 success criterion — enforced at the data layer, demonstrated with a load test.</div>
+      <div class="callout"><b>Deviation from SCHED-02, on purpose (D-09 as built):</b> the implemented order runs the <strong>billing pre-check before notification</strong>, while SCHED-02 lists &ldquo;schedule notifications &rarr; billing pre-check&rdquo;. The notification is best-effort and should only go out once the last fallible step has passed, so a patient is never told about a booking that is then compensated. SCHED-02&rsquo;s &ldquo;prevent conflicts&rdquo; step is not a separate activity: it is the reserve step&rsquo;s database constraints (<code>uq_appointments_active_slot</code>, <code>ex_appointments_patient_no_overlap</code>).</div>
+      <div class="callout"><b>Evidence:</b> the concurrency suites fire parallel bookings at one slot against real Postgres and assert exactly one active appointment; <code>scripts/demo_concurrent_booking.py</code> shows it live through the gateway (50 parallel requests &rarr; 1 &times; 202, 49 &times; 409, one <code>confirmed</code> appointment). A deliberately denied booking ends <code>failed</code> with the slot re-offered and billing <code>voided</code>, in-process and on the deployed Compose stack.</div>
     </div>
 
     <div class="two-col">
       <div class="flow">
-        <h3>Cancel / reschedule</h3>
-        <p class="flow-sub">Phase 2 · slot release + waitlist advance.</p>
+        <h3>Cancel</h3>
+        <p class="flow-sub"><code>CancelWorkflow</code> &middot; <code>cancel-&lt;id&gt;-&lt;version&gt;</code> &middot; 202 from the API.</p>
         <ol class="steps">
-          <li><div class="s-title">Release slot</div><div class="s-desc">Free the held slot atomically.</div></li>
-          <li><div class="s-title">Update billing</div><div class="s-desc">Reschedule re-reserves the new slot; cancel triggers refund/billing state update.</div></li>
-          <li><div class="s-title">Advance waitlist</div><div class="s-desc">Match the next appropriate patient to the freed slot.</div></li>
-          <li><div class="s-title">Notify &amp; emit event</div><div class="s-desc">Async patient notification; emit <code>AppointmentCancelled/Rescheduled</code>.</div></li>
+          <li><div class="s-title">Cancel + release slot</div><div class="s-desc">One transaction: appointment <code>confirmed &rarr; cancelled</code>, its current slot back to <code>available</code>.</div></li>
+          <li><div class="s-title">Billing refund state</div><div class="s-desc">More than 24 h ahead: <code>refund_pending &rarr; refunded</code>; inside the cutoff: <code>no_refund</code>. Staff may waive the cutoff (patients may not). Decided in the API request, never in the workflow.</div></li>
+          <li><div class="s-title">Notification intent</div><div class="s-desc">Separate best-effort activity.</div></li>
+          <li><div class="s-title">Advance the waitlist</div><div class="s-desc">Starts <code>waitlist-advance-&lt;cancel workflow id&gt;</code> as an abandoned child for the freed slot.</div></li>
+        </ol>
+      </div>
+      <div class="flow">
+        <h3>Reschedule</h3>
+        <p class="flow-sub"><code>RescheduleWorkflow</code> &middot; reserve-then-swap, never cancel-then-rebook.</p>
+        <ol class="steps">
+          <li><div class="s-title">Hold the new slot</div><div class="s-desc">Same provider only; a taken slot fails here and nothing changes.</div></li>
+          <li><div class="s-title">Swap in one transaction</div><div class="s-desc">Release the old slot, book the new one, repoint the appointment. A rejected swap releases the new hold.</div></li>
+          <li><div class="s-title">Re-link billing</div><div class="s-desc">The <code>verified</code> record follows the appointment (history row <code>rescheduled</code>).</div></li>
+          <li><div class="s-title">Notify, then advance the waitlist</div><div class="s-desc">The old slot is offered to the waitlist.</div></li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="flow">
+        <h3>Waitlist advance</h3>
+        <p class="flow-sub"><code>WaitlistAdvanceWorkflow</code> &middot; FIFO per provider, optional time window.</p>
+        <ol class="steps">
+          <li><div class="s-title">Claim</div><div class="s-desc">The oldest matching <code>waiting</code> entry, claimed with <code>FOR UPDATE SKIP LOCKED</code> so two advances never take the same entry.</div></li>
+          <li><div class="s-title">Book as a child saga</div><div class="s-desc">A normal <code>BookingWorkflow</code> for that patient on the freed slot &mdash; the same constraints and compensation apply.</div></li>
+          <li><div class="s-title">Resolve</div><div class="s-desc">Confirmed &rarr; entry <code>booked</code>. Booking failed &rarr; entry <code>failed</code>, try the next (at most 5). Slot lost to a faster booker &rarr; entry back to <code>waiting</code>.</div></li>
         </ol>
       </div>
       <div class="flow">
         <h3>Visit lifecycle</h3>
-        <p class="flow-sub">Phase 2 · idempotent state machine.</p>
+        <p class="flow-sub">Visit service &middot; commit first, downstream after.</p>
         <ol class="steps">
-          <li><div class="s-title">Check in</div><div class="s-desc">Front-desk records arrival for a confirmed appointment.</div></li>
-          <li><div class="s-title">In progress</div><div class="s-desc">Provider/front-desk advances state; transitions are duplicate-safe.</div></li>
-          <li><div class="s-title">Complete</div><div class="s-desc">Triggers billing / follow-up / analytics without blocking the transition; emits <code>VisitCompleted</code>.</div></li>
+          <li><div class="s-title">Check in</div><div class="s-desc">Front-desk/admin, only for a <code>confirmed</code> appointment (asked of Scheduling). One visit per appointment; a repeat returns the existing visit.</div></li>
+          <li><div class="s-title">Start</div><div class="s-desc">The visit&rsquo;s own provider (or staff); conditional update, repeats are no-ops, skipping a state is 409.</div></li>
+          <li><div class="s-title">Complete, then fan out</div><div class="s-desc">The transition commits with <code>downstream_started_at</code> NULL; then <code>visit-completed-&lt;id&gt;</code> starts and the marker is set. Billing finalize, follow-up intent and analytics intent run as independent branches on <code>visit-worker</code>. A lost start is picked up by the <strong>sweeper</strong> Schedule (every 60 s). The 200 never waits on any of it.</div></li>
         </ol>
       </div>
+    </div>
+
+    <h3 style="margin:26px 0 6px;font-size:18px;font-weight:650">State machines</h3>
+    <p class="sec-sub" style="margin-bottom:16px">Drawn from the CHECK constraints and transition tables in code. Filled boxes are terminal states; dashed arrows are compensation or recovery paths.</p>
+    <div class="sd-grid">
+
+      <figure class="sd">
+        <figcaption>Appointment &middot; <code>scheduling_db.appointments</code></figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 560 175" role="img" aria-labelledby="sd-appt-t sd-appt-d">
+          <title id="sd-appt-t">Appointment state machine</title>
+          <desc id="sd-appt-d">pending goes to confirmed when the booking saga confirms, or to failed when it is rejected or compensated. confirmed goes to cancelled through the cancel workflow. A reschedule keeps the appointment confirmed and moves it to a new slot.</desc>
+          <defs><marker id="ah-appt" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="80" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="103">pending</text>
+          <rect class="sd-st" x="230" y="35" width="120" height="36" rx="8"/><text class="sd-tx" x="290" y="58">confirmed</text>
+          <rect class="sd-term" x="230" y="125" width="120" height="36" rx="8"/><text class="sd-tx" x="290" y="148">failed</text>
+          <rect class="sd-term" x="430" y="35" width="120" height="36" rx="8"/><text class="sd-tx" x="490" y="58">cancelled</text>
+          <line class="sd-ln" x1="130" y1="92" x2="230" y2="56" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln sd-comp" x1="130" y1="106" x2="230" y2="140" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln" x1="350" y1="53" x2="430" y2="53" marker-end="url(#ah-appt)"/>
+          <path class="sd-ln" d="M268 35 C 268 4, 312 4, 312 35" marker-end="url(#ah-appt)"/>
+          <text class="sd-lb" x="160" y="62">confirm</text>
+          <text class="sd-lb" x="150" y="146">rejected /</text>
+          <text class="sd-lb" x="150" y="159">compensated</text>
+          <text class="sd-lb" x="368" y="45">cancel</text>
+          <text class="sd-lb" x="322" y="14">reschedule (new slot)</text>
+        </svg>
+        </div>
+      </figure>
+
+      <figure class="sd">
+        <figcaption>Visit &middot; <code>visit_db.visits</code></figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 600 120" role="img" aria-labelledby="sd-visit-t sd-visit-d">
+          <title id="sd-visit-t">Visit state machine</title>
+          <desc id="sd-visit-d">checked_in goes to in_progress when the provider starts the visit, then to completed. Completion starts the VisitCompletedWorkflow, which finalizes billing and records follow-up and analytics intents.</desc>
+          <defs><marker id="ah-visit" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="75" y="37">checked_in</text>
+          <rect class="sd-st" x="225" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="290" y="37">in_progress</text>
+          <rect class="sd-term" x="440" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="505" y="37">completed</text>
+          <line class="sd-ln" x1="140" y1="32" x2="225" y2="32" marker-end="url(#ah-visit)"/>
+          <line class="sd-ln" x1="355" y1="32" x2="440" y2="32" marker-end="url(#ah-visit)"/>
+          <text class="sd-lb" x="160" y="24">start</text>
+          <text class="sd-lb" x="368" y="24">complete</text>
+          <rect class="sd-note" x="200" y="78" width="390" height="32" rx="6"/>
+          <text class="sd-lb" x="395" y="98" text-anchor="middle">visit-completed: billing finalize &#183; follow-up &#183; analytics</text>
+          <line class="sd-ln sd-comp" x1="505" y1="50" x2="505" y2="78" marker-end="url(#ah-visit)"/>
+        </svg>
+        </div>
+      </figure>
+
+      <figure class="sd">
+        <figcaption>Waitlist entry &middot; <code>scheduling_db.waitlist_entries</code></figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 600 180" role="img" aria-labelledby="sd-wl-t sd-wl-d">
+          <title id="sd-wl-t">Waitlist entry state machine</title>
+          <desc id="sd-wl-d">waiting goes to matched when an advance claims it. matched goes to booked when the child booking is confirmed, to failed when the booking fails, or back to waiting when the slot was lost to another booker. A waiting entry can be cancelled.</desc>
+          <defs><marker id="ah-wl" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="64" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="87">waiting</text>
+          <rect class="sd-st" x="230" y="64" width="120" height="36" rx="8"/><text class="sd-tx" x="290" y="87">matched</text>
+          <rect class="sd-term" x="450" y="14" width="120" height="36" rx="8"/><text class="sd-tx" x="510" y="37">booked</text>
+          <rect class="sd-term" x="450" y="114" width="120" height="36" rx="8"/><text class="sd-tx" x="510" y="137">failed</text>
+          <rect class="sd-term" x="10" y="138" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="161">cancelled</text>
+          <line class="sd-ln" x1="130" y1="82" x2="230" y2="82" marker-end="url(#ah-wl)"/>
+          <line class="sd-ln" x1="350" y1="76" x2="450" y2="34" marker-end="url(#ah-wl)"/>
+          <line class="sd-ln sd-comp" x1="350" y1="88" x2="450" y2="130" marker-end="url(#ah-wl)"/>
+          <path class="sd-ln sd-comp" d="M290 64 C 290 24, 70 24, 70 64" marker-end="url(#ah-wl)"/>
+          <line class="sd-ln" x1="70" y1="100" x2="70" y2="138" marker-end="url(#ah-wl)"/>
+          <text class="sd-lb" x="140" y="76">claim</text>
+          <text class="sd-lb" x="140" y="96">SKIP LOCKED</text>
+          <text class="sd-lb" x="368" y="44">booked</text>
+          <text class="sd-lb" x="372" y="128">booking failed</text>
+          <text class="sd-lb" x="120" y="22">lost slot race</text>
+          <text class="sd-lb" x="78" y="124">withdrawn</text>
+        </svg>
+        </div>
+      </figure>
+
+      <figure class="sd">
+        <figcaption>Billing record &middot; <code>billing_db.billing_records</code></figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 680 240" role="img" aria-labelledby="sd-bill-t sd-bill-d">
+          <title id="sd-bill-t">Billing record state machine</title>
+          <desc id="sd-bill-d">pending goes to verified or failed after the pre-check, or straight to voided. failed goes to voided by compensation. verified goes to voided by compensation, to refund_pending and then refunded on an early cancel, to no_refund on a late cancel, or to finalized after the visit completes.</desc>
+          <defs><marker id="ah-bill" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="85" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="108">pending</text>
+          <rect class="sd-st" x="180" y="60" width="120" height="36" rx="8"/><text class="sd-tx" x="240" y="83">verified</text>
+          <rect class="sd-st" x="180" y="170" width="120" height="36" rx="8"/><text class="sd-tx" x="240" y="193">failed</text>
+          <rect class="sd-st" x="370" y="10" width="120" height="36" rx="8"/><text class="sd-tx" x="430" y="33">refund_pending</text>
+          <rect class="sd-term" x="370" y="60" width="120" height="36" rx="8"/><text class="sd-tx" x="430" y="83">no_refund</text>
+          <rect class="sd-term" x="370" y="110" width="120" height="36" rx="8"/><text class="sd-tx" x="430" y="133">finalized</text>
+          <rect class="sd-term" x="370" y="170" width="120" height="36" rx="8"/><text class="sd-tx" x="430" y="193">voided</text>
+          <rect class="sd-term" x="550" y="10" width="120" height="36" rx="8"/><text class="sd-tx" x="610" y="33">refunded</text>
+          <line class="sd-ln" x1="130" y1="98" x2="180" y2="82" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln" x1="130" y1="110" x2="180" y2="184" marker-end="url(#ah-bill)"/>
+          <path class="sd-ln sd-comp" d="M70 121 C 70 236, 330 236, 370 200" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln sd-comp" x1="300" y1="188" x2="370" y2="188" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln" x1="300" y1="72" x2="370" y2="30" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln" x1="300" y1="78" x2="370" y2="78" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln" x1="300" y1="86" x2="370" y2="126" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln sd-comp" x1="290" y1="96" x2="380" y2="170" marker-end="url(#ah-bill)"/>
+          <line class="sd-ln" x1="490" y1="28" x2="550" y2="28" marker-end="url(#ah-bill)"/>
+          <text class="sd-lb" x="132" y="80">ok</text>
+          <text class="sd-lb" x="150" y="150">denied</text>
+          <text class="sd-lb" x="306" y="40">cancel &#8805; 24 h</text>
+          <text class="sd-lb" x="306" y="74">late</text>
+          <text class="sd-lb" x="312" y="118">visit done</text>
+          <text class="sd-lb" x="306" y="184">void</text>
+          <text class="sd-lb" x="497" y="22">refund</text>
+          <text class="sd-lb" x="140" y="232">void (compensation)</text>
+        </svg>
+        </div>
+      </figure>
+
     </div>
   </section>
 
@@ -625,8 +881,8 @@
     <details class="qa" open>
       <summary>Why Temporal instead of just Celery for booking?</summary>
       <div class="answer">
-        <p>Celery runs discrete jobs; it doesn't own a multi-step transaction or model compensation. Booking is a saga — validate, reserve, conflict-check, notify, billing, confirm — where a failure at step 5 must undo steps 1–4 cleanly. Temporal gives durable execution (the workflow survives a worker crash and resumes), deterministic replay, and first-class compensation.</p>
-        <p>Celery still has a job here: Temporal <em>delegates</em> single-step work (send a notification) to Celery. They're complementary, not competing.</p>
+        <p>Celery runs discrete jobs; it doesn't own a multi-step transaction or model compensation. Booking is a saga — validate, reserve a hold, billing pre-check, notification intent, confirm — where a failure at the billing step must undo the hold cleanly and in order. Temporal gives durable execution (the workflow survives a worker crash and resumes), deterministic replay, per-activity retry policies and first-class compensation, plus Schedules for the reaper and sweepers.</p>
+        <p>In Phase 2 nothing is delegated to Celery yet: the notification step is a stub activity, and that activity is the seam where Phase 3 hands single-step work (send a reminder) to Celery. They're complementary, not competing.</p>
       </div>
     </details>
 
@@ -641,8 +897,8 @@
     <details class="qa">
       <summary>How do you prevent double-booking under concurrency?</summary>
       <div class="answer">
-        <p>The enforced invariant is a PostgreSQL exclusion constraint on (provider, time-range) — two overlapping confirmed appointments simply cannot both commit. Application checks and a Redis lock are fast-path optimizations, but the database constraint is the correctness guarantee.</p>
-        <p>This is deliberately not "check-then-insert in application code," which races. It's demonstrated with a concurrent load test in Phase 2.</p>
+        <p>In the database. A partial unique index, <code>uq_appointments_active_slot</code> (<code>UNIQUE (slot_id) WHERE status IN ('pending','confirmed')</code>), means two active appointments for one slot simply cannot both commit; the loser gets a 409 before any workflow starts. Underneath, <code>ex_provider_slots_no_overlap</code> keeps a provider&rsquo;s slots from overlapping and <code>ex_appointments_patient_no_overlap</code> keeps a patient from being double-booked across providers.</p>
+        <p>This is deliberately not "check-then-insert in application code," which races. Proof: concurrency tests fire parallel bookings at one slot through raw SQL and through the HTTP API and assert exactly one active appointment, and <code>scripts/demo_concurrent_booking.py</code> shows it live on the deployed stack (50 parallel requests &rarr; one 202, 49 &times; 409, one confirmed appointment).</p>
       </div>
     </details>
 
@@ -656,7 +912,7 @@
     <details class="qa">
       <summary>How do you handle duplicate / at-least-once delivery?</summary>
       <div class="answer">
-        <p>Defense-in-depth idempotency: a Redis idempotency-key cache on the fast path, Temporal deterministic workflow IDs for workflow-level dedup, and Postgres unique constraints as the correctness backstop. Every consumer is written to tolerate redelivery — the outcome is effectively-once even though delivery is at-least-once.</p>
+        <p>Layered idempotency, database first. A retried <code>POST /api/appointments</code> with the same <code>Idempotency-Key</code> finds the (caller, key) row in Postgres and returns the original appointment; the same key with a different body is a 422. Workflows have deterministic ids, so a second start attaches to or is rejected by the existing run. Activities are idempotent by construction: conditional state updates, an <code>Idempotency-Key</code> on every Billing call (a repeat is a no-op), and an audit <code>dedupe_key</code> per workflow step. Visit transitions are conditional updates with a unique history row per state, so ten concurrent &ldquo;complete&rdquo; calls produce one transition.</p>
       </div>
     </details>
 
@@ -670,7 +926,7 @@
     <details class="qa">
       <summary>How does a partial failure not corrupt scheduling state?</summary>
       <div class="answer">
-        <p>Saga compensation as forward transactions. If billing fails after the slot is reserved, we don't hard-delete or silently roll back — we run compensating actions (release the slot, reverse the billing hold, notify the patient). The audit trail keeps the full history of what happened and what undid it. The appointment is never left half-confirmed.</p>
+        <p>Saga compensation as forward transitions. If billing denies the booking after the slot is held, the workflow runs the compensations in reverse order &mdash; void the billing record, release the hold, mark the appointment <code>failed</code> with a machine-readable reason &mdash; with one audit entry per step and nothing deleted. A hold whose workflow died is released by the reaper Schedule. The appointment is never left half-confirmed; this was proven in-process and on the deployed stack (forced <code>DENY-</code> coverage reference &rarr; <code>failed</code>, slot available again, billing <code>pending &rarr; failed &rarr; voided</code>).</p>
       </div>
     </details>
 
@@ -682,9 +938,49 @@
     </details>
 
     <details class="qa">
+      <summary>Why are reference checks synchronous instead of event-driven?</summary>
+      <div class="answer">
+        <p>Because the event infrastructure does not exist yet. Kafka and the transactional outbox are Phase 3 scope (D-08), and the simplest correct thing today is to ask the owning service at write time: <code>GET /internal/&hellip;</code>, caller&rsquo;s JWT forwarded, three bounded attempts on transport errors, then 422 if the target is missing or inactive and 503 if the owner cannot answer &mdash; nothing is written either way.</p>
+        <p>The cost is stated plainly: writes depend on the owner&rsquo;s availability. Phase 3 replaces the check with event-fed local copies, which removes that coupling and introduces an eventual-consistency window instead. Deactivation never cascades (D-06) and reads return ids only (D-07).</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What happens when Organization is down during a provider write?</summary>
+      <div class="answer">
+        <p>The Provider service cannot confirm the department, so the request fails closed with <strong>503</strong> after its bounded retries; no provider row is written and the failed attempt is audited. The trace for that request shows the failed Provider&rarr;Organization hop, and the gateway&rsquo;s own timeout mapping would return 504 if the whole call stalled.</p>
+        <p>Honest status: this is covered by in-process tests with a simulated unreachable owner. It has not been exercised against a real container going down mid-request.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How does a service verify a token without calling Identity?</summary>
+      <div class="answer">
+        <p>Tokens are RS256. Each service fetches Identity&rsquo;s public keys from <code>/.well-known/jwks.json</code>, caches them (300 s TTL), picks the key by the token&rsquo;s <code>kid</code>, and verifies the signature and claims locally. An unknown <code>kid</code> triggers one refresh with a 30 s backoff so a flood of bad tokens cannot hammer Identity. Revocation is the one shared lookup: every service checks the Redis denylist for the token&rsquo;s <code>jti</code>.</p>
+        <p>Only Identity holds the private key, so no other service can mint a token. Key rotation is supported through <code>kid</code> but has not been exercised yet.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What happens if a worker dies mid-booking?</summary>
+      <div class="answer">
+        <p>Nothing is lost. The workflow&rsquo;s progress is in Temporal&rsquo;s history, not in the worker. When an activity&rsquo;s worker dies, the server times the attempt out and retries it on another worker; because every activity is idempotent, a step that had already half-run is safe to repeat. A test does exactly this against the Compose Temporal: worker A hangs inside the billing step and stops polling, worker B picks up the retry after the 10 s timeout, and the booking ends <code>confirmed</code> with one scheduled billing activity on attempt 2.</p>
+        <p>Two Schedules cover the gaps around a crash: the <strong>hold reaper</strong> releases holds that outlived their workflow, and the <strong>pending-booking starter</strong> starts workflows for appointments committed as <code>pending</code> whose start call never happened. In Compose the worker containers restart automatically and report health through a heartbeat file.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What is not yet verified after Phase 2?</summary>
+      <div class="answer">
+        <p>Phase 2: the interim mechanisms are labelled, not hidden (starter and sweeper until the Phase 3 outbox; notification/follow-up/analytics stubs; polling; <code>auto-setup</code> Temporal). There is <strong>no load test beyond the concurrency suites</strong> and the live demo. The 02-06 workflow trace is connected through the Temporal tracing interceptor in tests, but a person has not yet followed a booking end to end in the Jaeger UI. Workers expose no metrics, and Mongo audit writes are not atomic with the Postgres commit (WR-04). This is a local/dev system with synthetic data only: logout, PHI log-safety and database isolation are implemented and tested but <strong>not fully hardened</strong>.</p>
+        <p>Carried from Phase 1.1: no request-body size cap at the gateway; one shared Redis for the denylist and rate limits; containers running as root. Not yet verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the connected trace in the Jaeger UI, and the <code>bootstrap_admin.py</code> admin-creation branch (only its no-op path is tested). Three assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain relies on write-time validation (ORG-03), overlapping availability templates are still allowed (PPL-03), and clients combining services may briefly see stale state (PPL-04).</p>
+      </div>
+    </details>
+
+    <details class="qa">
       <summary>Is the local Docker Compose setup production-shaped?</summary>
       <div class="answer">
-        <p>Honestly: the local stack uses Temporal's <code>auto-setup</code> image and single-node Kafka/Postgres for developer convenience — that's labeled as dev-only, not a production deployment. Production-shaping (separate Temporal schema management, replicated brokers, resource limits) is called out as a decision to document rather than something silently claimed. Being explicit about this is part of the reliability story, not a gap.</p>
+        <p>Honestly: the local stack uses Temporal's <code>auto-setup</code> image and single-node Kafka and a single Postgres container (hosting all seven service databases) for developer convenience &mdash; that's labeled as dev-only, not a production deployment. Production-shaping (separate Temporal schema management, replicated brokers, a Postgres instance per service, non-root application containers, resource limits) is called out as a decision to document rather than something silently claimed. Being explicit about this is part of the reliability story, not a gap.</p>
       </div>
     </details>
   </section>
@@ -692,18 +988,24 @@
   <!-- ROADMAP -->
   <section id="roadmap">
     <div class="sec-head"><span class="sec-num">07</span><h2>Roadmap &amp; how this dashboard grows</h2></div>
-    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v1 (Phase 1 scope) and is extended at the end of each phase — Phase 2 adds the finalized workflow/state diagrams, Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
+    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v3: Phase 2 (the active phase) added the implemented workflows, the state diagrams, the Temporal rationale and the interim mechanisms; Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
     <div class="phases">
-      <div class="phase active">
-        <div class="p-num">Phase 1 · Week 1 · current</div>
+      <div class="phase">
+        <div class="p-num">Phase 1 · Week 1 · complete</div>
         <h3>Foundation + Core Services</h3>
         <p>Infra skeleton, auth/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, dashboard v1.</p>
         <div class="reqs">IAM-01..04 · PPL-01..04 · ORG-01..03 · OBS-04 · DASH-01..02</div>
       </div>
       <div class="phase">
-        <div class="p-num">Phase 2 · Week 2</div>
+        <div class="p-num">Phase 1.1 · inserted after the week-1 review · complete</div>
+        <h3>Phase 1.1 &mdash; Microservice re-architecture</h3>
+        <p>The Phase 1 monolith re-delivered as gateway + Identity, Organization, Provider, Patient and a Scheduling skeleton: database per service, RS256/JWKS, synchronous reference checks, connected traces. No new capability; Phase 1 requirements re-delivered.</p>
+        <div class="reqs">IAM-01..04 · PPL-01..04 · ORG-01..03 · OBS-04 · DASH-01..02 (re-delivered)</div>
+      </div>
+      <div class="phase active">
+        <div class="p-num">Phase 2 · Week 2 · active</div>
         <h3>Scheduling + Service Workflow</h3>
-        <p>Temporal booking / cancel / reschedule / visit sagas, data-layer conflict prevention, idempotency, waitlist, modeled billing pre-check.</p>
+        <p>Temporal booking / cancel / reschedule / waitlist / visit-completion workflows on two worker containers, data-layer conflict prevention, layered idempotency, waitlist auto-booking, modeled billing pre-check, Visit and Billing services. All 12 plans executed; the full regression run and human review are pending.</p>
         <div class="reqs">SCHED-01..08 · VISIT-01..05 · BILL-01..02</div>
       </div>
       <div class="phase">
@@ -719,7 +1021,7 @@
 
 <footer>
   <div class="wrap">
-    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v1 · Phase 1</code></span>
+    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v3 · Phase 2</code></span>
     <span>Source of truth: <code>docs/architecture-dashboard.html</code> · updated per phase</span>
   </div>
 </footer>

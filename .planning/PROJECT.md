@@ -57,6 +57,10 @@ Booking, updating, and completing an appointment must be **reliable and consiste
 | PostgreSQL as system of record | Strong consistency for transactional entities (patients, providers, appointments, billing) | — Pending |
 | Redis for hot reads + coordination | Cache provider availability; locks/rate control during peak booking windows | — Pending |
 | Eval-helper UI = self-contained HTML dashboard | Opens anywhere during reviews, no server; living record of decisions grows per phase | — Pending |
+| Six-service microservice cut, database per service (Phase 1.1) | Week-1 mentor review asked for true microservices; clear bounded contexts, PHI confined to Patient, independent deploy/scale. Costs: network hops, availability coupling, no distributed transactions | Implemented (Phase 1.1) |
+| RS256 + JWKS, local verification in every service (Phase 1.1) | Only Identity holds the signing key; services verify from a cached JWKS without calling Identity, so a compromised service cannot mint tokens | Implemented (Phase 1.1) |
+| Synchronous reference checks now, event-fed copies in Phase 3 (Phase 1.1) | No Kafka/outbox until Phase 3; fail closed (422 missing/inactive, 503 owner down), no cascade; event-fed copies later remove the availability coupling at the price of eventual consistency | Implemented (Phase 1.1) |
+| Thin FastAPI gateway with Redis rate limiting (Phase 1.1) | Most reviewable edge; per-IP limits deliberately fail open; no JWT check or aggregation at the edge (every service verifies for itself) | Implemented (Phase 1.1) |
 
 ## Evolution
 

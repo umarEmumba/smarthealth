@@ -9,9 +9,10 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 **Phase Numbering:**
 
 - Integer phases (1, 2, 3): Planned milestone work, one per execution week
-- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED) — none currently planned
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
 - [x] **Phase 1: Foundation + Core Services** - Infra skeleton, identity/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, and dashboard v1 (completed 2026-09-09)
+- [x] **Phase 1.1: Microservice Re-architecture** (INSERTED) - Split the Phase 1 monolith into independently deployable services with their own databases, an API gateway, and RS256/JWKS token verification (week-1 mentor feedback) (completed 2026-10-12)
 - [ ] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check
 - [ ] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout
 
@@ -61,10 +62,65 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 - [x] 01-07-crud-update-softdelete-PLAN.md — PATCH + soft-delete (deactivate) for clinics/departments/patients/providers/availability, closing the PPL-01/ORG-01/ORG-02 "manage" gap surfaced in Phase 1 verification (no hard deletes)
 
+### Phase 01.1: Microservice Re-architecture (INSERTED)
+
+**Goal**: The Phase 1 monolith (`services/identity`) is re-delivered as a true microservice architecture, following week-1 mentor review feedback. Each bounded context runs as an independently deployable service that owns its own database. There are no cross-service foreign keys or shared-table reads, and traffic enters through an API gateway. All Phase 1 behaviour (IAM, RBAC, patient/provider/clinic/department CRUD, audit, PHI-safe logging) keeps working end-to-end. The Architecture & Decision dashboard records the monolith→microservices decision and the service map.
+**Depends on**: Phase 1
+**Requirements**: Re-delivers IAM-01..04, PPL-01..04, ORG-01..03, OBS-04, DASH-01/02 under the new architecture (no new functional requirements)
+**Success Criteria** (what must be TRUE):
+
+  1. The Phase 1 domain is split into separately deployable services (locked in 01.1-CONTEXT.md: API Gateway, Identity, Organization, Provider, Patient, plus a Scheduling skeleton that owns `provider_slots`; audit remains a shared library until Phase 3). Each has its own codebase directory, Dockerfile, Alembic migrations, and database. No service connects to another service's database.
+  2. Cross-service foreign keys (users→clinics, patients→users/clinics, providers→users/departments, availability_templates→departments, provider_slots→providers) are replaced by ID references. Integrity is validated through the owning service's API or through local copies of other services' data kept up to date by events.
+  3. Identity is the only service that issues tokens (RS256 signing plus a JWKS endpoint). Every other service verifies tokens locally with the public key and enforces RBAC itself. The gateway routes all external traffic and applies rate limiting.
+  4. Shared `libs/` is limited to infrastructure code (token verification, audit client, OTel/logging) and never shares domain models. Audit entries stay PHI-safe, and every service's traces carry a shared trace context across service-to-service calls.
+  5. `docker compose up` starts every service plus the infrastructure with passing health checks. The existing Phase 1 test scenarios pass through the gateway, and the dashboard shows the updated service-map diagram and the rationale for the microservices move.
+
+**Plans:** 10/10 plans complete (sequential waves — shared working tree and shared live test infrastructure)
+
+**Wave 1**
+
+- [x] 01.1-01-PLAN.md — TRACER: Identity on its own database with RS256 signing + JWKS, infrastructure-only shared libs, idempotent database-per-service bootstrap, multi-app test harness (IAM-01..04, OBS-04)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 01.1-02-PLAN.md — Identity parity: account lifecycle, duplicate-registration race, relocated identity/audit/bootstrap tests (IAM-01..04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 01.1-03-PLAN.md — API gateway core + Organization service (clinics, departments, internal reference lookups); every test now travels through the gateway (ORG-01..03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 01.1-04-PLAN.md — Connected cross-service traces, package-legitimacy checkpoint (tenacity, opentelemetry-instrumentation-httpx), gateway rate limiting (IAM-03/04)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [x] 01.1-05-PLAN.md — D-05 reference-check client, users.clinic_id validation, service tokens, Identity /internal/users (IAM-01/03/04, ORG-03)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [x] 01.1-06-PLAN.md — Patient service (only PHI holder) with clinic/user reference checks (PPL-01, PPL-04)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [x] 01.1-07-PLAN.md — Provider service (providers, specialties, availability) with department/user checks, no-cascade deactivation, /internal/providers (PPL-02..04, ORG-03)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [x] 01.1-08-PLAN.md — Scheduling skeleton (provider_slots + exclusion constraint), per-service Dockerfiles, Compose wiring with the gateway as sole ingress, real-stack smoke test (OBS-04, ORG-03)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [x] 01.1-09-PLAN.md — Monolith retirement + isolation invariant suite (OBS-04, PPL-01, ORG-03)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
+- [x] 01.1-10-PLAN.md — Architecture & Decision dashboard service map + decision records, README, architecture/ERD docs (DASH-01, DASH-02)
+
 ### Phase 2: Scheduling + Service Workflow
 
 **Goal**: Booking, rescheduling, cancelling, and completing a visit are reliable and consistent under concurrent load — every multi-step transition is Temporal-orchestrated, double-booking is impossible at the data layer, retries never duplicate effects, partial failures compensate cleanly with no corrupted state, and the dashboard is extended with workflow/state diagrams and the "why Temporal" rationale.
-**Depends on**: Phase 1
+**Depends on**: Phase 1.1 (microservice re-architecture — scheduling/visit/billing are built as their own services)
 **Requirements**: SCHED-01, SCHED-02, SCHED-03, SCHED-04, SCHED-05, SCHED-06, SCHED-07, SCHED-08, VISIT-01, VISIT-02, VISIT-03, VISIT-04, VISIT-05, BILL-01, BILL-02
 **Success Criteria** (what must be TRUE):
 
@@ -75,7 +131,57 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. A deliberately-failed booking (e.g., billing pre-check failure) leaves no corrupted or half-true state — compensating actions run as forward transactions (release, reverse, notify) preserving full audit history, never a hard delete or silent rollback.
   6. Front-desk can check in a confirmed appointment and advance it through visit states in real time queryable by ops staff, and completing a visit triggers downstream billing/follow-up/analytics work without blocking the transition; the dashboard now shows booking/visit workflow diagrams and the Temporal rationale.
 
-**Plans**: TBD
+**Plans:** 12 plans (sequential waves — shared working tree and shared live test infrastructure)
+
+**Execution status (2026-10-13):** all 12 plans executed (each has a SUMMARY). Phase NOT yet complete: phase verification — the full non-e2e regression, the deferred tests listed in the 02-1x SUMMARY files and the 02-12 human dashboard check — is pending by user request.
+
+**Wave 1**
+
+- [x] 02-01-PLAN.md — Internal auth foundations: Identity client-credentials service-token mint, per-audience `aud` + required `exp`, allowed-caller checks, write-capable internal client, idempotent audit writer (SCHED-01/02/08)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 02-02-PLAN.md — Scheduling data layer: appointments/idempotency/history tables, active-slot unique index, patient-overlap EXCLUDE, one-transaction accept, retry-safe state steps, 1-of-50 concurrency proof (SCHED-03/04/08)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 02-03-PLAN.md — Internal reference lookups: Patient internal router, Provider availability + by-user, clinic IANA timezone (SCHED-01, VISIT-02)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 02-04-PLAN.md — Slot supply: DST-safe on-demand generation over a 28-day horizon, search, withdrawal, Scheduling gateway routes, shared seed helper (SCHED-01)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [x] 02-05-PLAN.md — Billing service: deterministic pre-check and refund/finalize state machine, visit_db/billing_db provisioning, gateway row (BILL-01/02)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [x] 02-06-PLAN.md — Temporal booking saga: temporalio checkpoint + pin, async 202 booking API, BookingWorkflow with reverse-order compensation, scheduling worker, contract/trace tests (SCHED-01/02/04, BILL-01)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [x] 02-07-PLAN.md — Failure hardening: forced-billing-failure compensation, hold reaper + pending-starter Schedules, HTTP single-winner proof, history replay, worker-crash e2e (SCHED-03/04/08)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [x] 02-08-PLAN.md — Cancel and reschedule workflows: cutoff refund policy, 409 while pending, atomic reserve-then-swap with billing re-link (SCHED-05/06, BILL-02)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [x] 02-09-PLAN.md — Waitlist: FIFO SKIP LOCKED claim, auto-book via child BookingWorkflow, failure skip and lost-race put-back, cancel/reschedule advance behind `workflow.patched` with replay proof (SCHED-07)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
+- [x] 02-10-PLAN.md — Visit service: check-in against Scheduling's internal appointment lookup, duplicate-safe state machine, provider ownership, clinic-scoped visit list (VISIT-01/02/03/05)
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
+- [x] 02-11-PLAN.md — Non-blocking visit completion: VisitCompletedWorkflow (billing finalize, follow-up/analytics intents), visit worker, sweeper Schedule + run-on-start (VISIT-04, BILL-02)
+
+**Wave 12** *(blocked on Wave 11 completion)*
+
+- [x] 02-12-PLAN.md — Compose wiring for Billing/Visit APIs and both workers, real-stack e2e flows, one-command concurrent-booking demo, docs + dashboard v3, requirement-coverage gate, human dashboard check (all 15)
 
 ### Phase 3: Event-Driven System + Observability
 
@@ -100,5 +206,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
-| 2. Scheduling + Service Workflow | 0/TBD | Not started | - |
+| 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

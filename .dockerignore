@@ -1,0 +1,28 @@
+# Keep every build context small and secret-free: everything listed here is
+# invisible to `COPY` in all service Dockerfiles (build context = repo root).
+
+# VCS and virtual environments
+.git
+.venv
+venv
+.venv.broken-homebrew
+
+# Python caches / build output
+**/__pycache__
+*.egg-info
+.pytest_cache
+
+# Planning and agent tooling
+.planning
+.gsd
+.claude
+
+# Not needed at runtime
+tests
+docs
+
+# Secrets: the RSA private key must never enter an image or build context
+infra/secrets
+*.pem
+.env
+infra/.env

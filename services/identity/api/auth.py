@@ -15,19 +15,34 @@ audit coverage on denied attempts, not only successes).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
+from libs.auth.current_user import AuthenticatedUser, get_current_user
 from libs.auth.denylist import revoke_token
-from libs.auth.jwt import TokenError, create_access_token, create_refresh_token, decode_token
+from libs.auth.rbac import require_role
+from libs.auth.roles import Role
+from libs.auth.verification import ACCESS_ONLY, REFRESH_ONLY, TokenError, decode_token
+from libs.db.mongo import get_mongo
+from libs.db.redis import get_redis
+from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
-from services.identity.domain.enums import Role
+from libs.service_client import (
+    ReferencedResourceInvalid,
+    UpstreamServiceUnavailable,
+    reference_error_detail,
+    validate_clinic,
+)
+from services.identity.db import get_db
 from services.identity.domain.schemas import (
     LoginRequest,
     LoginResponse,
@@ -38,13 +53,65 @@ from services.identity.domain.schemas import (
     UserOut,
 )
 from services.identity.repository.models import User
-from services.identity.security.current_user import AuthenticatedUser, get_current_user, get_redis
-from services.identity.security.rbac import require_role
-from smarthealth.db import get_db, get_mongo
+from services.identity.security.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from services.identity.security.signing import (
+    create_access_token,
+    create_refresh_token,
+    create_service_token,
+    local_key_resolver,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 log = get_logger(__name__)
+
+
+async def _validate_clinic_or_refuse(
+    http: httpx.AsyncClient,
+    mongo: AsyncMongoClient,
+    *,
+    clinic_id: uuid.UUID,
+    bearer_token: str,
+    actor_id: str,
+    actor_role: str,
+) -> None:
+    """D-05: users.clinic_id must reference an existing, active Organization clinic.
+
+    Runs BEFORE any users row is inserted and fails closed: a missing or
+    inactive clinic is a 422, an Organization that cannot answer is a 503, and in
+    both cases the refusal is audited as a failed user.create and nothing is written.
+    """
+    try:
+        await validate_clinic(http, clinic_id, bearer_token)
+    except ReferencedResourceInvalid as exc:
+        await _audit_user_create_failure(
+            mongo, actor_id=actor_id, actor_role=actor_role, clinic_id=clinic_id
+        )
+        # Literal 422: Starlette renamed the 422 constant, and the number is the contract.
+        raise HTTPException(status_code=422, detail=reference_error_detail(exc)) from exc
+    except UpstreamServiceUnavailable as exc:
+        await _audit_user_create_failure(
+            mongo, actor_id=actor_id, actor_role=actor_role, clinic_id=clinic_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="organization service unavailable",
+        ) from exc
+
+
+async def _audit_user_create_failure(
+    mongo: AsyncMongoClient, *, actor_id: str, actor_role: str, clinic_id: uuid.UUID
+) -> None:
+    await write_audit(
+        mongo,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="user.create",
+        entity_type="user",
+        entity_id="unknown",
+        clinic_id=str(clinic_id),
+        outcome="failure",
+    )
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -52,6 +119,7 @@ async def register(
     payload: RegisterRequest,
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> UserOut:
     """Public, unauthenticated self-registration.
 
@@ -59,8 +127,20 @@ async def register(
     no `role` field, so there is nothing for an anonymous caller to
     escalate. Elevated-role account creation is handled by the
     authenticated-admin-only `create_staff_user` route below.
+
+    When `clinic_id` is supplied it is validated against Organization first (D-05).
+    There is no user token to forward, so Identity authenticates the check with its
+    own 60-second service token; no clinic_id means no cross-service call.
     """
-    from libs.auth.passwords import hash_password  # noqa: PLC0415
+    if payload.clinic_id is not None:
+        await _validate_clinic_or_refuse(
+            http,
+            mongo,
+            clinic_id=payload.clinic_id,
+            bearer_token=create_service_token("identity", audience="organization"),
+            actor_id="anonymous",
+            actor_role="anonymous",
+        )
 
     existing = await db.execute(select(User).where(User.email == payload.email))
     if existing.scalar_one_or_none() is not None:
@@ -86,7 +166,28 @@ async def register(
         clinic_id=payload.clinic_id,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Lost the check-then-insert race: a concurrent registration committed
+        # the same email between our SELECT and INSERT. The users.email unique
+        # constraint is the real guard — map it to the same 409 + failure audit
+        # the sequential duplicate path produces, never a 500 (T-01.1-09).
+        await db.rollback()
+        await write_audit(
+            mongo,
+            actor_id="anonymous",
+            actor_role="anonymous",
+            action="user.create",
+            entity_type="user",
+            entity_id="unknown",
+            clinic_id=str(payload.clinic_id) if payload.clinic_id else None,
+            outcome="failure",
+        )
+        log.info("auth.register.duplicate_email_race", email_domain=payload.email.split("@")[-1])
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email already registered"
+        ) from exc
     await db.refresh(user)
 
     await write_audit(
@@ -119,6 +220,7 @@ async def create_staff_user(
     admin: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
+    http: httpx.AsyncClient = Depends(get_internal_http_client),
 ) -> UserOut:
     """Admin-only staff/provider/admin account creation (CR-01).
 
@@ -126,8 +228,19 @@ async def create_staff_user(
     `role` — but only an already-authenticated `Role.ADMIN` caller can
     reach it (`require_role(Role.ADMIN)`), so the role is no longer
     attacker-controlled.
+
+    When `clinic_id` is supplied it is validated against Organization first (D-05),
+    forwarding the admin's own token; no clinic_id means no cross-service call.
     """
-    from libs.auth.passwords import hash_password  # noqa: PLC0415
+    if payload.clinic_id is not None:
+        await _validate_clinic_or_refuse(
+            http,
+            mongo,
+            clinic_id=payload.clinic_id,
+            bearer_token=admin.raw_token,
+            actor_id=admin.sub,
+            actor_role=admin.role.value,
+        )
 
     existing = await db.execute(select(User).where(User.email == payload.email))
     if existing.scalar_one_or_none() is not None:
@@ -156,7 +269,29 @@ async def create_staff_user(
         clinic_id=payload.clinic_id,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Same race as public registration (see `register`): the unique
+        # constraint on users.email decides, and the loser gets a 409.
+        await db.rollback()
+        await write_audit(
+            mongo,
+            actor_id=admin.sub,
+            actor_role=admin.role.value,
+            action="user.create",
+            entity_type="user",
+            entity_id="unknown",
+            clinic_id=str(payload.clinic_id) if payload.clinic_id else None,
+            outcome="failure",
+        )
+        log.info(
+            "auth.create_staff_user.duplicate_email_race",
+            email_domain=payload.email.split("@")[-1],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email already registered"
+        ) from exc
     await db.refresh(user)
 
     await write_audit(
@@ -191,8 +326,6 @@ async def login(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> LoginResponse:
-    from libs.auth.passwords import DUMMY_PASSWORD_HASH, verify_password  # noqa: PLC0415
-
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
@@ -254,7 +387,9 @@ async def refresh(
     db: AsyncSession = Depends(get_db),
 ) -> TokenPair:
     try:
-        claims = decode_token(payload.refresh_token, expected_type="refresh")
+        claims = await decode_token(
+            payload.refresh_token, expected_types=REFRESH_ONLY, resolver=local_key_resolver()
+        )
     except TokenError as exc:
         log.info("auth.refresh.invalid_token")
         raise HTTPException(
@@ -293,7 +428,9 @@ async def logout(
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> None:
     try:
-        claims = decode_token(user.raw_token, expected_type="access")
+        claims = await decode_token(
+            user.raw_token, expected_types=ACCESS_ONLY, resolver=local_key_resolver()
+        )
     except TokenError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token") from exc
 

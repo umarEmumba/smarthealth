@@ -1,1 +1,2 @@
-"""Identity repository layer — SQLAlchemy 2.0 async declarative models."""
+"""Identity repository layer — the `IdentityBase` metadata and the `users`
+table, the only table this service owns."""

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartHealth — Architecture (Phase 2)</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#16212e; --ink:#e7edf3; --muted:#9fb0c0;
+    --line:#2b3a4a; --accent:#4f9cf9;
+    --wired:#1f6d3d; --wired-bd:#34a853; --wired-ink:#c7f0d5;
+    --pend:#6b5300; --pend-bd:#f9ab00; --pend-ink:#ffe9b0;
+    --store:#3a2b5e; --store-bd:#a385f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:32px 20px 64px}
+  header h1{margin:0 0 4px;font-size:26px;letter-spacing:.2px}
+  header p{margin:0;color:var(--muted)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin:20px 0 8px;font-size:13px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid}
+  .dot.w{background:var(--wired);border-color:var(--wired-bd)}
+  .dot.p{background:var(--pend);border-color:var(--pend-bd);border-style:dashed}
+  .dot.s{background:var(--store);border-color:var(--store-bd)}
+  .layer{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;margin:14px 0}
+  .layer h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:1.4px;
+    color:var(--muted);font-weight:600}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .box{flex:1 1 180px;min-width:150px;background:#1b2836;border:1px solid var(--line);
+    border-radius:10px;padding:12px 14px}
+  .box b{display:block;font-size:14px;margin-bottom:3px}
+  .box small{color:var(--muted);font-size:12px;line-height:1.4;display:block}
+  .store{background:linear-gradient(180deg,#2a2140,#241b38);border-color:var(--store-bd)}
+  .store b{color:#d9c9ff}
+  .wired{border-color:var(--wired-bd)}
+  .wired b{color:var(--wired-ink)}
+  .pending{border-color:var(--pend-bd);border-style:dashed;background:#241f10}
+  .pending b{color:var(--pend-ink)}
+  .flow{color:var(--muted);text-align:center;font-size:22px;margin:2px 0 -4px;line-height:1}
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;margin-left:8px;
+    vertical-align:middle;font-weight:600}
+  .tag.w{background:rgba(52,168,83,.16);color:var(--wired-bd);border:1px solid var(--wired-bd)}
+  .tag.p{background:rgba(249,171,0,.14);color:var(--pend-bd);border:1px solid var(--pend-bd)}
+  .seq{white-space:pre;overflow-x:auto;background:#111b26;border:1px solid var(--line);
+    border-radius:10px;padding:16px;margin:10px 0 0;color:#cfe0f0;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .seq-title{margin:16px 0 0;font-size:14px;font-weight:600;color:var(--ink)}
+  .note{color:var(--muted);font-size:13px;margin:10px 0 0}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600}
+  code{background:#0d1620;border:1px solid var(--line);border-radius:5px;padding:.5px 5px;font-size:12.5px}
+  ul{margin:8px 0 0;padding-left:20px;color:var(--ink)}
+  li{margin:4px 0;font-size:13.5px}
+  footer{margin-top:28px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>SmartHealth — System Architecture</h1>
+    <p>Part A · Phase 2 — Scheduling, visits and billing on Temporal (gateway + eight services + two workers, database per service, RS256/JWKS, aud-scoped service tokens)</p>
+  </header>
+
+  <div class="legend">
+    <span><i class="dot w"></i> Wired &amp; serving</span>
+    <span><i class="dot s"></i> Data store</span>
+    <span><i class="dot p"></i> Scaffolding only — wired in Phase 3</span>
+  </div>
+
+  <!-- Clients -->
+  <div class="layer">
+    <h2>Clients — role-scoped</h2>
+    <div class="row">
+      <div class="box"><b>Patient</b><small>self-register, own records</small></div>
+      <div class="box"><b>Front-desk</b><small>manage patients (clinic-scoped)</small></div>
+      <div class="box"><b>Provider</b><small>own availability</small></div>
+      <div class="box"><b>Admin</b><small>full management</small></div>
+    </div>
+  </div>
+
+  <div class="flow">&#9660;&nbsp; HTTPS + Bearer JWT</div>
+
+  <!-- Edge -->
+  <div class="layer">
+    <h2>Edge — API Gateway · :8000, the only published application port <span class="tag w">wired</span></h2>
+    <div class="row">
+      <div class="box wired" style="flex-basis:100%"><b>FastAPI + httpx proxy</b>
+        <small>Route table: <code>/api/auth</code> <code>/api/admin</code> <code>/.well-known/jwks.json</code> → Identity · <code>/api/clinics</code> → Organization · <code>/api/providers</code> → Provider · <code>/api/patients</code> → Patient · <code>/api/slots</code> <code>/api/appointments</code> <code>/api/waitlist</code> → Scheduling · <code>/api/visits</code> → Visit · <code>/api/billing</code> → Billing.
+        <code>/internal/*</code> and unsafe paths answer 404. Per-IP fixed-window limits in Redis (auth 20/min, default 300/min), <b style="display:inline">fail-open</b> on a Redis outage, visibly. 503/504 on upstream failure. Does <b style="display:inline">not</b> verify JWTs and does <b style="display:inline">not</b> aggregate responses.</small></div>
+    </div>
+  </div>
+
+  <div class="flow">&#9660;</div>
+
+  <!-- Services -->
+  <div class="layer">
+    <h2>Services — FastAPI (gunicorn + uvicorn workers), no host ports <span class="tag w">wired</span></h2>
+    <div class="row">
+      <div class="box wired"><b>Identity</b><small>accounts · register/login/refresh/logout · RS256 signing · JWKS · denylist writer · service tokens · <code>/internal/users</code></small></div>
+      <div class="box wired"><b>Organization</b><small>clinics · departments · <code>/internal/clinics</code> · <code>/internal/departments</code></small></div>
+      <div class="box wired"><b>Provider</b><small>providers · specialties · availability templates · <code>/internal/providers</code></small></div>
+      <div class="box wired"><b>Patient</b><small>patient profiles — the only PHI</small></div>
+      <div class="box wired"><b>Scheduling</b><small>slots · appointments (202 + <code>Idempotency-Key</code>) · cancel · reschedule · waitlist · starts booking/cancel/reschedule workflows · <code>/internal/appointments</code> (Visit)</small></div>
+      <div class="box wired"><b>Visit</b><small>check-in → in progress → completed · clinic-scoped status list · starts <code>visit-completed-&lt;id&gt;</code> after its commit</small></div>
+      <div class="box wired"><b>Billing</b><small>simulated deterministic pre-check · billing record state machine · <code>/internal/billing/*</code> (Scheduling, Visit) · read-only <code>/api/billing</code></small></div>
+    </div>
+    <p class="note">Every service verifies RS256 tokens locally from Identity's cached JWKS and checks the shared Redis denylist. Synchronous reference checks (dashed in the markdown diagram): Identity → Organization (clinic) · Patient → Organization (clinic), Identity (user) · Provider → Organization (department), Identity (user).</p>
+  </div>
+
+  <div class="flow">&#9660;</div>
+
+  <!-- Data -->
+  <div class="layer">
+    <h2>Data — one PostgreSQL database and role per service <span class="tag w">wired</span></h2>
+    <div class="row">
+      <div class="box store"><b>identity_db</b><small><code>users</code></small></div>
+      <div class="box store"><b>organization_db</b><small><code>clinics</code> · <code>departments</code></small></div>
+      <div class="box store"><b>provider_db</b><small><code>providers</code> · <code>specialties</code> · <code>provider_specialties</code> · <code>availability_templates</code></small></div>
+      <div class="box store"><b>patient_db</b><small><code>patients</code> (PHI)</small></div>
+      <div class="box store"><b>scheduling_db</b><small><code>provider_slots</code> · <code>appointments</code> · <code>appointment_status_history</code> · <code>idempotency_keys</code> · <code>waitlist_entries</code></small></div>
+      <div class="box store"><b>visit_db</b><small><code>visits</code> · <code>visit_state_history</code></small></div>
+      <div class="box store"><b>billing_db</b><small><code>billing_records</code> · <code>billing_status_history</code></small></div>
+    </div>
+    <p class="note">One Postgres container locally; each role can connect only to its own database (PUBLIC revoked); created by the idempotent <code>db-init</code> job. No foreign key crosses a service.</p>
+    <div class="row" style="margin-top:12px">
+      <div class="box store"><b>MongoDB — shared audit sink</b><small>one append-only <code>audit_log</code>, written by every service through the shared library · field names only, never PHI values</small></div>
+      <div class="box store"><b>Redis — shared</b><small>JWT <code>jti</code> denylist (Identity writes, all read) + gateway rate-limit counters · one instance, a recorded risk</small></div>
+    </div>
+  </div>
+
+  <!-- Observability -->
+  <div class="layer">
+    <h2>Observability <span class="tag w">tracing + metrics wired</span></h2>
+    <div class="row">
+      <div class="box wired"><b>Jaeger</b><small>connected traces across services via OTLP :4317 · UI :16686</small></div>
+      <div class="box wired"><b>Prometheus</b><small>one scrape job per service · gateway <code>/metrics</code> only on an internal listener · :9090</small></div>
+      <div class="box"><b>Grafana</b><small>container runs; dashboards not built yet (Phase 3)</small></div>
+    </div>
+  </div>
+
+  <!-- Workflows -->
+  <div class="layer">
+    <h2>Workflows — Temporal <span class="tag w">wired in Phase 2</span></h2>
+    <div class="row">
+      <div class="box wired"><b>Temporal (+ UI :8080)</b><small><code>auto-setup</code> image, local dev only · task queues <code>scheduling-tq</code> and <code>visit-tq</code> · Schedules: hold reaper, pending-booking starter, visit downstream sweeper</small></div>
+      <div class="box wired"><b>scheduling-worker</b><small>same image as Scheduling, separate container · Booking, Cancel, Reschedule, WaitlistAdvance + maintenance workflows · heartbeat healthcheck · never runs migrations</small></div>
+      <div class="box wired"><b>visit-worker</b><small>same image as Visit · VisitCompleted (billing finalize, follow-up and analytics intents) + sweeper · heartbeat healthcheck</small></div>
+    </div>
+    <p class="note">Workflow ids: <code>booking-&lt;appointment&gt;</code>, <code>cancel-&lt;appointment&gt;-&lt;version&gt;</code>, <code>reschedule-&lt;appointment&gt;-&lt;version&gt;</code>, <code>waitlist-advance-&lt;source workflow&gt;</code>, <code>visit-completed-&lt;visit&gt;</code>. Inputs and results carry ids and status strings only.</p>
+  </div>
+
+  <!-- Scaffolding -->
+  <div class="layer">
+    <h2>Event backbone &amp; background jobs — scaffolding only <span class="tag p">Phase 3</span></h2>
+    <div class="row">
+      <div class="box pending"><b>Kafka + Schema Registry</b><small>KRaft · event backbone, outbox, event-fed local copies — <b>Phase 3</b></small></div>
+      <div class="box pending"><b>RabbitMQ</b><small>Celery broker · background jobs — <b>Phase 3</b></small></div>
+    </div>
+  </div>
+
+  <!-- Service breakdown -->
+  <div class="layer">
+    <h2>Service breakdown</h2>
+    <table>
+      <tr><th>Service</th><th>Owns</th><th>Database</th><th>Internal endpoints</th><th>Calls out to</th></tr>
+      <tr><td>API Gateway</td><td>Routing, rate limits, path safety</td><td>none</td><td>—</td><td>All services (proxy), Redis</td></tr>
+      <tr><td>Identity</td><td>Accounts, token issuance, JWKS, denylist writes</td><td><code>identity_db</code></td><td><code>GET /internal/users/{id}</code></td><td>Organization (clinic)</td></tr>
+      <tr><td>Organization</td><td>Clinics, departments</td><td><code>organization_db</code></td><td><code>GET /internal/clinics/{id}</code>, <code>/internal/departments/{id}</code></td><td>—</td></tr>
+      <tr><td>Provider</td><td>Providers, specialties, availability templates</td><td><code>provider_db</code></td><td><code>GET /internal/providers/{id}</code></td><td>Organization (department), Identity (user)</td></tr>
+      <tr><td>Patient</td><td>Patient profiles (PHI)</td><td><code>patient_db</code></td><td>—</td><td>Organization (clinic), Identity (user)</td></tr>
+      <tr><td>Scheduling</td><td>Slots, appointments, idempotency keys, waitlist; booking/cancel/reschedule/waitlist workflows</td><td><code>scheduling_db</code></td><td><code>GET /internal/appointments/{id}</code> (Visit)</td><td>Patient, Provider, Organization, Billing; Temporal</td></tr>
+      <tr><td>Billing</td><td>Billing records + history, simulated pre-check</td><td><code>billing_db</code></td><td><code>POST /internal/billing/prechecks</code>, <code>…/transitions</code>, <code>…/relink</code></td><td>— (no client secret)</td></tr>
+      <tr><td>Visit</td><td>Visits + history, downstream marker</td><td><code>visit_db</code></td><td>—</td><td>Scheduling, Provider, Billing; Temporal</td></tr>
+      <tr><td>scheduling-worker / visit-worker</td><td>Workflow + activity execution</td><td>as their API</td><td>—</td><td>as their API</td></tr>
+    </table>
+    <p class="note">All services also fetch Identity's JWKS (cached) and use Redis and MongoDB. Workers and the Scheduling/Visit APIs call <code>/internal</code> routes with <b style="display:inline">service tokens</b> minted by Identity from a per-service client secret (Compose secret): short-lived, one <code>aud</code> per token, and every internal route names its allowed callers (Scheduling → patient, provider, organization, billing; Visit → scheduling, provider, billing).</p>
+  </div>
+
+  <!-- Flows -->
+  <div class="layer">
+    <h2>Flows</h2>
+
+    <div class="seq-title">1 · Gateway request flow</div>
+    <div class="seq">Client ──Bearer access token──▶ Gateway
+                     ├─ path safety: no dot segments, encoded / \ NUL      ──▶ else 404
+                     ├─ route table (no /internal prefix exists)           ──▶ no match: 404
+                     ├─ Redis: fixed-window counter (auth 20/min, other 300/min)
+                     │      over budget ──▶ 429 + Retry-After
+                     │      Redis down  ──▶ fail OPEN (warning log + counter)
+                     └─ forward to owning service (hop-by-hop stripped, traceparent added)
+                                      ├─ verify RS256 locally · denylist · RBAC · clinic scope
+                                      ├─ service database: read / write, one commit
+                                      └─ MongoDB: append audit_log (field names only)
+            upstream unreachable ──▶ 503     upstream timed out ──▶ 504
+            no JWT check and no retries at the edge; reads return ids only</div>
+
+    <div class="seq-title">2 · Reference-check flow (D-05) — fail closed</div>
+    <div class="seq">Client ──POST /api/providers { department_id }──▶ Gateway ──▶ Provider
+Provider ──GET /internal/departments/{id} (caller's JWT forwarded)──▶ Organization
+          up to 3 attempts, backoff, GET and transport errors only
+     200 active                   ──▶ INSERT provider (department_id is a plain UUID) ──▶ 201
+     missing or inactive          ──▶ 422, nothing written
+     owner unreachable / 401 / 403 / 5xx ──▶ 503, nothing written
+Deactivation never cascades (D-06). Kafka / outbox / event-fed copies: Phase 3 (D-08).</div>
+
+    <div class="seq-title">3 · Token verification via JWKS</div>
+    <div class="seq">Identity: login ──▶ sign access + refresh JWT (RSA private key, kid smarthealth-identity-1)
+Any service: request + Bearer token
+     JWKS cache empty / older than 300 s / unknown kid (30 s backoff) ──▶ GET /.well-known/jwks.json
+     verify signature by kid, algorithm and claims locally
+     Redis: jti denylisted? ──▶ yes: 401   Redis unreachable: 503 (fail closed)
+     ──▶ RBAC ──▶ handler
+Only Identity holds the private key (Compose secret, gitignored file). Service tokens: 60 s, aud-scoped (Phase 2).</div>
+
+    <div class="seq-title">5 · Booking saga with compensation (Phase 2)</div>
+    <div class="seq">Client ──POST /api/appointments + Idempotency-Key──▶ Scheduling
+     one tx: idempotency row + appointment pending   (uq_appointments_active_slot: a taken slot ──▶ 409)
+     start booking-&lt;id&gt; on Temporal ──▶ 202 { appointment_id, status_url }   (client polls)
+scheduling-worker (scheduling-tq):
+     1 validate        patient / provider / clinic active, via /internal + service token
+     2 reserve         slot available ──▶ held (held_until = now + 10 min)
+     3 billing         pre-check: pending ──▶ verified | failed
+     4 notification    intent only, best-effort — never fails the booking
+     5 confirm         slot held ──▶ booked · appointment pending ──▶ confirmed
+     on failure, reverse order, forward transitions only (no deletes), one audit entry per step:
+        void billing (failed ──▶ voided) ──▶ release hold (held ──▶ available) ──▶ appointment failed (reason)
+Order note: billing pre-check runs before notification (SCHED-02 lists notification first) so no
+notification goes out for a booking that is later compensated.</div>
+
+    <div class="seq-title">6 · Cancel, reschedule, waitlist advance</div>
+    <div class="seq">Cancel      : cancel + release slot ──▶ billing refund_pending ──▶ refunded (&gt; 24 h ahead) | no_refund (staff may waive)
+              ──▶ notification intent ──▶ start waitlist-advance child
+Reschedule  : hold new slot ──▶ ONE tx: release old, book new, repoint appointment ──▶ re-link billing ──▶ notify ──▶ waitlist advance
+Waitlist    : FIFO claim (FOR UPDATE SKIP LOCKED) of the first matching waiting entry ──▶ child BookingWorkflow
+              booked ──▶ entry booked · booking failed ──▶ entry failed, try next (cap 5) · lost race ──▶ entry back to waiting</div>
+
+    <div class="seq-title">7 · Visit completion — commit first, downstream after</div>
+    <div class="seq">Provider ──POST /api/visits/{id}/complete──▶ Visit
+     commit: in_progress ──▶ completed, downstream_started_at = NULL
+     start visit-completed-&lt;id&gt; (errors are logged; the 200 is unaffected) ──▶ marker = now
+visit-worker (visit-tq), three independent branches:
+     billing finalize (verified ──▶ finalized) · follow-up intent (stub) · analytics intent (stub)
+visit-downstream-sweeper (every 60 s): starts the workflow for completed visits whose marker is still NULL after 30 s.</div>
+
+    <div class="seq-title">8 · Layered idempotency</div>
+    <div class="seq">1 database arbiters: uq_appointments_active_slot · idempotency key row (caller, key, body hash)
+                      · conditional UPDATE … WHERE status = expected · uq_visits_appointment · history uniques
+2 workflow id     : deterministic ids, USE_EXISTING + REJECT_DUPLICATE (namespace retention 24 h)
+3 activities      : idempotent by construction; Billing calls carry Idempotency-Key; audit dedupe_key</div>
+
+    <div class="seq-title">4 · Connected trace</div>
+    <div class="seq">Gateway (server span, W3C traceparent)
+   └─▶ Provider (httpx client span)
+          ├─▶ Organization  (reference check, client span)
+          └─▶ Identity      (JWKS fetch on cache miss, client span)
+Spans exported over OTLP to Jaeger; one OpenTelemetry service name and one Prometheus job per service.
+Observed as one trace via Jaeger's query API; not yet viewed in the Jaeger UI.</div>
+  </div>
+
+  <!-- Limitations -->
+  <div class="layer">
+    <h2>Known limitations and unverified items</h2>
+    <ul>
+      <li>Gateway buffers whole request bodies with <b>no size cap</b> (the limiter bounds request count, not size).</li>
+      <li>One <b>shared Redis</b> holds the denylist and rate-limit counters: an outage fails the limiter open and token verification closed (503); a flush would drop revocations.</li>
+      <li>Application containers <b>run as root</b>. (Service tokens gained <code>aud</code> in Phase 2.)</li>
+      <li><b>Phase 3 replaces</b> the interim mechanisms: pending-booking starter and visit sweeper → transactional outbox; notification / follow-up / analytics stubs → Celery and Kafka; polling → events. Temporal <code>auto-setup</code> is not the production topology.</li>
+      <li>Workers expose no metrics. Waitlist: FIFO per provider, cap 5 tries per freed slot, no priority, no patient notification. Mongo audit is not atomic with the Postgres commit (WR-04).</li>
+      <li>Local/dev only, synthetic data only. Logout, PHI log-safety and database isolation are implemented but not fully hardened.</li>
+      <li><b>Not verified:</b> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the trace in the Jaeger UI, and the <code>scripts/bootstrap_admin.py</code> admin-creation branch (tests only cover the no-op path because the harness always has an admin). Key rotation is supported through <code>kid</code> but not exercised.</li>
+      <li>Assumptions awaiting mentor confirmation: the provider → department → clinic scope chain relies on write-time validation (ORG-03); overlapping availability templates remain allowed (PPL-03); clients combining services may briefly see stale cross-service state (PPL-04).</li>
+    </ul>
+  </div>
+
+  <!-- Decisions -->
+  <div class="layer">
+    <h2>Key design decisions</h2>
+    <table>
+      <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+      <tr><td>Service cut</td><td>Six services, database each (D-01)</td><td>Mentor review asked for true microservices; clear bounded contexts; PHI confined to Patient. Costs: network hops, availability coupling, no distributed transactions</td></tr>
+      <tr><td>Token model</td><td>RS256 + JWKS; Redis jti-denylist</td><td>Only Identity can mint tokens; services verify without calling Identity; real logout</td></tr>
+      <tr><td>Gateway</td><td>Thin FastAPI proxy, per-IP Redis limits, fail-open, no JWT check at the edge</td><td>Most reviewable; defence in depth; availability over rate protection</td></tr>
+      <tr><td>Cross-service integrity</td><td>Synchronous owner check at write time, 422/503, no cascade</td><td>No Kafka/outbox until Phase 3 (D-08); simplest correct option</td></tr>
+      <tr><td>Slot model</td><td>Templates in Provider; empty <code>provider_slots</code> with live GiST constraint in Scheduling (D-03)</td><td>Phase 2 inherits a proven double-booking invariant without moving a table</td></tr>
+      <tr><td>Identity vs profile</td><td>Accounts in Identity; profiles in Patient/Provider by plain <code>user_id</code> (D-04)</td><td>Self-registration and no-login staff-created profiles; PHI out of Identity</td></tr>
+      <tr><td>Audit</td><td>Shared library, one shared <code>audit_log</code> (D-02)</td><td>Dedicated Audit service is Phase 3; call signature kept stable</td></tr>
+      <tr><td>Deletion</td><td>Soft-delete (is_active / deactivated_at)</td><td>Records stay auditable &amp; retained — no hard deletes</td></tr>
+      <tr><td>PHI safety</td><td>Field-name-only audit; structlog redaction</td><td>No PHI in logs or traces</td></tr>
+      <tr><td>Orchestration (Phase 2)</td><td>Temporal for sagas, not Celery</td><td>Durable execution and replay, retries, compensation, Schedules instead of cron; Celery keeps single-step jobs (Phase 3)</td></tr>
+      <tr><td>Workflow placement</td><td>Workflow with the aggregate owner; one queue + one worker container per service (D-05)</td><td>Activities touch only their own database; workers scale and fail independently</td></tr>
+      <tr><td>Booking API</td><td>202 + <code>Idempotency-Key</code> in Postgres (D-07/D-08)</td><td>Survives a Redis flush; replays the original answer</td></tr>
+      <tr><td>Double-booking</td><td>Partial unique index on active appointments + slot hold (D-02/D-03)</td><td>The database is the final arbiter under concurrency</td></tr>
+      <tr><td>Visit completion</td><td>Commit first, then start downstream; sweeper for lost starts (D-16)</td><td>The transition never waits on billing or analytics</td></tr>
+    </table>
+  </div>
+
+  <footer>
+    Self-contained diagram — no external assets. Companion docs:
+    <a href="architecture.md">architecture.md</a> (Mermaid, GitHub-rendered) ·
+    <a href="erd.html">erd.html</a> (per-service schemas) ·
+    <a href="architecture-dashboard.html">architecture-dashboard.html</a> (interactive decision record).
+    Ports reflect the Docker Compose defaults; only the gateway publishes an application port.
+  </footer>
+</div>
+</body>
+</html>

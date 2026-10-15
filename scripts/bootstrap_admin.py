@@ -17,14 +17,21 @@ Idempotency contract:
       creates a second admin and never overwrites an existing admin's
       password or any other field.
     - If no admin exists yet, it creates exactly one, using the SAME
-      bcrypt hashing path (`libs.auth.passwords.hash_password`) the
-      application's own register/login routes use, and writes an
+      bcrypt hashing path (`services.identity.security.passwords.hash_password`)
+      the Identity service's own register/login routes use, and writes an
       `audit_log` entry (`action="user.bootstrap"`) so the very first
       admin's creation is itself part of the audit trail (this codebase's
       documented principle: mutations are always audited).
 
+Target database: the script creates the admin in Identity's OWN database
+(identity_db), addressed by `IDENTITY_DATABASE_URL` (see
+`services.identity.config.IdentitySettings`). There is no shared or unprefixed
+`DATABASE_URL` any more, so a stale one in the environment is ignored. The
+audit entry goes to the shared Mongo `audit_log` collection.
+
 Usage (see README.md "First-Admin Bootstrap" section):
 
+    IDENTITY_DATABASE_URL=postgresql+asyncpg://identity_svc:<password>@<host>:5433/identity_db \\
     BOOTSTRAP_ADMIN_EMAIL=admin@example.com \\
     BOOTSTRAP_ADMIN_PASSWORD='a-strong-password' \\
     python scripts/bootstrap_admin.py
@@ -44,15 +51,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Repo root on sys.path so this script works whether invoked as
 # `python scripts/bootstrap_admin.py` from the repo root (the documented
-# usage) or via an absolute path — mirrors how pytest resolves `smarthealth`/
-# `services`/`libs` as top-level packages (see pyproject.toml's
-# `[tool.setuptools] packages`).
+# usage) or via an absolute path — mirrors how pytest resolves `services`/
+# `libs` as top-level packages (see pyproject.toml's
+# `[tool.setuptools.packages.find]`).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from libs.audit.writer import write_audit  # noqa: E402
+from libs.auth.roles import Role  # noqa: E402
+from libs.db.mongo import get_mongo_client  # noqa: E402
 from libs.observability.logging import get_logger  # noqa: E402
-from smarthealth.config import settings  # noqa: E402
-from smarthealth.db import get_mongo_client  # noqa: E402
+from services.identity.config import settings  # noqa: E402
+from services.identity.repository.models import User  # noqa: E402
+from services.identity.security.passwords import hash_password  # noqa: E402
 
 log = get_logger(__name__)
 
@@ -70,10 +80,6 @@ async def bootstrap_admin(*, email: str, password: str) -> str:
     short-lived engine/session so a re-run always sees the previous run's
     committed state.
     """
-    from libs.auth.passwords import hash_password  # noqa: PLC0415
-    from services.identity.repository.models import User  # noqa: PLC0415
-    from services.identity.domain.enums import Role  # noqa: PLC0415
-
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
 
