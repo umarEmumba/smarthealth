@@ -4,8 +4,9 @@ The end-to-end tracer path: register writes a User row (bcrypt-hashed
 password) and an audit entry; login verifies the password and issues an
 access+refresh JWT pair plus an audit entry; refresh re-derives role/clinic
 from the CURRENT DB state (so a role change takes effect on next refresh,
-not just next login) and issues a fresh access token; logout revokes the
-access token's jti in the Redis denylist and writes an audit entry.
+not just next login) and issues a fresh access+refresh pair, consuming the old
+refresh jti (single use, C1); logout revokes the access token's jti AND its
+paired refresh jti (`rjti`) in the Redis denylist and writes an audit entry.
 
 Real error handling on this one path: 401 invalid credentials, 401
 revoked/expired token, 409 duplicate email. Denied/failed mutations (e.g.
@@ -22,13 +23,14 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
 from libs.auth.current_user import AuthenticatedUser, get_current_user
-from libs.auth.denylist import revoke_token
+from libs.auth.denylist import consume_token, revoke_token
 from libs.auth.rbac import require_role
 from libs.auth.roles import Role
 from libs.auth.verification import ACCESS_ONLY, REFRESH_ONLY, TokenError, decode_token
@@ -52,6 +54,7 @@ from services.identity.domain.schemas import (
     TokenPair,
     UserOut,
 )
+from services.identity.config import settings
 from services.identity.repository.models import User
 from services.identity.security.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from services.identity.security.signing import (
@@ -353,8 +356,10 @@ async def login(
         )
 
     clinic_id_str = str(user.clinic_id) if user.clinic_id else None
-    access_token, access_jti = create_access_token(str(user.id), user.role, clinic_id_str)
     refresh_token, refresh_jti = create_refresh_token(str(user.id))
+    access_token, access_jti = create_access_token(
+        str(user.id), user.role, clinic_id_str, refresh_jti=refresh_jti
+    )
 
     await write_audit(
         mongo,
@@ -385,7 +390,16 @@ async def login(
 async def refresh(
     payload: RefreshRequest,
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
 ) -> TokenPair:
+    """Exchange a refresh token for a NEW pair; a refresh token works once (C1).
+
+    The old refresh jti is claimed with one atomic Redis `SET NX EX` AFTER the
+    token and user have been validated (so a bad token or a vanished user never
+    burns anything) and BEFORE the new pair is issued. A second or concurrent use
+    of the same token, or one revoked at logout, loses the claim and gets a 401;
+    Redis being unreachable is a 503 and the token is left unconsumed.
+    """
     try:
         claims = await decode_token(
             payload.refresh_token, expected_types=REFRESH_ONLY, resolver=local_key_resolver()
@@ -403,11 +417,31 @@ async def refresh(
         log.info("auth.refresh.user_not_found")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid refresh token")
 
+    old_jti = claims["jti"]
+    remaining_seconds = int(float(claims["exp"]) - datetime.now(timezone.utc).timestamp())
+    try:
+        first_use = await consume_token(old_jti, remaining_seconds, redis)
+    except RedisError as exc:
+        # Fail closed, same rule as the access-token path.
+        log.warning("auth.denylist_unavailable", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="revocation check unavailable",
+        ) from exc
+    if not first_use:
+        log.info("auth.refresh.reuse_refused", jti=old_jti)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token already used or revoked",
+        )
+
     # Re-derive role/clinic from CURRENT DB state — a role change takes
     # effect on next refresh, not just next login (locked contract).
     clinic_id_str = str(user.clinic_id) if user.clinic_id else None
-    access_token, access_jti = create_access_token(str(user.id), user.role, clinic_id_str)
     new_refresh_token, new_refresh_jti = create_refresh_token(str(user.id))
+    access_token, access_jti = create_access_token(
+        str(user.id), user.role, clinic_id_str, refresh_jti=new_refresh_jti
+    )
 
     # WR-04: thread both newly-issued jtis into the log line for
     # audit/revocation correlation (see the matching note in login()).
@@ -440,6 +474,13 @@ async def logout(
     remaining_seconds = int(exp_epoch - datetime.now(timezone.utc).timestamp())
 
     await revoke_token(user.jti, remaining_seconds, redis)
+
+    # C1: also kill the refresh token paired with this access token. The refresh
+    # lifetime is not known here, so use its configured upper bound; the entry
+    # self-expires. Access tokens minted before `rjti` existed revoke only themselves.
+    paired_refresh_jti = claims.get("rjti")
+    if paired_refresh_jti:
+        await revoke_token(paired_refresh_jti, settings.refresh_token_expire_days * 86400, redis)
 
     await write_audit(
         mongo,

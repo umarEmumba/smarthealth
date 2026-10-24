@@ -2,7 +2,10 @@
 
 Locked claim contract (unchanged from Phase 1): the short-lived ACCESS token
 (~15 min) carries `sub`, `role`, `clinic_id`, `jti`, `type=access`, `iat`,
-`exp`. The long-lived REFRESH token (~7 days) carries ONLY `sub`, `jti`,
+`exp`; when issued together with a refresh token it also carries `rjti`, the
+paired refresh token's jti, so logout can revoke both without client help (C1;
+tokens minted before that change lack it and simply revoke only themselves).
+The long-lived REFRESH token (~7 days) carries ONLY `sub`, `jti`,
 `type=refresh`, `iat`, `exp` — no role/clinic claims, because a refresh
 exchange re-derives role/clinic from current database state (a role change
 takes effect on next refresh, not just next login).
@@ -36,9 +39,14 @@ def _encode(payload: dict[str, Any]) -> str:
     return jwt.encode(payload, key.private_pem, algorithm=JWT_ALGORITHM, headers={"kid": key.kid})
 
 
-def create_access_token(user_id: str, role: str, clinic_id: str | None) -> tuple[str, str]:
+def create_access_token(
+    user_id: str, role: str, clinic_id: str | None, refresh_jti: str | None = None
+) -> tuple[str, str]:
     """Issue a short-lived access token. Returns (token, jti) — the jti is also
-    returned so callers can log/audit it without re-decoding the token."""
+    returned so callers can log/audit it without re-decoding the token.
+
+    `refresh_jti` (the paired refresh token's jti) is carried as the `rjti` claim
+    so logout can also revoke the refresh token (C1)."""
     jti = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
@@ -50,6 +58,8 @@ def create_access_token(user_id: str, role: str, clinic_id: str | None) -> tuple
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
     }
+    if refresh_jti is not None:
+        payload["rjti"] = refresh_jti
     return _encode(payload), jti
 
 
