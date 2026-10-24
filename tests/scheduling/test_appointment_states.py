@@ -250,3 +250,551 @@ async def test_user_tokens_are_refused_on_check_in(
     )
 
     assert resp.status_code == 403, resp.text
+
+
+# --- complete -----------------------------------------------------------------------------
+
+
+async def test_complete_moves_checked_in_to_completed_once(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    appt = await seed(status="checked_in")
+
+    def complete(db: AsyncSession):
+        return appointment_repo.complete_appointment(db, appointment_id=appt.appointment_id, actor=ACTOR)
+
+    assert await in_session(engine, complete) == "completed"
+    assert await in_session(engine, complete) == "already"
+
+    assert await row(engine, appt.appointment_id) == ("completed", 2)
+    assert await history(engine, appt.appointment_id) == [("checked_in", "completed", ACTOR)]
+    assert await slot_state(engine, appt.slot_id) == "booked"
+
+
+async def test_complete_refuses_unchecked_in_and_missing(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    appt = await seed(status="confirmed")
+
+    outcomes = [
+        await in_session(
+            engine,
+            lambda db, a=a: appointment_repo.complete_appointment(db, appointment_id=a, actor=ACTOR),
+        )
+        for a in (appt.appointment_id, uuid.uuid4())
+    ]
+
+    assert outcomes == ["not_checked_in", "not_found"]
+    assert await row(engine, appt.appointment_id) == ("confirmed", 1)
+    assert await history(engine, appt.appointment_id) == []
+
+
+# --- no-show --------------------------------------------------------------------------------
+
+
+def _no_show(engine: AsyncEngine, appointment_id: uuid.UUID, grace: int = 30):
+    return in_session(
+        engine,
+        lambda db: appointment_repo.mark_no_show(
+            db, appointment_id=appointment_id, actor="system:sweeper", grace_minutes=grace
+        ),
+    )
+
+
+async def test_mark_no_show_only_after_slot_end_plus_grace(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    # Ended 10 minutes ago: inside the 30-minute grace.
+    recent = await seed(start=_now() - timedelta(minutes=40))
+    # Ended 45 minutes ago: past the grace.
+    old = await seed(start=_now() - timedelta(minutes=75))
+
+    assert await _no_show(engine, recent.appointment_id) == "too_early"
+    assert await row(engine, recent.appointment_id) == ("confirmed", 1)
+    assert await _no_show(engine, recent.appointment_id, grace=5) == "no_show"
+
+    assert await _no_show(engine, old.appointment_id) == "no_show"
+    assert await _no_show(engine, old.appointment_id) == "already"
+    assert await row(engine, old.appointment_id) == ("no_show", 2)
+    assert await history(engine, old.appointment_id) == [("confirmed", "no_show", "system:sweeper")]
+    assert await slot_state(engine, old.slot_id) == "booked"
+
+
+async def test_mark_no_show_never_applies_to_a_checked_in_or_missing_appointment(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    checked_in = await seed(status="checked_in", start=_now() - timedelta(hours=3))
+
+    assert await _no_show(engine, checked_in.appointment_id) == "not_confirmed"
+    assert await _no_show(engine, uuid.uuid4()) == "not_found"
+    assert await row(engine, checked_in.appointment_id) == ("checked_in", 1)
+
+
+async def test_list_no_show_candidates_returns_only_overdue_confirmed_oldest_first(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    base = datetime(2019, 1, 1, 9, 0, tzinfo=timezone.utc)
+    newer = await seed(start=base + timedelta(days=1))
+    older = await seed(start=base)
+    await seed(status="checked_in", start=base + timedelta(days=2))
+    await seed(status="cancelled", start=base + timedelta(days=3))
+    await seed(start=_now() - timedelta(minutes=40))  # inside the grace
+    await seed(start=_now() + timedelta(days=1))  # future
+    mine = {older.appointment_id, newer.appointment_id}
+
+    rows = await in_session(
+        engine, lambda db: appointment_repo.list_no_show_candidates(db, grace_minutes=30, limit=500)
+    )
+    limited = await in_session(
+        engine, lambda db: appointment_repo.list_no_show_candidates(db, grace_minutes=30, limit=1)
+    )
+
+    ids = [a.id for a in rows if a.id in mine]
+    assert ids == [older.appointment_id, newer.appointment_id]
+    assert all(a.status == "confirmed" for a in rows)
+    assert len(limited) == 1
+
+
+# --- check-in window --------------------------------------------------------------------------
+
+
+async def test_check_in_window_is_judged_by_the_database_clock(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    early = await seed(start=_now() + timedelta(hours=3))
+    late = await seed(start=_now() - timedelta(hours=1, minutes=30))  # ended an hour ago
+    inside = await seed(start=_now() + timedelta(minutes=20))
+    in_progress = await seed(start=_now() - timedelta(minutes=10))
+
+    assert await check_in(engine, early.appointment_id) == "too_early"
+    assert await check_in(engine, late.appointment_id) == "too_late"
+    assert await check_in(engine, inside.appointment_id) == "checked_in"
+    assert await check_in(engine, in_progress.appointment_id) == "checked_in"
+
+    # Refusals wrote nothing.
+    for refused in (early, late):
+        assert await row(engine, refused.appointment_id) == ("confirmed", 1)
+        assert await history(engine, refused.appointment_id) == []
+    assert await row(engine, inside.appointment_id) == ("checked_in", 2)
+
+
+async def test_check_in_window_follows_the_given_minutes(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    early = await seed(start=_now() + timedelta(hours=3))
+    ended = await seed(start=_now() - timedelta(minutes=40))  # ended 10 minutes ago
+
+    assert await check_in(engine, early.appointment_id, before=240) == "checked_in"
+    assert await check_in(engine, ended.appointment_id, after=5) == "too_late"
+    assert await check_in(engine, ended.appointment_id, after=15) == "checked_in"
+
+
+async def test_check_in_refuses_other_states_and_missing(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    outcomes = {}
+    for status in ("pending", "cancelled", "failed", "completed", "no_show"):
+        appt = await seed(status=status)
+        outcomes[status] = await check_in(engine, appt.appointment_id)
+        assert (await row(engine, appt.appointment_id))[0] == status
+    outcomes["missing"] = await check_in(engine, uuid.uuid4())
+
+    assert outcomes == {
+        "pending": "not_confirmed",
+        "cancelled": "not_confirmed",
+        "failed": "not_confirmed",
+        "completed": "not_confirmed",
+        "no_show": "not_confirmed",
+        "missing": "not_found",
+    }
+
+
+async def test_repeat_check_in_is_already_and_writes_nothing(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    appt = await seed()
+
+    first = await check_in(engine, appt.appointment_id)
+    second = await check_in(engine, appt.appointment_id)
+
+    assert (first, second) == ("checked_in", "already")
+    assert await row(engine, appt.appointment_id) == ("checked_in", 2)
+    assert await history(engine, appt.appointment_id) == [("confirmed", "checked_in", ACTOR)]
+
+
+async def test_twenty_concurrent_check_ins_make_exactly_one_transition(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine
+) -> None:
+    engine = committed_scheduling_engine
+    appt = await seed()
+
+    outcomes = await asyncio.gather(*(check_in(engine, appt.appointment_id) for _ in range(20)))
+
+    assert sorted(outcomes) == ["already"] * 19 + ["checked_in"]
+    async with engine.connect() as conn:
+        count = await conn.scalar(
+            text(
+                "SELECT count(*) FROM appointment_status_history "
+                "WHERE appointment_id = :a AND to_status = 'checked_in'"
+            ),
+            {"a": appt.appointment_id},
+        )
+    assert count == 1
+    assert await row(engine, appt.appointment_id) == ("checked_in", 2)
+
+
+# --- cancel / reschedule are refused at the repository and the activity layer ----------------
+
+
+NEW_STATES = ("checked_in", "completed", "no_show")
+
+
+@pytest.mark.parametrize("status", NEW_STATES)
+async def test_repo_cancel_and_swap_refuse_the_new_states(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine, status: str
+) -> None:
+    """The race where the state changes after the API check: the repository's
+    own conditional logic still refuses and changes nothing."""
+    engine = committed_scheduling_engine
+    appt = await seed(status=status)
+    new_slot = await seed_slot(
+        engine,
+        provider_id=appt.provider_id,
+        start=appt.start + timedelta(days=1),
+        clinic_id=appt.clinic_id,
+        department_id=uuid.uuid4(),
+        status="held",
+    )
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE provider_slots SET held_by_appointment_id = :a WHERE id = :s"),
+            {"a": appt.appointment_id, "s": new_slot},
+        )
+
+    cancelled = await in_session(
+        engine,
+        lambda db: appointment_repo.cancel_appointment(
+            db, appointment_id=appt.appointment_id, actor="user:test"
+        ),
+    )
+    swapped = await in_session(
+        engine,
+        lambda db: appointment_repo.swap_slot(
+            db,
+            appointment_id=appt.appointment_id,
+            old_slot_id=appt.slot_id,
+            new_slot_id=new_slot,
+            actor="user:test",
+        ),
+    )
+
+    assert (cancelled, swapped) == ("not_cancellable", "rejected")
+    assert await row(engine, appt.appointment_id) == (status, 1)
+    assert await slot_state(engine, appt.slot_id) == "booked"
+    assert await slot_state(engine, new_slot) == "held"
+    assert await history(engine, appt.appointment_id) == []
+
+
+@pytest.mark.parametrize("status", NEW_STATES)
+async def test_workflow_activities_refuse_the_new_states(
+    seed: Seeder, committed_scheduling_engine: AsyncEngine, status: str
+) -> None:
+    """The cancel and reschedule workflows' activities raise the non-retryable
+    business errors, so the saga records a refusal instead of freeing the slot
+    or issuing a refund."""
+    from temporalio.exceptions import ApplicationError  # noqa: PLC0415
+
+    from services.scheduling.activities.changes import AppointmentChangeActivities  # noqa: PLC0415
+    from services.scheduling.domain.contracts import CancelInput, RescheduleInput  # noqa: PLC0415
+
+    engine = committed_scheduling_engine
+    appt = await seed(status=status)
+    acts = AppointmentChangeActivities(
+        async_sessionmaker(engine, expire_on_commit=False), http=None, tokens=None, mongo=None
+    )
+
+    with pytest.raises(ApplicationError) as cancel_error:
+        await acts.cancel_appointment(
+            CancelInput(
+                appointment_id=str(appt.appointment_id),
+                clinic_id=str(appt.clinic_id),
+                slot_id=str(appt.slot_id),
+                refund_policy="refund",
+                actor="user:test",
+            )
+        )
+    with pytest.raises(ApplicationError) as swap_error:
+        await acts.swap_slot(
+            RescheduleInput(
+                appointment_id=str(appt.appointment_id),
+                clinic_id=str(appt.clinic_id),
+                old_slot_id=str(appt.slot_id),
+                new_slot_id=str(uuid.uuid4()),
+                actor="user:test",
+            )
+        )
+
+    assert cancel_error.value.type == "NotCancellable" and cancel_error.value.non_retryable
+    assert swap_error.value.type == "SwapRejected" and swap_error.value.non_retryable
+    assert await row(engine, appt.appointment_id) == (status, 1)
+    assert await slot_state(engine, appt.slot_id) == "booked"
+
+
+@pytest.mark.parametrize(
+    ("status", "detail"),
+    [
+        ("checked_in", "appointment already checked in"),
+        ("completed", "appointment already completed"),
+        ("no_show", "appointment was a no-show"),
+    ],
+)
+async def test_gateway_cancel_and_reschedule_name_the_state(
+    client: AsyncClient,
+    state_world: VisitWorld,
+    seed: Seeder,
+    committed_scheduling_engine: AsyncEngine,
+    status: str,
+    detail: str,
+) -> None:
+    engine = committed_scheduling_engine
+    world = state_world.world
+    appt = await seed(status=status, clinic_id=world.clinic_id)
+    headers = auth(world.front_desk)
+
+    cancel = await client.post(f"/api/appointments/{appt.appointment_id}/cancel", json={}, headers=headers)
+    reschedule = await client.post(
+        f"/api/appointments/{appt.appointment_id}/reschedule",
+        json={"new_slot_id": str(uuid.uuid4())},
+        headers=headers,
+    )
+
+    assert cancel.status_code == 409 and cancel.json()["detail"] == detail
+    assert reschedule.status_code == 409 and reschedule.json()["detail"] == detail
+    assert await row(engine, appt.appointment_id) == (status, 1)
+    assert await slot_state(engine, appt.slot_id) == "booked"
+
+
+async def test_pending_and_failed_keep_their_existing_refusals(
+    client: AsyncClient, state_world: VisitWorld, seed: Seeder
+) -> None:
+    world = state_world.world
+    pending = await seed(status="pending", clinic_id=world.clinic_id)
+    failed = await seed(status="failed", clinic_id=world.clinic_id)
+    headers = auth(world.front_desk)
+
+    p = await client.post(f"/api/appointments/{pending.appointment_id}/cancel", json={}, headers=headers)
+    f = await client.post(f"/api/appointments/{failed.appointment_id}/cancel", json={}, headers=headers)
+
+    assert (p.status_code, p.json()["detail"]) == (409, "booking in progress")
+    assert (f.status_code, f.json()["detail"]) == (409, "appointment not cancellable")
+
+
+# --- database-level proofs: the new states keep their slot ------------------------------------
+
+BASE = datetime(2027, 6, 7, 9, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("status", NEW_STATES)
+async def test_second_active_appointment_is_rejected_when_the_first_is_in_a_new_state(
+    scheduling_db_session: AsyncSession, status: str
+) -> None:
+    from tests.scheduling.test_appointment_constraints import _appointment, _slot  # noqa: PLC0415
+
+    db = scheduling_db_session
+    slot_id = await _slot(db)
+    await _appointment(db, slot_id=slot_id, status=status)
+
+    for second in ("pending", "confirmed", "checked_in"):
+        with pytest.raises(IntegrityError) as excinfo:
+            async with db.begin_nested():
+                await _appointment(db, slot_id=slot_id, status=second)
+        assert "uq_appointments_active_slot" in str(excinfo.value)
+
+
+async def test_raw_update_into_a_new_state_cannot_free_or_double_book_a_slot(
+    scheduling_db_session: AsyncSession,
+) -> None:
+    """A cancelled twin may share the slot; flipping it back to an active state
+    while a checked-in appointment holds the slot is rejected by the index."""
+    from tests.scheduling.test_appointment_constraints import _appointment, _slot  # noqa: PLC0415
+
+    db = scheduling_db_session
+    slot_id = await _slot(db)
+    await _appointment(db, slot_id=slot_id, status="checked_in")
+    twin = await _appointment(db, slot_id=slot_id, status="cancelled")
+
+    with pytest.raises(IntegrityError) as excinfo:
+        async with db.begin_nested():
+            await db.execute(
+                text("UPDATE appointments SET status = 'completed' WHERE id = :a"), {"a": twin}
+            )
+    assert "uq_appointments_active_slot" in str(excinfo.value)
+
+
+async def test_patient_with_a_checked_in_appointment_cannot_hold_an_overlapping_one(
+    scheduling_db_session: AsyncSession,
+) -> None:
+    from tests.scheduling.test_appointment_constraints import _appointment, _slot  # noqa: PLC0415
+
+    db = scheduling_db_session
+    patient_id = uuid.uuid4()
+    first_slot = await _slot(db, start=BASE)
+    other_slot = await _slot(db, start=BASE + timedelta(minutes=15))
+    await _appointment(db, slot_id=first_slot, patient_id=patient_id, start=BASE, status="checked_in")
+
+    with pytest.raises(IntegrityError) as excinfo:
+        async with db.begin_nested():
+            await _appointment(
+                db,
+                slot_id=other_slot,
+                patient_id=patient_id,
+                start=BASE + timedelta(minutes=15),
+                status="confirmed",
+            )
+    assert "ex_appointments_patient_no_overlap" in str(excinfo.value)
+
+
+# --- the internal routes ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("action", ["check-in", "complete"])
+@pytest.mark.parametrize("who", ["admin", "front_desk", "provider", "patient"])
+async def test_user_tokens_are_refused_on_both_routes(
+    mesh: httpx.AsyncClient, state_world: VisitWorld, seed: Seeder, action: str, who: str
+) -> None:
+    world = state_world.world
+    appt = await seed(status="checked_in" if action == "complete" else "confirmed", clinic_id=world.clinic_id)
+
+    resp = await mesh.post(
+        _url(appt.appointment_id, action, world.clinic_id), headers=auth(getattr(world, who))
+    )
+
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.parametrize("action", ["check-in", "complete"])
+async def test_other_service_audience_and_anonymous_callers(
+    mesh: httpx.AsyncClient, state_world: VisitWorld, seed: Seeder, action: str
+) -> None:
+    from services.identity.security.signing import create_service_token  # noqa: PLC0415
+
+    world = state_world.world
+    appt = await seed(clinic_id=world.clinic_id)
+    url = _url(appt.appointment_id, action, world.clinic_id)
+
+    billing = await mesh.post(url, headers=_bearer(create_service_token("billing", audience="scheduling")))
+    wrong_aud = await mesh.post(url, headers=_bearer(await _visit_token(mesh, audience="provider")))
+    anonymous = await mesh.post(url)
+
+    assert billing.status_code == 403, billing.text
+    assert wrong_aud.status_code == 401, wrong_aud.text
+    assert anonymous.status_code == 401
+
+
+@pytest.mark.parametrize("action", ["check-in", "complete"])
+async def test_clinic_id_is_required_and_foreign_clinics_get_the_identical_404(
+    mesh: httpx.AsyncClient, state_world: VisitWorld, seed: Seeder, action: str
+) -> None:
+    world = state_world.world
+    appt = await seed(status="checked_in", clinic_id=world.clinic_id)
+    headers = _bearer(await _visit_token(mesh))
+
+    missing_param = await mesh.post(_url(appt.appointment_id, action, None), headers=headers)
+    other_clinic = await mesh.post(_url(appt.appointment_id, action, uuid.uuid4()), headers=headers)
+    missing = await mesh.post(_url(uuid.uuid4(), action, world.clinic_id), headers=headers)
+
+    assert missing_param.status_code == 422
+    assert other_clinic.status_code == missing.status_code == 404
+    assert other_clinic.json() == missing.json() == {"detail": "not found"}
+
+
+async def test_check_in_route_window_and_state_refusals(
+    mesh: httpx.AsyncClient,
+    state_world: VisitWorld,
+    seed: Seeder,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    engine = committed_scheduling_engine
+    world = state_world.world
+    headers = _bearer(await _visit_token(mesh))
+    early = await seed(start=_now() + timedelta(hours=3), clinic_id=world.clinic_id)
+    late = await seed(start=_now() - timedelta(hours=2), clinic_id=world.clinic_id)
+    pending = await seed(status="pending", clinic_id=world.clinic_id)
+
+    got = {
+        name: await mesh.post(_url(a.appointment_id, "check-in", world.clinic_id), headers=headers)
+        for name, a in (("early", early), ("late", late), ("pending", pending))
+    }
+
+    assert {k: (v.status_code, v.json()["detail"]) for k, v in got.items()} == {
+        "early": (409, "check-in window not open"),
+        "late": (409, "check-in window closed"),
+        "pending": (409, "appointment not confirmed"),
+    }
+    assert await row(engine, early.appointment_id) == ("confirmed", 1)
+    assert await audit_count(str(early.appointment_id), "appointment.check_in") == 0
+
+
+async def test_check_in_window_minutes_are_read_at_request_time(
+    mesh: httpx.AsyncClient,
+    state_world: VisitWorld,
+    seed: Seeder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.scheduling.config import settings  # noqa: PLC0415
+
+    world = state_world.world
+    headers = _bearer(await _visit_token(mesh))
+    appt = await seed(start=_now() + timedelta(hours=3), clinic_id=world.clinic_id)
+    url = _url(appt.appointment_id, "check-in", world.clinic_id)
+
+    assert (await mesh.post(url, headers=headers)).status_code == 409
+    monkeypatch.setattr(settings, "checkin_opens_before_minutes", 240)
+    resp = await mesh.post(url, headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "checked_in"
+
+
+async def test_check_in_then_complete_routes_are_idempotent_and_audited_once(
+    mesh: httpx.AsyncClient,
+    state_world: VisitWorld,
+    seed: Seeder,
+    committed_scheduling_engine: AsyncEngine,
+) -> None:
+    engine = committed_scheduling_engine
+    world = state_world.world
+    headers = _bearer(await _visit_token(mesh))
+    appt = await seed(clinic_id=world.clinic_id)
+    appointment_id = str(appt.appointment_id)
+
+    early_complete = await mesh.post(_url(appointment_id, "complete", world.clinic_id), headers=headers)
+    first = await mesh.post(_url(appointment_id, "check-in", world.clinic_id), headers=headers)
+    repeat = await mesh.post(_url(appointment_id, "check-in", world.clinic_id), headers=headers)
+    done = await mesh.post(_url(appointment_id, "complete", world.clinic_id), headers=headers)
+    done_again = await mesh.post(_url(appointment_id, "complete", world.clinic_id), headers=headers)
+    late_check_in = await mesh.post(_url(appointment_id, "check-in", world.clinic_id), headers=headers)
+
+    assert (early_complete.status_code, early_complete.json()["detail"]) == (409, "appointment not checked in")
+    assert (first.status_code, first.json()["status"]) == (200, "checked_in")
+    assert (repeat.status_code, repeat.json()["status"]) == (200, "checked_in")
+    assert (done.status_code, done.json()["status"]) == (200, "completed")
+    assert (done_again.status_code, done_again.json()["status"]) == (200, "completed")
+    assert (late_check_in.status_code, late_check_in.json()["detail"]) == (409, "appointment not confirmed")
+
+    assert await history(engine, appt.appointment_id) == [
+        ("confirmed", "checked_in", "service:visit"),
+        ("checked_in", "completed", "service:visit"),
+    ]
+    assert await audit_count(appointment_id, "appointment.check_in") == 1
+    assert await audit_count(appointment_id, "appointment.complete") == 1
+    assert await slot_state(engine, appt.slot_id) == "booked"

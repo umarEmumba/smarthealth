@@ -684,3 +684,129 @@ async def check_in_appointment(
         actor=actor,
     )
     return "checked_in"
+
+
+CompleteOutcome = Literal["completed", "already", "not_checked_in", "not_found"]
+
+
+async def complete_appointment(
+    db: AsyncSession, *, appointment_id: uuid.UUID, actor: str
+) -> CompleteOutcome:
+    """Appointment `checked_in` -> `completed`, plus one history row.
+
+    Row-locked and conditional on `status = 'checked_in'`. "already" when it is
+    already completed (a repeat: no second history row); "not_checked_in" for
+    any other state (a visit cannot complete an appointment that never checked
+    in); "not_found" when missing. The slot is untouched: a completed
+    appointment keeps it. Flushes only; the caller commits.
+    """
+    current = await db.scalar(
+        text("SELECT status FROM appointments WHERE id = :a FOR UPDATE"), {"a": appointment_id}
+    )
+    if current is None:
+        return "not_found"
+    if current == AppointmentStatus.COMPLETED:
+        return "already"
+    if current != AppointmentStatus.CHECKED_IN:
+        return "not_checked_in"
+
+    moved = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET status = 'completed', version = version + 1, updated_at = now()
+             WHERE id = :a AND status = 'checked_in'
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id},
+    )
+    if moved is None:  # pragma: no cover - the row is locked as checked_in above
+        return "not_checked_in"
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=AppointmentStatus.CHECKED_IN,
+        to_status=AppointmentStatus.COMPLETED,
+        actor=actor,
+    )
+    return "completed"
+
+
+NoShowOutcome = Literal["no_show", "already", "too_early", "not_confirmed", "not_found"]
+
+
+async def mark_no_show(
+    db: AsyncSession, *, appointment_id: uuid.UUID, actor: str, grace_minutes: int
+) -> NoShowOutcome:
+    """Appointment `confirmed` -> `no_show`, only once `slot_end + grace` has
+    passed on the DATABASE clock, plus one history row.
+
+    "already" for a repeat; "too_early" while the grace period still runs;
+    "not_confirmed" for any other state (a checked-in patient is never a
+    no-show); "not_found" when missing. The slot is untouched: a no-show
+    keeps it reserved. Flushes only; the caller commits.
+    """
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT status,
+                       (now() > slot_end + make_interval(mins => :grace)) AS past_grace
+                  FROM appointments
+                 WHERE id = :a
+                   FOR UPDATE
+                """
+            ),
+            {"a": appointment_id, "grace": grace_minutes},
+        )
+    ).one_or_none()
+    if row is None:
+        return "not_found"
+    if row.status == AppointmentStatus.NO_SHOW:
+        return "already"
+    if row.status != AppointmentStatus.CONFIRMED:
+        return "not_confirmed"
+    if not row.past_grace:
+        return "too_early"
+
+    moved = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET status = 'no_show', version = version + 1, updated_at = now()
+             WHERE id = :a AND status = 'confirmed'
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id},
+    )
+    if moved is None:  # pragma: no cover - the row is locked as confirmed above
+        return "not_confirmed"
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=AppointmentStatus.CONFIRMED,
+        to_status=AppointmentStatus.NO_SHOW,
+        actor=actor,
+    )
+    return "no_show"
+
+
+async def list_no_show_candidates(
+    db: AsyncSession, *, grace_minutes: int, limit: int
+) -> list[Appointment]:
+    """Confirmed appointments whose `slot_end + grace` has passed (DB clock),
+    oldest first, at most `limit`. No row lock: the sweep (plan 02.1-11)
+    re-checks each row through `mark_no_show`."""
+    query = (
+        select(Appointment)
+        .where(
+            Appointment.status == AppointmentStatus.CONFIRMED,
+            Appointment.slot_end
+            < text("now() - make_interval(mins => :grace)").bindparams(grace=grace_minutes),
+        )
+        .order_by(Appointment.slot_end, Appointment.id)
+        .limit(limit)
+    )
+    return list((await db.scalars(query)).all())

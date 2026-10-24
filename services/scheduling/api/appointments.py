@@ -489,9 +489,21 @@ async def _scoped_appointment(
     return appointment
 
 
+# M1 (plan 02.1-01): once the patient has checked in, or the visit is over, the
+# appointment can no longer be cancelled or rescheduled (it would free a slot
+# that was used and trigger a refund). Named so the client can tell why.
+_REFUSED_BY_STATE = {
+    AppointmentStatus.CHECKED_IN: "appointment already checked in",
+    AppointmentStatus.COMPLETED: "appointment already completed",
+    AppointmentStatus.NO_SHOW: "appointment was a no-show",
+}
+
+
 def _refuse_unchangeable(appointment: Appointment, now: datetime, operation: str) -> None:
     if appointment.status == AppointmentStatus.PENDING:
         raise _conflict("booking in progress")
+    if appointment.status in _REFUSED_BY_STATE:
+        raise _conflict(_REFUSED_BY_STATE[appointment.status])
     if appointment.status != AppointmentStatus.CONFIRMED:
         raise _conflict(f"appointment not {'cancellable' if operation == 'cancel' else 'reschedulable'}")
     if appointment.slot_start <= now:

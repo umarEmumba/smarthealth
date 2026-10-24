@@ -188,3 +188,35 @@ async def check_in_appointment(
     await db.refresh(appointment)
     await _audit_transition(mongo, caller, appointment, action="appointment.check_in", step="check_in")
     return _ref(appointment)
+
+
+@router.post("/appointments/{appointment_id}/complete", response_model=AppointmentRef)
+async def complete_appointment(
+    appointment_id: uuid.UUID,
+    clinic_id: uuid.UUID = Query(...),
+    caller: InternalCaller = Depends(_VISIT_ONLY),
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncMongoClient = Depends(get_mongo),
+) -> AppointmentRef:
+    """`checked_in -> completed` (Visit calls it when the visit completes)."""
+    appointment = await _scoped_for_transition(db, appointment_id, clinic_id, caller)
+
+    outcome = await appointment_repo.complete_appointment(
+        db, appointment_id=appointment_id, actor=caller.sub
+    )
+    log.info("internal.appointment_complete", appointment_id=str(appointment_id), outcome=outcome)
+    if outcome == "not_found":  # pragma: no cover - read just above; never deleted
+        await db.rollback()
+        raise _not_found()
+    if outcome == "not_checked_in":
+        await db.rollback()
+        raise _conflict("appointment not checked in")
+    if outcome == "already":
+        await db.rollback()
+        await db.refresh(appointment)
+        return _ref(appointment)
+
+    await db.commit()
+    await db.refresh(appointment)
+    await _audit_transition(mongo, caller, appointment, action="appointment.complete", step="complete")
+    return _ref(appointment)
