@@ -58,7 +58,8 @@ async def test_login_issues_rs256_token_verifiable_via_jwks(
         access_token, expected_types=ACCESS_ONLY, resolver=jwks_client, http=mesh
     )
     assert claims["role"] == "admin"
-    assert set(claims) == {"sub", "role", "clinic_id", "jti", "type", "iat", "exp"}
+    # `rjti` (plan 02.1-02, C1): the paired refresh token's jti, so logout can revoke both.
+    assert set(claims) == {"sub", "role", "clinic_id", "jti", "type", "iat", "exp", "rjti"}
     assert jwks_client.fetch_count == 1
 
     # Local verification: the second decode must be served from the cache.

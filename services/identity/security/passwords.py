@@ -17,13 +17,29 @@ algorithm) rather than routing through passlib's incompatible self-test.
 Passwords are truncated to bcrypt's own 72-byte hard limit before hashing —
 standard, industry-wide practice (bcrypt has never supported longer
 secrets; anything beyond 72 bytes is ignored by the algorithm itself).
+
+C2: bcrypt costs tens of milliseconds of CPU per call, so calling it directly
+inside an `async def` route freezes the event loop for every other request.
+Routes use `hash_password_async` / `verify_password_async`, which run the sync
+functions in a bounded dedicated `ThreadPoolExecutor` (threads named `bcrypt*`,
+size `IDENTITY_BCRYPT_THREADS`). bcrypt releases the GIL while hashing, so the
+pool gives real parallelism without competing with the default executor, and a
+login burst queues in the pool instead of stalling the loop. The sync functions
+stay for scripts and unit tests.
 """
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 import bcrypt
 
+from services.identity.config import settings
+
 _MAX_PASSWORD_BYTES = 72
+
+_executor = ThreadPoolExecutor(max_workers=settings.bcrypt_threads, thread_name_prefix="bcrypt")
 
 # WR-03: a precomputed dummy hash, verified against when no real user
 # exists, so a login attempt against a non-existent email pays the SAME
@@ -52,3 +68,15 @@ def verify_password(password: str, hashed: str) -> bool:
     performs a constant-time comparison internally.
     """
     return bcrypt.checkpw(_truncate_to_bcrypt_limit(password), hashed.encode("ascii"))
+
+
+async def hash_password_async(password: str) -> str:
+    """`hash_password` on the bounded bcrypt pool; the event loop stays free."""
+    return await asyncio.get_running_loop().run_in_executor(_executor, hash_password, password)
+
+
+async def verify_password_async(password: str, hashed: str) -> bool:
+    """`verify_password` on the bounded bcrypt pool; the event loop stays free."""
+    return await asyncio.get_running_loop().run_in_executor(
+        _executor, verify_password, password, hashed
+    )

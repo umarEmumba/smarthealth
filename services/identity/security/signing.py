@@ -21,7 +21,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import jwt
+from jose import jwk, jwt
+from jose.backends.base import Key
 
 from libs.auth.verification import (
     ACCESS_TOKEN_TYPE,
@@ -34,9 +35,31 @@ from services.identity.config import settings
 from services.identity.security.keys import get_signing_key
 
 
+# Parsing the PEM costs milliseconds of CPU (cryptography validates the RSA key),
+# and python-jose would redo it on EVERY encode when handed PEM text, on the event
+# loop. Build the signing key object once per loaded key and reuse it (C2: a login
+# burst must not stall the loop; found by the loop-lag test).
+_prepared_keys: dict[tuple[str, str], Key] = {}
+
+
+def _prepared_signing_key(kid: str, private_pem: str) -> Key:
+    cache_key = (kid, private_pem)
+    prepared = _prepared_keys.get(cache_key)
+    if prepared is None:
+        prepared = jwk.construct(private_pem, JWT_ALGORITHM)
+        _prepared_keys.clear()  # only the current key is ever needed
+        _prepared_keys[cache_key] = prepared
+    return prepared
+
+
 def _encode(payload: dict[str, Any]) -> str:
     key = get_signing_key()
-    return jwt.encode(payload, key.private_pem, algorithm=JWT_ALGORITHM, headers={"kid": key.kid})
+    return jwt.encode(
+        payload,
+        _prepared_signing_key(key.kid, key.private_pem),
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": key.kid},
+    )
 
 
 def create_access_token(

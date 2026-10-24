@@ -56,7 +56,11 @@ from services.identity.domain.schemas import (
 )
 from services.identity.config import settings
 from services.identity.repository.models import User
-from services.identity.security.passwords import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from services.identity.security.passwords import (
+    DUMMY_PASSWORD_HASH,
+    hash_password_async,
+    verify_password_async,
+)
 from services.identity.security.signing import (
     create_access_token,
     create_refresh_token,
@@ -164,7 +168,7 @@ async def register(
 
     user = User(
         email=payload.email,
-        hashed_password=hash_password(payload.password),
+        hashed_password=await hash_password_async(payload.password),
         role=Role.PATIENT.value,
         clinic_id=payload.clinic_id,
     )
@@ -267,7 +271,7 @@ async def create_staff_user(
 
     user = User(
         email=payload.email,
-        hashed_password=hash_password(payload.password),
+        hashed_password=await hash_password_async(payload.password),
         role=payload.role.value,
         clinic_id=payload.clinic_id,
     )
@@ -337,7 +341,7 @@ async def login(
     # on `user is None`, closing a login-timing side-channel that would
     # otherwise let an attacker enumerate valid registered emails.
     hashed_for_verification = user.hashed_password if user is not None else DUMMY_PASSWORD_HASH
-    password_ok = verify_password(payload.password, hashed_for_verification)
+    password_ok = await verify_password_async(payload.password, hashed_for_verification)
 
     if user is None or not password_ok:
         await write_audit(
