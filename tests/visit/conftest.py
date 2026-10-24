@@ -29,6 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from libs.config import shared_settings
+from services.scheduling.domain.enums import AppointmentStatus
 from tests.conftest import unique_email
 from tests.scheduling.conftest import cleanup_scheduling_rows, seed_slot
 from tests.scheduling.seed import PASSWORD, World, auth, seed_bookable_world
@@ -60,18 +61,27 @@ async def confirmed_appointment(
     provider_id: uuid.UUID | None = None,
     with_billing: bool = False,
     mesh: httpx.AsyncClient | None = None,
+    start: datetime | None = None,
 ) -> str:
     """Insert (and COMMIT) one appointment in `status` on a fresh slot of the
     world's provider (or `provider_id`, which must be in the world's clinic);
-    return its id. Active appointments get a `booked` slot.
+    return its id. Appointments in any slot-holding status
+    (`AppointmentStatus.ACTIVE`: pending, confirmed, checked_in, completed,
+    no_show) get a `booked` slot, mirroring reality.
+
+    `start` (plan 02.1-01) overrides the slot start (default: `next_slot_start()`,
+    far beyond the generated slots) so window tests can seed a slot starting
+    "soon" or already over; the caller keeps it unique per provider (a start
+    near now may overlap the world's generated slots, so such tests use a
+    provider id of their own).
 
     `with_billing=True` (plan 02-11) also creates its `verified` (self-pay)
     billing record through Billing's internal pre-check over `mesh`, with a
     service token minted for Scheduling (the only allowed caller)."""
     world = vw.world
     provider_id = provider_id or world.provider_id
-    start = vw.next_slot_start()
-    slot_status = "booked" if status in ("pending", "confirmed") else "available"
+    start = start if start is not None else vw.next_slot_start()
+    slot_status = "booked" if status in AppointmentStatus.ACTIVE else "available"
     slot_id = await seed_slot(
         vw.engine,
         provider_id=provider_id,

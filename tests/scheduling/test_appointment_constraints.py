@@ -187,14 +187,30 @@ async def test_one_provider_cannot_have_two_slots_with_the_same_start(
 async def test_appointment_status_outside_vocabulary_is_rejected(
     scheduling_db_session: AsyncSession,
 ) -> None:
-    """There is no `completed` appointment status (it would free the slot)."""
+    """Only the seven statuses of the state machine are valid (M1); `completed`
+    is one of them now, so the invalid examples are values outside the set."""
     db = scheduling_db_session
     slot_id = await _slot(db)
-    for bad in ("completed", "booked", "PENDING"):
+    for bad in ("bogus", "booked", "PENDING"):
         with pytest.raises(IntegrityError) as excinfo:
             async with db.begin_nested():
                 await _appointment(db, slot_id=slot_id, status=bad)
         assert "ck_appointments_status_valid" in str(excinfo.value)
+
+
+async def test_checked_in_completed_and_no_show_pass_the_status_check_and_keep_the_slot(
+    scheduling_db_session: AsyncSession,
+) -> None:
+    """`completed` and `no_show` (and `checked_in`) are valid statuses that stay
+    inside the active-slot predicate, so each holds its slot (plan 02.1-01)."""
+    db = scheduling_db_session
+    for status in ("checked_in", "completed", "no_show"):
+        slot_id = await _slot(db)
+        await _appointment(db, slot_id=slot_id, status=status)
+        with pytest.raises(IntegrityError) as excinfo:
+            async with db.begin_nested():
+                await _appointment(db, slot_id=slot_id, status="pending")
+        assert "uq_appointments_active_slot" in str(excinfo.value)
 
 
 async def test_appointment_must_reference_an_existing_slot(scheduling_db_session: AsyncSession) -> None:

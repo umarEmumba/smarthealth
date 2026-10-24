@@ -798,3 +798,32 @@ async def test_check_in_then_complete_routes_are_idempotent_and_audited_once(
     assert await audit_count(appointment_id, "appointment.check_in") == 1
     assert await audit_count(appointment_id, "appointment.complete") == 1
     assert await slot_state(engine, appt.slot_id) == "booked"
+
+
+# --- the shared Visit-suite helper seeds any state at any time --------------------------------
+
+
+@pytest.mark.parametrize("status", ["confirmed", *NEW_STATES])
+async def test_confirmed_appointment_helper_accepts_start_and_books_the_slot_for_every_active_state(
+    state_world: VisitWorld, committed_scheduling_engine: AsyncEngine, status: str
+) -> None:
+    engine = committed_scheduling_engine
+    provider_id = uuid.uuid4()  # its own provider: a start near now must not overlap generated slots
+    state_world.provider_ids.append(provider_id)
+    start = _now() + timedelta(minutes=20)
+
+    appointment_id = await confirmed_appointment(
+        state_world, status=status, provider_id=provider_id, start=start
+    )
+
+    async with engine.connect() as conn:
+        r = (
+            await conn.execute(
+                text(
+                    "SELECT a.status, a.slot_start, s.status AS slot_status "
+                    "FROM appointments a JOIN provider_slots s ON s.id = a.slot_id WHERE a.id = :a"
+                ),
+                {"a": appointment_id},
+            )
+        ).one()
+    assert (r.status, r.slot_start, r.slot_status) == (status, start, "booked")
