@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, String, text
+from sqlalchemy import CheckConstraint, DateTime, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -67,4 +67,11 @@ class User(IdentityBase):
             "role IN ('patient','provider','front_desk','admin')",
             name="ck_users_role_valid",
         ),
+        # C3: email identity is case-insensitive. The plain UNIQUE on `email` above is
+        # case-sensitive (redundant now, harmless; removing it is a separate concern);
+        # this expression index is the real guard, and lookups use lower(email) to hit it.
+        Index("uq_users_email_lower", func.lower(email), unique=True),
+        # Created by identity_0001 but never declared on the model, which left
+        # `alembic check` reporting drift; declared here so model and migrations agree.
+        Index("ix_users_clinic_id", "clinic_id"),
     )

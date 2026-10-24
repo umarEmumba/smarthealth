@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo import AsyncMongoClient
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -149,7 +149,7 @@ async def register(
             actor_role="anonymous",
         )
 
-    existing = await db.execute(select(User).where(User.email == payload.email))
+    existing = await db.execute(select(User).where(func.lower(User.email) == payload.email))
     if existing.scalar_one_or_none() is not None:
         await write_audit(
             mongo,
@@ -249,7 +249,7 @@ async def create_staff_user(
             actor_role=admin.role.value,
         )
 
-    existing = await db.execute(select(User).where(User.email == payload.email))
+    existing = await db.execute(select(User).where(func.lower(User.email) == payload.email))
     if existing.scalar_one_or_none() is not None:
         await write_audit(
             mongo,
@@ -333,7 +333,7 @@ async def login(
     db: AsyncSession = Depends(get_db),
     mongo: AsyncMongoClient = Depends(get_mongo),
 ) -> LoginResponse:
-    result = await db.execute(select(User).where(User.email == payload.email))
+    result = await db.execute(select(User).where(func.lower(User.email) == payload.email))
     user = result.scalar_one_or_none()
 
     # WR-03: always pay bcrypt's cost, even when the user doesn't exist —

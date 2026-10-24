@@ -46,7 +46,7 @@ import asyncio
 import os
 import sys
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Repo root on sys.path so this script works whether invoked as
@@ -61,6 +61,7 @@ from libs.auth.roles import Role  # noqa: E402
 from libs.db.mongo import get_mongo_client  # noqa: E402
 from libs.observability.logging import get_logger  # noqa: E402
 from services.identity.config import settings  # noqa: E402
+from services.identity.domain.schemas import normalize_email  # noqa: E402
 from services.identity.repository.models import User  # noqa: E402
 from services.identity.security.passwords import hash_password  # noqa: E402
 
@@ -80,6 +81,8 @@ async def bootstrap_admin(*, email: str, password: str) -> str:
     short-lived engine/session so a re-run always sees the previous run's
     committed state.
     """
+    # C3: same canonical form the API stores (strip + lowercase).
+    email = str(normalize_email(email))
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -102,7 +105,7 @@ async def bootstrap_admin(*, email: str, password: str) -> str:
             # (e.g. a patient self-registered with this email first) —
             # surfacing a clear failure is safer than silently creating a
             # second row that violates the `users.email` unique constraint.
-            existing_email = await session.execute(select(User).where(User.email == email))
+            existing_email = await session.execute(select(User).where(func.lower(User.email) == email))
             if existing_email.scalar_one_or_none() is not None:
                 raise RuntimeError(
                     f"BOOTSTRAP_ADMIN_EMAIL {email!r} is already registered to a "

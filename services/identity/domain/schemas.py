@@ -11,9 +11,21 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from libs.auth.roles import Role
+
+
+def normalize_email(value: object) -> object:
+    """Canonical email form: surrounding whitespace stripped, lowercased (C3).
+
+    Runs BEFORE `EmailStr` validation so every code path (register, staff create,
+    login) sees one form and `Alice@x` / `alice@x` are one account. Non-strings are
+    passed through untouched for pydantic to reject.
+    """
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
 
 
 class RegisterRequest(BaseModel):
@@ -30,6 +42,11 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8)
     clinic_id: uuid.UUID | None = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, value: object) -> object:
+        return normalize_email(value)
+
 
 class StaffRegisterRequest(BaseModel):
     """Admin-only staff/provider/admin account creation payload (CR-01).
@@ -45,10 +62,20 @@ class StaffRegisterRequest(BaseModel):
     role: Role
     clinic_id: uuid.UUID | None = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, value: object) -> object:
+        return normalize_email(value)
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, value: object) -> object:
+        return normalize_email(value)
 
 
 class RefreshRequest(BaseModel):
