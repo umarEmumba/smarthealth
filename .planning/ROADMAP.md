@@ -14,6 +14,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 - [x] **Phase 1: Foundation + Core Services** - Infra skeleton, identity/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, and dashboard v1 (completed 2026-09-09)
 - [x] **Phase 1.1: Microservice Re-architecture** (INSERTED) - Split the Phase 1 monolith into independently deployable services with their own databases, an API gateway, and RS256/JWKS token verification (week-1 mentor feedback) (completed 2026-10-12)
 - [ ] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check
+- [ ] **Phase 2.1: Week 1-2 mentor review remediation** (INSERTED) - Appointment state machine and check-in window, provider schedule-change propagation, post-commit saga safety, reconcilers, Week 1 carry-overs, quantified NFRs and a load test (week 1-2 mentor feedback)
 - [ ] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout
 
 ## Phase Details
@@ -183,6 +184,50 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 - [x] 02-12-PLAN.md — Compose wiring for Billing/Visit APIs and both workers, real-stack e2e flows, one-command concurrent-booking demo, docs + dashboard v3, requirement-coverage gate, human dashboard check (all 15)
 
+### Phase 02.1: Week 1-2 mentor review remediation (INSERTED)
+
+**Goal:** Close every gap raised in the mentor's Week 1 + Week 2 review before Phase 3 starts, without losing the praised design (database-enforced races, disciplined saga, layered idempotency, `workflow.patched` plus replay tests): the appointment state machine is complete (checked_in, completed, no_show, check-in window, no cancel or reschedule after check-in); provider schedule changes withdraw future slots and flag affected bookings; failures after commit never undo a committed booking; stuck states are reconciled and billing keeps retrying; the Week 1 carry-overs are fixed (token rotation and logout, bcrypt off the event loop, case-insensitive email, self-views, pagination); and the PRD carries quantified NFRs with a runnable load test.
+**Requirements**: VISIT-01, VISIT-02, VISIT-03, VISIT-04, SCHED-01, SCHED-02, SCHED-05, SCHED-06, SCHED-07, SCHED-08, BILL-02, IAM-01, IAM-02, IAM-03, PPL-03, PPL-04, ORG-01, DASH-02, DASH-04 (re-hardened), plus mentor-review items M1, M2, S3, S4, S5, S6, S7, C1, C2, C3, C4, C5, D1, D2; this phase also defines NFR-01..NFR-08 in REQUIREMENTS.md (targets only; measuring them is Phase 3)
+**Depends on:** Phase 2
+**Success Criteria** (what must be TRUE):
+
+  1. An appointment moves confirmed -> checked_in (inside a time window around the slot, decided by the database clock) -> completed, and a no-show becomes no_show; once checked in, cancel and reschedule are refused at the API and in the workflows, and the slot stays reserved (M1).
+  2. Editing or deactivating an availability template, or deactivating a provider, withdraws the affected future slots and flags already-booked appointments through a durable, replay-recorded schedule-change workflow (M2).
+  3. A compensation never undoes a confirmed booking, an audit failure after commit is non-fatal, the booking notification is requested only after confirm, past slots cannot be booked, and a freed slot is offered to the waitlist again after a direct booking fails (S3, S5, S6, S7).
+  4. Reconcilers settle pending appointments whose workflow died, waitlist entries stuck in matched, orphaned billing and unsettled visits, and visit billing keeps retrying instead of being skipped (S4).
+  5. Refresh tokens are single-use and logout kills them, bcrypt runs off the event loop, emails are case-insensitive, patients and providers can read their own data, and the three list endpoints are paginated (C1..C5).
+  6. The PRD has quantified NFRs (throughput, latency, availability, durability, contention) with a single numeric source, and a k6 load test and seed script exist (D1, D2).
+
+**Plans:** 13 plans (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
+
+**Wave 1**
+
+- [ ] 02.1-01-appointment-state-machine-PLAN.md — TRACER: checked_in/completed/no_show states, widened slot constraints, DB-clock check-in window, internal check-in/complete routes, cancel/reschedule refusal (M1)
+- [ ] 02.1-02-identity-carryovers-PLAN.md — single-use rotated refresh tokens and logout revocation, bcrypt off the event loop, case-insensitive email with a safe migration (C1, C2, C3)
+- [ ] 02.1-03-list-pagination-PLAN.md — limit/offset, stable order and X-Total-Count on patient, provider and clinic lists (C5)
+- [ ] 02.1-04-nfr-and-load-test-PLAN.md — NFR-01..08 in the PRD, docs/nfr.md, single-source nfr.json, load-test seed script and k6 profiles (D1, D2)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02.1-05-provider-schedule-change-feed-PLAN.md — Provider schedule-change event table written atomically with each change, plus the internal feed and acknowledgement (M2)
+- [ ] 02.1-06-visit-checkin-integration-PLAN.md — Visit check-in moves the appointment to checked_in first, window refusals, retry convergence (M1)
+- [ ] 02.1-07-booking-saga-reliability-PLAN.md — patched BookingWorkflow (notify after confirm, waitlist re-offer), state-guarded compensations, non-fatal post-commit audits, past-slot rejection (S3, S5, S6, S7)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02.1-08-schedule-change-workflow-PLAN.md — poller Schedule and ScheduleChangeWorkflow withdraw stale slots, flag booked appointments, second pass for held slots (M2)
+- [ ] 02.1-09-visit-completion-sync-PLAN.md — patched fourth branch completes the appointment, settlement markers in visit_db (M1)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 02.1-10-visit-billing-reconciler-PLAN.md — open-ended visit billing retry behind workflow.patched and a visit reconciler Schedule (S4)
+- [ ] 02.1-11-scheduling-reconciler-PLAN.md — reconciler for dead pending bookings, stuck waitlist entries, orphaned billing and no-shows; reaper offers freed slots to the waitlist (S4, S5, M1)
+- [ ] 02.1-12-self-service-views-PLAN.md — GET /api/patients/me and provider read access to own appointments (C4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 02.1-13-docs-closeout-PLAN.md — README, architecture doc, ERD, dashboard and decision log updated; review-item traceability test; full non-e2e regression (all items)
+
 ### Phase 3: Event-Driven System + Observability
 
 **Goal**: Every state change reliably becomes a durable, replayable event with no dual-write gaps, background jobs run independently of user-facing flows with guaranteed at-least-once delivery and no silent loss, operators can see the five core operational metrics derived from the event stream, and every critical flow is traceable end-to-end and observable via metrics/logs/dashboards — with the Architecture & Decision dashboard fully closed out.
@@ -207,4 +252,5 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
+| 2.1. Week 1-2 mentor review remediation | 0/13 | Planned | - |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |
