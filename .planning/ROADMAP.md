@@ -198,11 +198,11 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Refresh tokens are single-use and logout kills them, bcrypt runs off the event loop, emails are case-insensitive, patients and providers can read their own data, and the three list endpoints are paginated (C1..C5).
   6. The PRD has quantified NFRs (throughput, latency, availability, durability, contention) with a single numeric source, and a k6 load test and seed script exist (D1, D2).
 
-**Plans:** 13 plans (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
+**Plans:** 1/13 plans executed (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
 
 **Wave 1**
 
-- [ ] 02.1-01-appointment-state-machine-PLAN.md — TRACER: checked_in/completed/no_show states, widened slot constraints, DB-clock check-in window, internal check-in/complete routes, cancel/reschedule refusal (M1)
+- [x] 02.1-01-appointment-state-machine-PLAN.md — TRACER: checked_in/completed/no_show states, widened slot constraints, DB-clock check-in window, internal check-in/complete routes, cancel/reschedule refusal (M1)
 - [ ] 02.1-02-identity-carryovers-PLAN.md — single-use rotated refresh tokens and logout revocation, bcrypt off the event loop, case-insensitive email with a safe migration (C1, C2, C3)
 - [ ] 02.1-03-list-pagination-PLAN.md — limit/offset, stable order and X-Total-Count on patient, provider and clinic lists (C5)
 - [ ] 02.1-04-nfr-and-load-test-PLAN.md — NFR-01..08 in the PRD, docs/nfr.md, single-source nfr.json, load-test seed script and k6 profiles (D1, D2)
@@ -252,5 +252,5 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
-| 2.1. Week 1-2 mentor review remediation | 0/13 | Planned | - |
+| 2.1. Week 1-2 mentor review remediation | 1/13 | In Progress|  |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

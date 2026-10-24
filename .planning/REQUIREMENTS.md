@@ -33,7 +33,7 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 - [ ] **SCHED-02**: Booking runs as a durable Temporal workflow (validate eligibility → reserve slot → prevent conflicts → schedule notifications → billing pre-check → confirm); appointment is marked confirmed only after successful processing
 - [ ] **SCHED-03**: Concurrent booking attempts for the same slot cannot double-book (enforced at the data layer, not only in application code)
 - [ ] **SCHED-04**: Booking is idempotent — a retried/duplicate booking request does not create a second appointment
-- [ ] **SCHED-05**: Patient/front-desk can reschedule an appointment, releasing the old slot and reserving the new one atomically
+- [x] **SCHED-05**: Patient/front-desk can reschedule an appointment, releasing the old slot and reserving the new one atomically
 - [ ] **SCHED-06**: Patient/front-desk can cancel an appointment, which releases the slot and triggers billing/refund updates
 - [ ] **SCHED-07**: On a freed slot, the waitlist advances and matches the next appropriate patient
 - [ ] **SCHED-08**: A partial failure mid-booking leaves no corrupted state (compensation/rollback of forward steps)
@@ -134,7 +134,7 @@ Explicitly excluded to prevent scope creep.
 | SCHED-02 | Phase 2 | Pending |
 | SCHED-03 | Phase 2 | Pending |
 | SCHED-04 | Phase 2 | Pending |
-| SCHED-05 | Phase 2 | Pending |
+| SCHED-05 | Phase 2 | Complete |
 | SCHED-06 | Phase 2 | Pending |
 | SCHED-07 | Phase 2 | Pending |
 | SCHED-08 | Phase 2 | Pending |
