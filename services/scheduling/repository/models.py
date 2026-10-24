@@ -50,10 +50,18 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import ExcludeConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from services.scheduling.domain.enums import AppointmentStatus
+
+
+def _status_in(statuses: tuple[str, ...]) -> str:
+    return "status IN (" + ",".join(f"'{s}'" for s in statuses) + ")"
+
 
 # Predicate shared by the active-slot unique index and the patient-overlap
-# exclusion constraint: the appointment statuses that occupy a slot.
-_ACTIVE_PREDICATE = "status IN ('pending','confirmed')"
+# exclusion constraint: the appointment statuses that occupy a slot. Built from
+# `AppointmentStatus.ACTIVE` (single source) so the model equals migration
+# `scheduling_0004` (M1: checked_in, completed and no_show keep their slot).
+_ACTIVE_PREDICATE = _status_in(AppointmentStatus.ACTIVE)
 
 
 class SchedulingBase(DeclarativeBase):
@@ -159,7 +167,7 @@ class Appointment(SchedulingBase):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending','confirmed','cancelled','failed')",
+            _status_in(AppointmentStatus.ALL),
             name="ck_appointments_status_valid",
         ),
         # D-02: at most one active appointment per slot.

@@ -598,3 +598,89 @@ async def record_history_note(
         actor=actor,
     )
     return True
+
+
+# --- plan 02.1-01: check-in, completion and no-show (M1) ------------------------
+
+CheckInOutcome = Literal[
+    "checked_in", "already", "not_confirmed", "too_early", "too_late", "not_found"
+]
+
+
+async def check_in_appointment(
+    db: AsyncSession,
+    *,
+    appointment_id: uuid.UUID,
+    actor: str,
+    opens_before_minutes: int,
+    closes_after_end_minutes: int,
+) -> CheckInOutcome:
+    """Appointment `confirmed` -> `checked_in`, only inside the check-in window
+    (opens `opens_before_minutes` before `slot_start`, closes
+    `closes_after_end_minutes` after `slot_end`), plus one history row.
+
+    The window is judged by the DATABASE clock (`now()` in the locking SELECT),
+    never the application's, so a skewed API host cannot widen it. The row is
+    locked first and the UPDATE is conditional on `status = 'confirmed'`, so
+    concurrent check-ins produce exactly one transition (the rest see
+    `already`). The slot stays `booked`: a checked-in appointment keeps it.
+
+    * "checked_in"    - done now.
+    * "already"       - already checked in (a repeat: no second history row).
+    * "not_confirmed" - any other state (pending, cancelled, completed, ...).
+    * "too_early" / "too_late" - confirmed but outside the window; nothing written.
+    * "not_found"     - no such appointment.
+
+    Flushes only; the caller commits.
+    """
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT status,
+                       (now() < slot_start - make_interval(mins => :before)) AS too_early,
+                       (now() > slot_end + make_interval(mins => :after)) AS too_late
+                  FROM appointments
+                 WHERE id = :a
+                   FOR UPDATE
+                """
+            ),
+            {
+                "a": appointment_id,
+                "before": opens_before_minutes,
+                "after": closes_after_end_minutes,
+            },
+        )
+    ).one_or_none()
+    if row is None:
+        return "not_found"
+    if row.status == AppointmentStatus.CHECKED_IN:
+        return "already"
+    if row.status != AppointmentStatus.CONFIRMED:
+        return "not_confirmed"
+    if row.too_early:
+        return "too_early"
+    if row.too_late:
+        return "too_late"
+
+    moved = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET status = 'checked_in', version = version + 1, updated_at = now()
+             WHERE id = :a AND status = 'confirmed'
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id},
+    )
+    if moved is None:  # pragma: no cover - the row is locked as confirmed above
+        return "not_confirmed"
+    await append_status_history(
+        db,
+        appointment_id=appointment_id,
+        from_status=AppointmentStatus.CONFIRMED,
+        to_status=AppointmentStatus.CHECKED_IN,
+        actor=actor,
+    )
+    return "checked_in"

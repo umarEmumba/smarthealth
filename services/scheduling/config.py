@@ -65,5 +65,21 @@ class SchedulingSettings(SharedSettings):
         default=24, ge=0, validation_alias="SCHEDULING_CANCEL_CUTOFF_HOURS"
     )
 
+    # M1 (plan 02.1-01): check-in is accepted only inside a window around the
+    # slot, judged by the DATABASE clock. It opens `checkin_opens_before_minutes`
+    # before `slot_start` and closes `checkin_closes_after_end_minutes` after
+    # `slot_end`. Read at request time, never cached at import.
+    checkin_opens_before_minutes: int = Field(
+        default=60, ge=0, validation_alias="SCHEDULING_CHECKIN_OPENS_BEFORE_MINUTES"
+    )
+    checkin_closes_after_end_minutes: int = Field(
+        default=0, ge=0, validation_alias="SCHEDULING_CHECKIN_CLOSES_AFTER_END_MINUTES"
+    )
+    # M1: a confirmed appointment becomes `no_show` only once `slot_end` plus
+    # this grace has passed (the sweep lands in plan 02.1-11).
+    no_show_grace_minutes: int = Field(
+        default=30, ge=0, validation_alias="SCHEDULING_NO_SHOW_GRACE_MINUTES"
+    )
+
 
 settings = SchedulingSettings()

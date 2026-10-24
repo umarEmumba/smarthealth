@@ -23,28 +23,53 @@ class SlotStatus(str, Enum):
 
 
 class AppointmentStatus:
-    """String constants for `appointments.status` (D-02, D-09).
+    """String constants for `appointments.status` (D-02, D-09; M1).
 
     Deliberately a plain class of `str` attributes, NOT a `(str, Enum)`: these
     values travel through Temporal workflow/activity dataclasses in plan 02-06,
     and Temporal's default JSON converter round-trips a `(str, Enum)` field as
     a list of characters (research Pitfall 1). Plain strings round-trip intact.
 
-    There is intentionally no `completed` status: the active-slot unique index
-    covers `pending`/`confirmed` only, so a status outside that predicate would
-    free the slot for rebooking (research Open Question 4). Visit completion is
-    tracked by the Visit service, not here.
+    Lifecycle (M1, plan 02.1-01):
+
+        pending   -> confirmed | failed
+        confirmed -> checked_in | no_show | cancelled
+        checked_in -> completed
+
+    Phase 2 kept `completed` out of the vocabulary because the active-slot
+    unique index covered `pending`/`confirmed` only, so a status outside that
+    predicate would free the slot for rebooking (research Open Question 4).
+    That is now answered by widening the predicate: `ACTIVE` lists every status
+    that occupies a slot, so a checked_in, completed or no_show appointment
+    keeps its slot reserved forever, and cancel/reschedule (which act only on
+    `confirmed`) can never free it. `checked_in` and `completed` are reached
+    only through Scheduling's own conditional transitions (Visit calls the
+    internal routes; it never writes Scheduling's table).
     """
 
     PENDING = "pending"
     CONFIRMED = "confirmed"
+    CHECKED_IN = "checked_in"
+    COMPLETED = "completed"
+    NO_SHOW = "no_show"
     CANCELLED = "cancelled"
     FAILED = "failed"
 
-    # The statuses that hold a slot (the `uq_appointments_active_slot` and
+    # Every status that holds a slot (the `uq_appointments_active_slot` and
     # `ex_appointments_patient_no_overlap` predicates).
-    ACTIVE = ("pending", "confirmed")
-    ALL = ("pending", "confirmed", "cancelled", "failed")
+    ACTIVE = ("pending", "confirmed", "checked_in", "completed", "no_show")
+    # Statuses past the booking saga: the booking is real. A compensation or a
+    # sweeper must never treat these as an in-flight booking.
+    COMMITTED = ("confirmed", "checked_in", "completed", "no_show")
+    ALL = (
+        "pending",
+        "confirmed",
+        "checked_in",
+        "completed",
+        "no_show",
+        "cancelled",
+        "failed",
+    )
 
 
 class FailureReason:
