@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 2
-current_phase_name: Scheduling + Service Workflow
-status: executed-verification-pending
-stopped_at: Phase 2 plans 12/12 executed; verification (full regression + deferred tests + human dashboard check) pending by user request
-last_updated: "2026-10-13T15:30:00.000Z"
-last_activity: 2026-10-13
-last_activity_desc: 02-12 executed (Compose wiring, real-stack e2e, demo, docs, dashboard v3)
-state_head: ff24916b05bb7b4b1f4a9bbf91640b61ece02534
+current_phase: "02.1"
+current_phase_name: Week 1-2 mentor review remediation
+status: executing
+stopped_at: Completed 02.1-02-PLAN.md
+last_updated: "2026-10-24T19:32:08.568Z"
+last_activity: 2026-10-24
+last_activity_desc: Phase 02.1 execution started
+state_head: b2733918a4167886420facab71b9c1cd798d886a
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 1
-  total_plans: 29
-  completed_plans: 29
-  percent: 25
+  total_plans: 42
+  completed_plans: 31
+  percent: 20
 ---
 
 # Project State
@@ -23,20 +23,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-09)
 
 **Core value:** Booking, updating, and completing an appointment is reliable and consistent under load — partial failures never corrupt scheduling state, and every operational data model stays accurate, durable, and queryable.
-**Current focus:** Phase 2 — Scheduling + Service Workflow (all 12 plans executed; verification pending)
+**Current focus:** Phase 02.1 — Week 1-2 mentor review remediation
 
 ## Current Position
 
-Phase: 2 — Scheduling + Service Workflow
-Plan: 12 of 12 executed (02-01 .. 02-12, each with a SUMMARY)
-Status: Executed — NOT complete. Verification pending by user request: full non-e2e regression
+Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
+Plan: 3 of 13
+Status: Ready to execute
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
 human visual check of the dashboard/docs.
-Last activity: 2026-10-13 — 02-12 executed: Compose runs billing/visit + both workers healthy,
+Last activity: 2026-10-24 — Phase 02.1 execution started
 real-stack e2e 7 passed, demo 1 winner of 50, docs + dashboard v3
 
-Progress: [███░░░░░░░] 25%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
@@ -81,6 +81,8 @@ Progress: [███░░░░░░░] 25%
 | Phase 01.1 P08 | 75min | 2 tasks | 30 files |
 | Phase 01.1 P09 | 27 min | 2 tasks | 22 files |
 | Phase 01.1 P10 | 66min | 2 tasks | 7 files |
+| Phase 02.1 P01 | 19 min | 3 tasks | 10 files |
+| Phase 02.1 P02 | 20min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -140,6 +142,11 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-12: e2e/demo runs need the gateway auth budget raised (GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000) as well as the default budget
 - [Phase 02]: 02-12: booking saga order as built is validate -> reserve hold -> billing pre-check -> notification intent (best-effort) -> confirm (D-09 vs SCHED-02 order note recorded in docs and dashboard)
 - [Phase 01.1]: 01.1-10: Documentation lists unverified items (real-socket outages, cold start, Jaeger UI view, key rotation, bootstrap creation branch) beside the claims they qualify; nothing is described as production-hardened
+- [Phase 02.1]: 02.1-01: appointment states checked_in/completed/no_show hold their slot via widened uq_appointments_active_slot and ex_appointments_patient_no_overlap predicates (resolves the Phase 2 'completed frees the slot' question)
+- [Phase 02.1]: 02.1-01: check-in window opens 60 min before slot_start and closes at slot_end (DB clock); no-show grace 30 min; no_show only via the 02.1-11 sweep; internal check-in/complete routes are Visit-service-token only
+- [Phase 02.1]: Refresh tokens are single-use via atomic Redis SET NX EX claim; logout revokes paired refresh jti through access-token rjti claim
+- [Phase 02.1]: bcrypt runs on a bounded dedicated thread pool (IDENTITY_BCRYPT_THREADS); prepared RSA signing key cached to keep the loop free
+- [Phase 02.1]: Email identity is case-insensitive via normalizer, lower(email) lookups and uq_users_email_lower; identity_0002 refuses over duplicates reporting counts only and does not rewrite rows
 
 ### Pending Todos
 
@@ -160,6 +167,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 01.1 inserted after Phase 1: Microservice Re-architecture — week-1 mentor review required true microservices; Phase 1 monolith to be split (URGENT)
+- Phase 02.1 inserted after Phase 2: Week 1-2 mentor review remediation (see phase FEEDBACK.md) (URGENT)
 
 ## Deferred Items
 
@@ -172,6 +180,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-13T15:30:00.000Z
-Stopped at: Phase 2 plans 12/12 executed; verification pending (full regression, deferred tests, human dashboard check)
-Resume file: .planning/phases/02-scheduling-service-workflow/02-12-SUMMARY.md
+Last session: 2026-10-24T19:32:08.495Z
+Stopped at: Completed 02.1-02-PLAN.md
+Resume file: None
