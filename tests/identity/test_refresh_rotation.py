@@ -11,9 +11,19 @@ Live Postgres/Mongo/Redis; every email is synthetic and uuid-suffixed.
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
 import pytest
 from httpx import AsyncClient
+from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 
+from libs.auth.denylist import is_revoked
+from libs.config import shared_settings
+from services.identity.security.signing import _encode, create_refresh_token
 from tests.conftest import unique_email, verify_identity_token
 
 PASSWORD = "correct-horse-battery"
@@ -83,3 +93,73 @@ async def test_logout_with_a_rotated_access_token_revokes_the_current_refresh_to
     headers = {"Authorization": f"Bearer {rotated['access_token']}"}
     assert (await client.post("/api/auth/logout", headers=headers)).status_code == 204
     assert (await _refresh(client, rotated["refresh_token"])).status_code == 401
+
+
+@pytest.mark.integration
+async def test_eight_concurrent_refreshes_of_one_token_make_exactly_one_success(
+    client: AsyncClient,
+) -> None:
+    tokens = await _patient_login(client)
+    responses = await asyncio.gather(*[_refresh(client, tokens["refresh_token"]) for _ in range(8)])
+    codes = sorted(r.status_code for r in responses)
+    assert codes == [200] + [401] * 7, codes
+
+
+@pytest.mark.integration
+async def test_access_token_garbage_and_expired_tokens_are_still_401(client: AsyncClient) -> None:
+    tokens = await _patient_login(client)
+    assert (await _refresh(client, tokens["access_token"])).status_code == 401
+    assert (await _refresh(client, "not-a-jwt")).status_code == 401
+    assert (await _refresh(client, "")).status_code == 401
+
+    # The refusals above must not have consumed the real refresh token.
+    assert (await _refresh(client, tokens["refresh_token"])).status_code == 200
+
+
+@pytest.mark.integration
+async def test_refresh_for_a_vanished_user_is_401_and_does_not_burn_the_token(
+    client: AsyncClient,
+) -> None:
+    token, jti = create_refresh_token(str(uuid.uuid4()))
+    resp = await _refresh(client, token)
+    assert resp.status_code == 401
+
+    redis = Redis.from_url(shared_settings.redis_url, decode_responses=True)
+    try:
+        assert await is_revoked(jti, redis) is False
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.integration
+async def test_redis_outage_during_refresh_is_503_and_the_token_is_not_consumed(
+    client: AsyncClient,
+) -> None:
+    tokens = await _patient_login(client)
+
+    with patch(
+        "services.identity.api.auth.consume_token",
+        side_effect=RedisConnectionError("redis down"),
+    ):
+        down = await _refresh(client, tokens["refresh_token"])
+    assert down.status_code == 503
+
+    after_recovery = await _refresh(client, tokens["refresh_token"])
+    assert after_recovery.status_code == 200, after_recovery.text
+
+
+@pytest.mark.integration
+async def test_expired_refresh_token_is_401(client: AsyncClient) -> None:
+    tokens = await _patient_login(client)
+    sub = verify_identity_token(tokens["refresh_token"])["sub"]
+    now = datetime.now(timezone.utc)
+    expired = _encode(
+        {
+            "sub": sub,
+            "jti": str(uuid.uuid4()),
+            "type": "refresh",
+            "iat": now - timedelta(days=8),
+            "exp": now - timedelta(days=1),
+        }
+    )
+    assert (await _refresh(client, expired)).status_code == 401
