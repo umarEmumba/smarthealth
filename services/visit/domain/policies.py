@@ -7,7 +7,7 @@ Billing must catch up; giving up after a bounded budget (the old
 `skipped:<reason>` with the Billing record stuck at `verified` and nobody
 retrying. This preset never gives up on a transient failure:
 
-* `maximum_attempts=0` is "unlimited" and there is no `schedule_to_close_timeout`,
+* an attempt cap of zero means "unlimited" and there is no `schedule_to_close_timeout`,
   so a Billing outage of any length is waited out;
 * retries add no workflow history events (the attempt counter lives on the
   server, not in history), so an open-ended retry does not grow history;
