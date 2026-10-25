@@ -8,17 +8,16 @@ service tokens, Provider's feed), the real scheduling_db and a time-skipping
 Temporal test server running the real worker (`scheduling_worker`).
 
 The feed is global, oldest first and capped, and other tests leave pending events
-in the shared database, so every test drains it first (the same autouse fixture as
-`tests/provider/test_schedule_change_feed.py`) and every assertion is scoped to
-ids the test created.
+in the shared database, so every test drains it first (`tests/scheduling/
+schedule_feed.py`, the same idea as the autouse fixture in `tests/provider/
+test_schedule_change_feed.py`) and every assertion is scoped to ids the test created.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import replace
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -28,6 +27,7 @@ from httpx import AsyncClient
 from pymongo import AsyncMongoClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from temporalio.client import WorkflowExecutionStatus
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 
@@ -35,6 +35,7 @@ from libs.audit.writer import AUDIT_COLLECTION_NAME
 from libs.config import shared_settings
 from libs.service_client import UpstreamServiceUnavailable
 from services.scheduling import references
+from services.scheduling.activities import schedule_change as schedule_change_module
 from services.scheduling.config import settings
 from services.scheduling.domain.contracts import (
     ChangeResult,
@@ -44,8 +45,9 @@ from services.scheduling.domain.contracts import (
     reschedule_workflow_id,
     schedule_change_workflow_id,
 )
-from tests.conftest import degraded_mesh, service_base_url
+from tests.conftest import degraded_mesh
 from tests.scheduling.conftest import cleanup_scheduling_rows
+from tests.scheduling.schedule_feed import drain_feed, events_for
 from tests.scheduling.seed import World, auth, seed_bookable_world
 from tests.scheduling.test_cancel import (
     billing_moves,
@@ -62,50 +64,12 @@ from tests.temporal_fixtures import build_schedule_change_activities
 pytestmark = pytest.mark.integration
 
 
-# --- feed helpers ---------------------------------------------------------------
-
-
-async def _scheduling_headers(mesh: httpx.AsyncClient) -> dict[str, str]:
-    """A REAL Scheduling service token for `aud=provider`, minted through Identity."""
-    from libs.auth.service_tokens import ServiceTokenProvider, load_client_secret  # noqa: PLC0415
-
-    provider = ServiceTokenProvider(
-        "scheduling",
-        load_client_secret(os.environ["SCHEDULING_CLIENT_SECRET_PATH"]),
-        service_base_url("identity"),
-        http=mesh,
-    )
-    return {"Authorization": f"Bearer {await provider.get('provider')}"}
-
-
-def _feed(path: str = "/internal/schedule-changes") -> str:
-    return f"{service_base_url('provider')}{path}"
-
-
-async def pending_events(mesh: httpx.AsyncClient) -> list[dict[str, Any]]:
-    resp = await mesh.get(_feed(), params={"limit": 200}, headers=await _scheduling_headers(mesh))
-    assert resp.status_code == 200, resp.text
-    return resp.json()
+# --- feed helpers (shared: tests/scheduling/schedule_feed.py) -----------------------
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _drain_feed(mesh: httpx.AsyncClient) -> None:
-    """Acknowledge every pending event before each test (test database, no
-    consumer running): without it a fresh provider's events would sit beyond the
-    feed's page cap after a few runs."""
-    headers = await _scheduling_headers(mesh)
-    for _ in range(1000):
-        pending = await pending_events(mesh)
-        if not pending:
-            return
-        for event in pending:
-            ack = await mesh.post(_feed(f"/internal/schedule-changes/{event['id']}/ack"), headers=headers)
-            assert ack.status_code == 200, ack.text
-    raise AssertionError("feed did not drain")
-
-
-async def events_for(mesh: httpx.AsyncClient, provider_id: uuid.UUID) -> list[dict[str, Any]]:
-    return [e for e in await pending_events(mesh) if e["provider_id"] == str(provider_id)]
+    await drain_feed(mesh)
 
 
 async def await_change(env: WorkflowEnvironment, event_id: str) -> ScheduleChangeResult:
@@ -815,3 +779,196 @@ async def test_a_missing_department_or_clinic_is_reference_invalid_and_withdraws
     # With the references back, the very same event withdraws that day's slots.
     result = await apply_event(schedule_changes, event)
     assert result == ScheduleChangeResult(withdrawn=len(slots), flagged=0)
+
+
+# --- Task 3: poller recovery and isolation, end-to-end regression -------------------
+
+
+async def _deactivate_two_templates(
+    client: AsyncClient, mesh: httpx.AsyncClient, world: World
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Deactivate the templates of the last day and the day before it: two
+    events. Returns (events oldest first, last-day slots, previous-day slots)."""
+    last = await day_slots(client, world, day=world.last_day)
+    previous_day = world.last_day - timedelta(days=1)
+    previous = await day_slots(client, world, day=previous_day)
+    await deactivate_template(client, world, world.template_ids[world.last_day.weekday()])
+    await deactivate_template(client, world, world.template_ids[previous_day.weekday()])
+    events = await events_for(mesh, world.provider_id)
+    assert len(events) == 2, events
+    return events, last, previous
+
+
+async def _workflow_status(env: WorkflowEnvironment, event_id: str) -> WorkflowExecutionStatus | None:
+    handle = env.client.get_workflow_handle(schedule_change_workflow_id(event_id))
+    return (await handle.describe()).status
+
+
+async def test_a_lost_acknowledgement_is_recovered_on_the_next_poll_after_the_workflow_closed(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    booking_world: World,
+    scheduling_worker: Any,
+    schedule_changes: Any,
+    temporal_env: WorkflowEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = booking_world
+    slots = await day_slots(client, world)
+    await deactivate_template(client, world, world.template_ids[world.last_day.weekday()])
+    (event,) = await events_for(mesh, world.provider_id)
+
+    real_ack = references.ack_schedule_change
+    calls: list[str] = []
+
+    async def ack_fails_once(http: Any, tokens: Any, event_id: str) -> bool:
+        calls.append(event_id)
+        if len(calls) == 1:
+            raise UpstreamServiceUnavailable("provider")
+        return await real_ack(http, tokens, event_id)
+
+    monkeypatch.setattr(references, "ack_schedule_change", ack_fails_once)
+
+    first = await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)
+    assert first.processed == 0  # started, but NOT acknowledged: the event stays pending
+    assert [e["id"] for e in await events_for(mesh, world.provider_id)] == [event["id"]]
+    result = await await_change(temporal_env, event["id"])
+    assert result == ScheduleChangeResult(withdrawn=len(slots), flagged=0)
+    run_id = (await temporal_env.client.get_workflow_handle(schedule_change_workflow_id(event["id"])).describe()).run_id
+
+    # Next poll: the workflow already ran and closed (start_once is refused, a no-op); the event is acknowledged.
+    second = await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)
+
+    assert second.processed == 1
+    assert calls == [event["id"], event["id"]]
+    assert await events_for(mesh, world.provider_id) == []
+    handle = temporal_env.client.get_workflow_handle(schedule_change_workflow_id(event["id"]))
+    description = await handle.describe()
+    assert (description.run_id, description.status) == (run_id, WorkflowExecutionStatus.COMPLETED)
+    assert [s["status"] for s in await day_slots(client, world, status="any")] == ["cancelled"] * len(slots)
+
+
+async def test_a_lost_acknowledgement_attaches_to_the_still_running_workflow(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    booking_world: World,
+    scheduling_worker: Any,
+    schedule_changes: Any,
+    temporal_env: WorkflowEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = booking_world
+    await deactivate_template(client, world, world.template_ids[world.last_day.weekday()])
+    (event,) = await events_for(mesh, world.provider_id)
+    real_ack = references.ack_schedule_change
+    attempts: list[int] = []
+
+    async def ack_fails_once(http: Any, tokens: Any, event_id: str) -> bool:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise UpstreamServiceUnavailable("provider")
+        return await real_ack(http, tokens, event_id)
+
+    monkeypatch.setattr(references, "ack_schedule_change", ack_fails_once)
+
+    assert (await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)).processed == 0
+    handle = temporal_env.client.get_workflow_handle(schedule_change_workflow_id(event["id"]))
+    run_id = (await handle.describe()).run_id
+    assert (await handle.describe()).status == WorkflowExecutionStatus.RUNNING  # waiting on its timer
+
+    second = await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)
+
+    assert second.processed == 1
+    assert await events_for(mesh, world.provider_id) == []
+    after = await handle.describe()
+    assert (after.run_id, after.status) == (run_id, WorkflowExecutionStatus.RUNNING)  # no second run
+    await await_change(temporal_env, event["id"])  # let it finish
+
+
+async def test_one_event_whose_start_fails_does_not_stop_the_others_and_stays_pending(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    booking_world: World,
+    scheduling_worker: Any,
+    schedule_changes: Any,
+    temporal_env: WorkflowEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = booking_world
+    events, last, previous = await _deactivate_two_templates(client, mesh, world)
+    failing, healthy = events
+    real_start = schedule_change_module.start_once
+
+    async def start_fails_for_first(client_: Any, workflow: Any, arg: Any, **kwargs: Any) -> bool:
+        if kwargs["workflow_id"] == schedule_change_workflow_id(failing["id"]):
+            raise RuntimeError("temporal unavailable")
+        return await real_start(client_, workflow, arg, **kwargs)
+
+    monkeypatch.setattr(schedule_change_module, "start_once", start_fails_for_first)
+
+    polled = await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)
+
+    assert polled.processed == 1
+    # The failing event is still pending; the healthy one was started and acknowledged.
+    assert [e["id"] for e in await events_for(mesh, world.provider_id)] == [failing["id"]]
+    # The apply works by set difference over ALL of the provider's current
+    # templates, so the healthy event's run already withdrew both days' slots.
+    healthy_result = await await_change(temporal_env, healthy["id"])
+    assert healthy_result == ScheduleChangeResult(withdrawn=len(last) + len(previous), flagged=0)
+
+    # A later poll (Temporal back) picks the stuck event up; its apply finds nothing left.
+    monkeypatch.setattr(schedule_change_module, "start_once", real_start)
+    again = await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)
+    assert again.processed == 1
+    assert await events_for(mesh, world.provider_id) == []
+    assert await await_change(temporal_env, failing["id"]) == ScheduleChangeResult(withdrawn=0, flagged=0)
+
+
+async def test_a_deactivated_provider_disappears_from_search_and_a_withdrawn_slot_cannot_be_booked(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    booking_world: World,
+    scheduling_worker: Any,
+    schedule_changes: Any,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    world = booking_world
+    start, _ = world.local_day_bounds(world.first_day)
+    _, end = world.local_day_bounds(world.last_day)
+    search_from = max(start, datetime.now(timezone.utc) + timedelta(minutes=2))
+
+    async def search() -> list[dict]:
+        resp = await client.get(
+            "/api/slots",
+            params={
+                "provider_id": str(world.provider_id),
+                "start": search_from.isoformat(),
+                "end": end.isoformat(),
+            },
+            headers=auth(world.patient),
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    offered = await search()
+    assert offered, "the seeded provider offers future slots before the change"
+    target = offered[0]
+
+    resp = await client.post(f"/api/providers/{world.provider_id}/deactivate", headers=auth(world.admin))
+    assert resp.status_code == 200, resp.text
+    (event,) = await events_for(mesh, world.provider_id)
+    assert event["change_type"] == "provider_deactivated"
+    assert (await ActivityEnvironment().run(schedule_changes.poll_schedule_changes)).processed >= 1
+    result = await await_change(temporal_env, event["id"])
+    assert result.withdrawn >= len(offered)
+
+    # Search no longer returns any available slot of the provider...
+    assert await search() == []
+    # ...and a booking attempt on a withdrawn slot is refused with 409.
+    attempt = await client.post(
+        "/api/appointments",
+        json={"slot_id": target["id"], "patient_id": str(world.patient_id)},
+        headers=auth(world.front_desk) | {"Idempotency-Key": f"test-{uuid.uuid4().hex}"},
+    )
+    assert attempt.status_code == 409, attempt.text
+    assert attempt.json()["detail"] == "slot not available"
