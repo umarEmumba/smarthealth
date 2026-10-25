@@ -12,8 +12,11 @@ therefore needs the Schedule updated or deleted once.
                                 `reaper_interval_seconds` (60 s)
 * `{prefix}-pending-starter`  -> `PendingBookingStarterWorkflow` every
                                 `starter_interval_seconds` (30 s)
+* `{prefix}-schedule-change-poller` -> `ScheduleChangePollerWorkflow` every
+                                `schedule_change_poll_seconds` (15 s; plan
+                                02.1-08, M2: drains Provider's change feed)
 
-Both use `ScheduleOverlapPolicy.SKIP`: a run still in progress makes the next
+All use `ScheduleOverlapPolicy.SKIP`: a run still in progress makes the next
 one skip instead of queueing behind it. The start actions use deterministic
 workflow ids (`{prefix}-hold-reaper-run`, ...); Temporal appends the scheduled
 time to each run's id.
@@ -37,7 +40,11 @@ from temporalio.client import (
 from libs.observability.logging import get_logger
 from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.config import settings
-from services.scheduling.domain.contracts import HOLD_REAPER_WORKFLOW, PENDING_STARTER_WORKFLOW
+from services.scheduling.domain.contracts import (
+    HOLD_REAPER_WORKFLOW,
+    PENDING_STARTER_WORKFLOW,
+    SCHEDULE_CHANGE_POLLER_WORKFLOW,
+)
 
 __all__ = ["ensure_schedules"]
 
@@ -78,13 +85,32 @@ def _definitions(prefix: str) -> list[tuple[str, Schedule]]:
                 policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
             ),
         ),
+        (
+            f"{prefix}-schedule-change-poller",
+            Schedule(
+                action=ScheduleActionStartWorkflow(
+                    SCHEDULE_CHANGE_POLLER_WORKFLOW,
+                    id=f"{prefix}-schedule-change-poller-run",
+                    task_queue=SCHEDULING_TASK_QUEUE,
+                ),
+                spec=ScheduleSpec(
+                    intervals=[
+                        ScheduleIntervalSpec(
+                            every=timedelta(seconds=settings.schedule_change_poll_seconds)
+                        )
+                    ]
+                ),
+                policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
+            ),
+        ),
     ]
 
 
 async def ensure_schedules(client: Client, *, id_prefix: str = "scheduling") -> list[str]:
-    """Create the reaper and starter Schedules unless they exist.
+    """Create the reaper, starter and schedule-change poller Schedules unless
+    they exist.
 
-    Returns the ids created by THIS call (empty when both already existed).
+    Returns the ids created by THIS call (empty when all already existed).
     Other RPC errors propagate: the worker treats them as a failed start.
     """
     created: list[str] = []

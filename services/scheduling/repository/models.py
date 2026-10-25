@@ -157,6 +157,13 @@ class Appointment(SchedulingBase):
     workflow_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # M2 (plan 02.1-08, migration scheduling_0005): set once when the provider's
+    # schedule changed under a confirmed booking; staff then cancel or
+    # reschedule it (a reschedule clears both columns).
+    schedule_change_flagged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    schedule_change_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -191,6 +198,12 @@ class Appointment(SchedulingBase):
             postgresql_where=text("status = 'pending' AND workflow_started_at IS NULL"),
         ),
         Index("ix_appointments_clinic_status", "clinic_id", "status", "slot_start"),
+        Index(
+            "ix_appointments_schedule_flagged",
+            "clinic_id",
+            "slot_start",
+            postgresql_where=text("schedule_change_flagged_at IS NOT NULL"),
+        ),
     )
 
 

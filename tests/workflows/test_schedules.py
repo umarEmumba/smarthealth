@@ -44,17 +44,23 @@ async def id_prefix(compose_temporal: Client) -> AsyncIterator[str]:
     try:
         yield prefix
     finally:
-        for suffix in ("hold-reaper", "pending-starter"):
+        for suffix in ("hold-reaper", "pending-starter", "schedule-change-poller"):
             with contextlib.suppress(RPCError):
                 await compose_temporal.get_schedule_handle(f"{prefix}-{suffix}").delete()
 
 
-async def test_ensure_schedules_creates_both_with_overlap_skip_then_is_a_no_op(
+async def test_ensure_schedules_creates_all_with_overlap_skip_then_is_a_no_op(
     compose_temporal: Client, id_prefix: str
 ) -> None:
     created = await ensure_schedules(compose_temporal, id_prefix=id_prefix)
 
-    assert sorted(created) == sorted([f"{id_prefix}-hold-reaper", f"{id_prefix}-pending-starter"])
+    assert sorted(created) == sorted(
+        [
+            f"{id_prefix}-hold-reaper",
+            f"{id_prefix}-pending-starter",
+            f"{id_prefix}-schedule-change-poller",
+        ]
+    )
     expected = {
         f"{id_prefix}-hold-reaper": (
             "HoldReaperWorkflow",
@@ -65,6 +71,12 @@ async def test_ensure_schedules_creates_both_with_overlap_skip_then_is_a_no_op(
             "PendingBookingStarterWorkflow",
             f"{id_prefix}-pending-starter-run",
             timedelta(seconds=settings.starter_interval_seconds),
+        ),
+        # Plan 02.1-08 (M2): drains Provider's schedule-change feed.
+        f"{id_prefix}-schedule-change-poller": (
+            "ScheduleChangePollerWorkflow",
+            f"{id_prefix}-schedule-change-poller-run",
+            timedelta(seconds=settings.schedule_change_poll_seconds),
         ),
     }
     for schedule_id, (workflow_type, run_id, every) in expected.items():
@@ -82,4 +94,4 @@ async def test_ensure_schedules_creates_both_with_overlap_skip_then_is_a_no_op(
     listed = [
         s.id async for s in await compose_temporal.list_schedules() if s.id.startswith(id_prefix)
     ]
-    assert len(listed) <= 2  # visibility may lag; never more than the two
+    assert len(listed) <= 3  # visibility may lag; never more than the three

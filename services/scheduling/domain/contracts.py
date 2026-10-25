@@ -47,6 +47,31 @@ ACT_START_PENDING = "maintenance.start_pending_bookings"
 OUTCOME_CONFIRMED = "confirmed"
 OUTCOME_FAILED = "failed"
 
+# Schedule-change propagation (plan 02.1-08; M2). Provider writes one durable
+# event per schedule-affecting change; `ScheduleChangePollerWorkflow` (run by a
+# Temporal Schedule) drains the feed and starts one `ScheduleChangeWorkflow` per
+# event under a deterministic id. The activities live in
+# `activities/schedule_change.py`. New workflow types: no `workflow.patched` is
+# needed for them, but any later change to their command sequence is a replay
+# risk and goes through `workflow.patched` like the others.
+SCHEDULE_CHANGE_WORKFLOW = "ScheduleChangeWorkflow"
+SCHEDULE_CHANGE_POLLER_WORKFLOW = "ScheduleChangePollerWorkflow"
+ACT_APPLY_SCHEDULE_CHANGE = "schedule_change.apply"
+ACT_POLL_SCHEDULE_CHANGES = "schedule_change.poll"
+
+# Reason codes on a flagged appointment: the same vocabulary as Provider's
+# `change_type` on a schedule-change event.
+REASON_TEMPLATE_UPDATED = "template_updated"
+REASON_TEMPLATE_DEACTIVATED = "template_deactivated"
+REASON_PROVIDER_DEACTIVATED = "provider_deactivated"
+SCHEDULE_CHANGE_REASONS = (
+    REASON_TEMPLATE_UPDATED,
+    REASON_TEMPLATE_DEACTIVATED,
+    REASON_PROVIDER_DEACTIVATED,
+)
+# Notification type of the "your appointment may be affected" intent.
+NOTIFY_SCHEDULE_CHANGED = "appointment_schedule_changed"
+
 # Cancel and reschedule workflows (plan 02-08; D-13, D-14). Their activities
 # live in `activities/changes.py` and are named `change.*`. The change
 # notification is a SEPARATE activity from the booking one (`ACT_NOTIFY`), so
@@ -121,6 +146,13 @@ def booking_workflow_id(appointment_id: str) -> str:
     return f"booking-{appointment_id}"
 
 
+def schedule_change_workflow_id(event_id: str) -> str:
+    """One schedule-change workflow per Provider event (M2): a redelivered
+    event (a lost acknowledgement) attaches to, or is refused by, the same id,
+    so an event is never applied twice."""
+    return f"schedule-change-{event_id}"
+
+
 def cancel_workflow_id(appointment_id: str, version: int) -> str:
     """One cancel per appointment version (D-06 counter scheme, research
     Pattern 2): a repeat while it runs attaches, a repeat after it closed is a
@@ -170,6 +202,32 @@ class MaintenanceResult:
     # How many items one maintenance run handled (holds released, or booking
     # workflows started). A plain int: a count, never an id or a value.
     processed: int
+
+
+@dataclass
+class ScheduleChangeInput:
+    """One Provider schedule-change event (ids and a change type only)."""
+
+    event_id: str
+    provider_id: str
+    # "template_updated", "template_deactivated" or "provider_deactivated"
+    change_type: str
+    # Null for "provider_deactivated" (every slot of the provider is affected).
+    template_id: Optional[str] = None
+    # 1 = immediately, 2 = after the hold TTL (catches a booking that was in
+    # flight when the change happened).
+    pass_number: int = 1
+    # Minutes the workflow sleeps between pass 1 and pass 2: the hold TTL plus
+    # one, set by the poller from settings so the workflow never reads config.
+    second_pass_after_minutes: int = 11
+
+
+@dataclass
+class ScheduleChangeResult:
+    # Slots withdrawn and appointments flagged (counts; summed over both passes
+    # by the workflow).
+    withdrawn: int
+    flagged: int
 
 
 @dataclass

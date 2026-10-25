@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -264,3 +265,49 @@ async def withdraw_slot(db: AsyncSession, *, slot_id: uuid.UUID) -> WithdrawOutc
     if current == SlotStatus.CANCELLED.value:
         return "already"
     return "not_available"
+
+
+# --- plan 02.1-08: schedule-change propagation (M2) --------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FutureSlot:
+    """A not-yet-started slot of one provider, as the schedule-change apply
+    needs it: its key and window, its status and the clinic it belongs to."""
+
+    id: uuid.UUID
+    start_time: datetime
+    end_time: datetime
+    status: str
+    clinic_id: uuid.UUID
+
+
+async def list_future_slots(db: AsyncSession, *, provider_id: uuid.UUID) -> list[FutureSlot]:
+    """The provider's slots that start after the DATABASE's `now()` and are
+    `available`, `held` or `booked`, ordered by start. Cancelled slots are
+    excluded (nothing left to do for them). Read-only."""
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT id, start_time, end_time, status, clinic_id
+                  FROM provider_slots
+                 WHERE provider_id = :p
+                   AND start_time > now()
+                   AND status IN ('available', 'held', 'booked')
+                 ORDER BY start_time
+                """
+            ),
+            {"p": provider_id},
+        )
+    ).all()
+    return [
+        FutureSlot(
+            id=r.id,
+            start_time=r.start_time,
+            end_time=r.end_time,
+            status=r.status,
+            clinic_id=r.clinic_id,
+        )
+        for r in rows
+    ]

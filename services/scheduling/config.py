@@ -58,6 +58,12 @@ class SchedulingSettings(SharedSettings):
         default=30, gt=0, validation_alias="SCHEDULING_STARTER_GRACE_SECONDS"
     )
 
+    # M2 (plan 02.1-08): how often the schedule-change poller Schedule drains
+    # Provider's change feed. Each pending event starts one ScheduleChangeWorkflow.
+    schedule_change_poll_seconds: int = Field(
+        default=15, ge=1, validation_alias="SCHEDULING_SCHEDULE_CHANGE_POLL_SECONDS"
+    )
+
     # D-13: a cancel at least this many hours before the slot starts is
     # refunded (refund_pending -> refunded); inside it, no_refund. Staff may
     # waive the cutoff. Decided in the API request, never in the workflow.

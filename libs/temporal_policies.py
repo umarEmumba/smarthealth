@@ -60,6 +60,24 @@ NOTIFY_ACTIVITY: dict = {
     ),
 }
 
+# Maintenance-style activities (plan 02.1-08, reused by 02.1-11): idempotent
+# sweeps over durable state (the schedule-change apply, the feed poller). They
+# touch many rows or several services in one run, so the single attempt is
+# allowed longer than a saga step, and a transient outage of an owning service
+# is retried for a few minutes before the workflow fails (the next poll or the
+# reconciler then picks the work up again). Business outcomes stay non-retryable.
+MAINTENANCE_ACTIVITY: dict = {
+    "start_to_close_timeout": timedelta(seconds=60),
+    "schedule_to_close_timeout": timedelta(minutes=5),
+    "retry_policy": RetryPolicy(
+        initial_interval=timedelta(seconds=1),
+        backoff_coefficient=2.0,
+        maximum_interval=timedelta(seconds=30),
+        maximum_attempts=5,
+        non_retryable_error_types=NON_RETRYABLE,
+    ),
+}
+
 # Compensations must eventually land, so they retry far longer than forward
 # steps; each one is idempotent, so retrying is always safe.
 COMPENSATION_ACTIVITY: dict = {

@@ -32,12 +32,14 @@ from libs.internal_client import InternalNotFound, internal_request
 from services.scheduling.config import settings
 
 __all__ = [
+    "ack_schedule_change",
     "get_clinic_ref",
     "get_department_ref",
     "get_patient_by_user",
     "get_patient_ref",
     "get_provider_availability",
     "get_provider_ref",
+    "list_schedule_changes",
 ]
 
 
@@ -146,3 +148,47 @@ async def get_patient_by_user(
         base_url=settings.patient_service_url,
         path=f"/internal/patients/by-user/{user_id}?clinic_id={clinic_id}",
     )
+
+
+# --- plan 02.1-08 (M2): Provider's schedule-change feed ------------------------
+
+
+async def list_schedule_changes(
+    http: httpx.AsyncClient, tokens: ServiceTokenProvider, *, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Provider's pending (undelivered) schedule-change events, oldest first, at
+    most `limit`: `[{id, provider_id, change_type, template_id, created_at}]`.
+    Read with Scheduling's own service token for `aud=provider`, the only
+    service Provider's feed accepts. There is no cursor: an event stays in the
+    feed until `ack_schedule_change`. An unreachable owner propagates as
+    `UpstreamServiceUnavailable`."""
+    events = await _get(
+        http,
+        tokens,
+        service="provider",
+        base_url=settings.provider_service_url,
+        path=f"/internal/schedule-changes?limit={int(limit)}",
+        allow_list=True,
+    )
+    return list(events or [])
+
+
+async def ack_schedule_change(
+    http: httpx.AsyncClient, tokens: ServiceTokenProvider, event_id: str
+) -> bool:
+    """Acknowledge one event AFTER it has been processed (at-least-once). Provider
+    answers 200 for a first and for a repeated ack, so this is idempotent; False
+    only when Provider does not know the id (404). Not retried here: Temporal
+    owns the retry budget."""
+    token = await tokens.get("provider")
+    try:
+        await internal_request(
+            http,
+            "POST",
+            f"{settings.provider_service_url}/internal/schedule-changes/{event_id}/ack",
+            token=token,
+            service="provider",
+        )
+    except InternalNotFound:
+        return False
+    return True
