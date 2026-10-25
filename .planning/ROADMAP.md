@@ -198,7 +198,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Refresh tokens are single-use and logout kills them, bcrypt runs off the event loop, emails are case-insensitive, patients and providers can read their own data, and the three list endpoints are paginated (C1..C5).
   6. The PRD has quantified NFRs (throughput, latency, availability, durability, contention) with a single numeric source, and a k6 load test and seed script exist (D1, D2).
 
-**Plans:** 11/13 plans executed (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
+**Plans:** 12/13 plans executed (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
 
 **Wave 1**
 
@@ -222,7 +222,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 - [x] 02.1-10-visit-billing-reconciler-PLAN.md — open-ended visit billing retry behind workflow.patched and a visit reconciler Schedule (S4)
 - [x] 02.1-11-scheduling-reconciler-PLAN.md — reconciler for dead pending bookings, stuck waitlist entries, orphaned billing and no-shows; reaper offers freed slots to the waitlist (S4, S5, M1)
-- [ ] 02.1-12-self-service-views-PLAN.md — GET /api/patients/me and provider read access to own appointments (C4)
+- [x] 02.1-12-self-service-views-PLAN.md — GET /api/patients/me and provider read access to own appointments (C4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
@@ -252,5 +252,5 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
-| 2.1. Week 1-2 mentor review remediation | 11/13 | In Progress|  |
+| 2.1. Week 1-2 mentor review remediation | 12/13 | In Progress|  |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

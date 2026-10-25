@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
 status: executing
-stopped_at: Completed 02.1-11-PLAN.md
-last_updated: "2026-10-25T08:09:32.857Z"
+stopped_at: Completed 02.1-12-self-service-views-PLAN.md
+last_updated: "2026-10-25T08:41:08.627Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: d375dcd8706b5576de07aedb2a80144a23ae4a12
+state_head: e4aad08748824f50280d3c2c2e6350b16d58a3f2
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 42
-  completed_plans: 40
+  completed_plans: 41
   percent: 20
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
-Plan: 12 of 13
+Plan: 13 of 13
 Status: Ready to execute
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
@@ -92,6 +92,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 02.1 P09 | 41min | 3 tasks | 13 files |
 | Phase 02.1 P10 | 20min | 3 tasks | 16 files |
 | Phase 02.1 P11 | 35min | 3 tasks | 17 files |
+| Phase 02.1 P12 | 40min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -174,6 +175,8 @@ Recent decisions affecting current work:
 - [Phase 02.1]: [02.1-10] Visit reconciler is a Schedule + workflow that calls the workflow's own step bodies under visit-completed-{visit_id}; never-started visits stay with the sweeper; reconcile tests use grace 0 on fresh visits because a live reconciler shares the Compose databases
 - [Phase 02.1]: [02.1-11] Reconciler offers a reconciled booking's freed slot under waitlist-advance-booking-{appointment_id} (idempotent with 02.1-07's re-offer); after describe() shows the workflow gone the appointment is re-read before billing is voided
 - [Phase 02.1]: [02.1-11] Reconciler convergence uses no new columns: billing_void_checked history note, void-then-fail in one transaction, no-show Billing no_refund then mark_no_show; slot-then-appointment lock order matches the reaper
+- [Phase 02.1]: 02.1-12: provider appointment ownership is resolved through Provider's by-user lookup before the appointment is read, so foreign, missing and unlinked all return the identical 404; the history tie is fixed with a CASE (note after transition) rather than a column
+- [Phase 02.1]: 02.1-12: GET /api/patients/me takes identity only from the token and answers one 'patient profile not found' for every miss; provider reads are scoped by provider id, not the token's clinic claim
 
 ### Pending Todos
 
@@ -207,6 +210,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T08:09:32.801Z
-Stopped at: Completed 02.1-11-PLAN.md
+Last session: 2026-10-25T08:41:08.561Z
+Stopped at: Completed 02.1-12-self-service-views-PLAN.md
 Resume file: None
