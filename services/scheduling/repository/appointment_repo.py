@@ -23,6 +23,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.scheduling.domain.contracts import BILLING_VOID_CHECKED
 from services.scheduling.domain.enums import AppointmentStatus, SlotStatus
 from services.scheduling.domain.errors import IdempotencyKeyReused, PatientOverlap, SlotTaken
 from services.scheduling.repository.idempotency_repo import (
@@ -842,6 +843,70 @@ async def list_no_show_candidates(
         .limit(limit)
     )
     return list((await db.scalars(query)).all())
+
+
+# --- plan 02.1-11: reconciler selectors (S4) --------------------------------------
+
+
+async def list_stuck_pending(
+    db: AsyncSession, *, older_than_minutes: float, limit: int
+) -> list[Appointment]:
+    """Pending appointments whose booking workflow was started but did not
+    settle them (plan 02.1-11, S4): `status = 'pending' AND workflow_started_at
+    IS NOT NULL AND created_at < now() - older_than_minutes`, oldest first, at
+    most `limit`. A never-started workflow is the starter's job
+    (`list_unstarted_pending`). Served by `uq_appointments_active_slot` /
+    the status filter; no row lock: the reconciler re-checks under a lock."""
+    query = (
+        select(Appointment)
+        .where(
+            Appointment.status == AppointmentStatus.PENDING,
+            Appointment.workflow_started_at.is_not(None),
+            Appointment.created_at
+            < text("now() - make_interval(secs => :age)").bindparams(
+                age=float(older_than_minutes) * 60.0
+            ),
+        )
+        .order_by(Appointment.created_at, Appointment.id)
+        .limit(limit)
+    )
+    return list((await db.scalars(query)).all())
+
+
+async def list_failed_unchecked_billing(
+    db: AsyncSession, *, reasons: tuple[str, ...], within_hours: float, limit: int
+) -> list[Appointment]:
+    """Failed appointments with one of `reasons`, updated within `within_hours`,
+    that have no `billing_void_checked` history row yet (plan 02.1-11, S4): the
+    candidates for the billing orphan lookback. Oldest update first, so a row
+    does not leave the window unserved behind newer ones. NOT EXISTS on the
+    history note keeps the sweep idempotent."""
+    rows = await db.scalars(
+        select(Appointment)
+        .where(
+            Appointment.status == AppointmentStatus.FAILED,
+            Appointment.failure_reason.in_(reasons),
+            Appointment.updated_at
+            > text("now() - make_interval(secs => :age)").bindparams(
+                age=float(within_hours) * 3600.0
+            ),
+            text(
+                "NOT EXISTS (SELECT 1 FROM appointment_status_history h "
+                "WHERE h.appointment_id = appointments.id AND h.reason = :marker)"
+            ).bindparams(marker=BILLING_VOID_CHECKED),
+        )
+        .order_by(Appointment.updated_at, Appointment.id)
+        .limit(limit)
+    )
+    return list(rows.all())
+
+
+async def lock_appointment_status(db: AsyncSession, *, appointment_id: uuid.UUID) -> str | None:
+    """The appointment's status, with its row locked until the caller's
+    transaction ends (None when missing)."""
+    return await db.scalar(
+        text("SELECT status FROM appointments WHERE id = :a FOR UPDATE"), {"a": appointment_id}
+    )
 
 
 # --- plan 02.1-08: schedule-change flags (M2) -------------------------------------

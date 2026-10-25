@@ -12,8 +12,9 @@ not share a sibling folder's conftest fixtures.
                          WORKFLOWS`) with `SchedulingActivities` (yielded),
                          `AppointmentChangeActivities` (plan 02-08),
                          `WaitlistActivities` (plan 02-09) and
-                         `MaintenanceActivities` and `ScheduleChangeActivities`
-                         (plan 02.1-08) wired to
+                         `MaintenanceActivities`, `ScheduleChangeActivities`
+                         (plan 02.1-08) and `ReconcilerActivities` (plan
+                         02.1-11) wired to
                          the in-process mesh (HTTP + service-token minting), the
                          real scheduling_db and the test Mongo client. While it
                          runs, the Scheduling app's `state.temporal_client` is
@@ -99,6 +100,7 @@ async def running_scheduling_worker(
     from services.scheduling.activities.booking import SchedulingActivities  # noqa: PLC0415
     from services.scheduling.activities.changes import AppointmentChangeActivities  # noqa: PLC0415
     from services.scheduling.activities.maintenance import MaintenanceActivities  # noqa: PLC0415
+    from services.scheduling.activities.reconcile import ReconcilerActivities  # noqa: PLC0415
     from services.scheduling.activities.schedule_change import ScheduleChangeActivities  # noqa: PLC0415
     from services.scheduling.activities.waitlist import WaitlistActivities  # noqa: PLC0415
     from services.scheduling.config import settings  # noqa: PLC0415
@@ -116,6 +118,7 @@ async def running_scheduling_worker(
     maintenance = MaintenanceActivities(session_factory, client, mongo)
     waitlist = WaitlistActivities(session_factory, mongo)
     schedule_changes = ScheduleChangeActivities(session_factory, http, tokens, mongo, client)
+    reconciler = ReconcilerActivities(session_factory, client, mongo, http, tokens)
 
     app = harness_apps()["scheduling"]
     previous = getattr(app.state, "temporal_client", None)
@@ -131,6 +134,7 @@ async def running_scheduling_worker(
                 *waitlist.all(),
                 *maintenance.all(),
                 *schedule_changes.all(),
+                *reconciler.all(),
             ],
         ):
             yield activities

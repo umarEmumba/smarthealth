@@ -15,6 +15,10 @@ therefore needs the Schedule updated or deleted once.
 * `{prefix}-schedule-change-poller` -> `ScheduleChangePollerWorkflow` every
                                 `schedule_change_poll_seconds` (15 s; plan
                                 02.1-08, M2: drains Provider's change feed)
+* `{prefix}-reconciler`      -> `ReconcilerWorkflow` every
+                                `reconciler_interval_seconds` (60 s; plan
+                                02.1-11, S4: stuck pending appointments and
+                                waitlist entries, billing orphans, no-shows)
 
 All use `ScheduleOverlapPolicy.SKIP`: a run still in progress makes the next
 one skip instead of queueing behind it. The start actions use deterministic
@@ -43,6 +47,7 @@ from services.scheduling.config import settings
 from services.scheduling.domain.contracts import (
     HOLD_REAPER_WORKFLOW,
     PENDING_STARTER_WORKFLOW,
+    RECONCILER_WORKFLOW,
     SCHEDULE_CHANGE_POLLER_WORKFLOW,
 )
 
@@ -103,12 +108,30 @@ def _definitions(prefix: str) -> list[tuple[str, Schedule]]:
                 policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
             ),
         ),
+        (
+            f"{prefix}-reconciler",
+            Schedule(
+                action=ScheduleActionStartWorkflow(
+                    RECONCILER_WORKFLOW,
+                    id=f"{prefix}-reconciler-run",
+                    task_queue=SCHEDULING_TASK_QUEUE,
+                ),
+                spec=ScheduleSpec(
+                    intervals=[
+                        ScheduleIntervalSpec(
+                            every=timedelta(seconds=settings.reconciler_interval_seconds)
+                        )
+                    ]
+                ),
+                policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
+            ),
+        ),
     ]
 
 
 async def ensure_schedules(client: Client, *, id_prefix: str = "scheduling") -> list[str]:
-    """Create the reaper, starter and schedule-change poller Schedules unless
-    they exist.
+    """Create the reaper, starter, schedule-change poller and reconciler Schedules
+    unless they exist.
 
     Returns the ids created by THIS call (empty when all already existed).
     Other RPC errors propagate: the worker treats them as a failed start.

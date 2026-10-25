@@ -4,16 +4,17 @@ A separate process from the API (same image, command override in Compose,
 plan 02-12). It polls `scheduling-tq`, runs `BookingWorkflow`, the maintenance
 workflows (`HoldReaperWorkflow`, `PendingBookingStarterWorkflow`, plan 02-07),
 `ScheduleChangeWorkflow` and `ScheduleChangePollerWorkflow` (plan 02.1-08),
+`ReconcilerWorkflow` (plan 02.1-11),
 `CancelWorkflow` and `RescheduleWorkflow` (plan 02-08), `WaitlistAdvanceWorkflow`
 (plan 02-09), the `SchedulingActivities`, `AppointmentChangeActivities`,
-`WaitlistActivities`, `MaintenanceActivities` and `ScheduleChangeActivities`
-(plan 02.1-08), and authenticates every outgoing `/internal/*` call
+`WaitlistActivities`, `MaintenanceActivities`, `ScheduleChangeActivities`
+(plan 02.1-08) and `ReconcilerActivities` (plan 02.1-11), and authenticates every outgoing `/internal/*` call
 with Scheduling's aud-scoped service tokens (D-06).
 
 Start-up: logging, audit indexes, then an EAGER Temporal connection retried
 every 2 s for up to 60 s (Temporal's auto-setup can boot slower than this
 process); after that the process exits non-zero and the orchestrator restarts
-it. Then `ensure_schedules(client)` registers the reaper, starter and schedule-change poller Temporal
+it. Then `ensure_schedules(client)` registers the reaper, starter, schedule-change poller and reconciler Temporal
 Schedules (idempotent: an existing Schedule is left alone) before polling. It never runs Alembic: the API container owns migrations (research
 anti-pattern), and Compose starts the worker after the API is healthy.
 
@@ -50,6 +51,7 @@ from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.activities.booking import SchedulingActivities
 from services.scheduling.activities.changes import AppointmentChangeActivities
 from services.scheduling.activities.maintenance import MaintenanceActivities
+from services.scheduling.activities.reconcile import ReconcilerActivities
 from services.scheduling.activities.schedule_change import ScheduleChangeActivities
 from services.scheduling.activities.waitlist import WaitlistActivities
 from services.scheduling.config import settings
@@ -60,6 +62,7 @@ from services.scheduling.workflows.maintenance import (
     HoldReaperWorkflow,
     PendingBookingStarterWorkflow,
 )
+from services.scheduling.workflows.reconcile import ReconcilerWorkflow
 from services.scheduling.workflows.reschedule import RescheduleWorkflow
 from services.scheduling.workflows.schedule_change import (
     ScheduleChangePollerWorkflow,
@@ -76,6 +79,7 @@ WORKFLOWS = [
     WaitlistAdvanceWorkflow,
     ScheduleChangeWorkflow,
     ScheduleChangePollerWorkflow,
+    ReconcilerWorkflow,
 ]
 
 log = get_logger(__name__)
@@ -114,12 +118,17 @@ async def _heartbeat(stop: asyncio.Event) -> None:
 
 def build_activities(
     client: Client,
-) -> tuple[SchedulingActivities, AppointmentChangeActivities, ScheduleChangeActivities]:
+) -> tuple[
+    SchedulingActivities,
+    AppointmentChangeActivities,
+    ScheduleChangeActivities,
+    ReconcilerActivities,
+]:
     """Production wiring: scheduling_db sessions, the process-default
     timeout-bounded HTTP client, Scheduling's service tokens and Mongo, shared
-    by the booking, the cancel/reschedule (plan 02-08) and the schedule-change
-    (plan 02.1-08; needs the worker's Temporal `client` to start workflows)
-    activities."""
+    by the booking, the cancel/reschedule (plan 02-08), the schedule-change
+    (plan 02.1-08) and the reconciler (plan 02.1-11) activities; the last two
+    need the worker's Temporal `client` (to start and to check workflows)."""
     http = _get_default_client()
     tokens = ServiceTokenProvider(
         "scheduling",
@@ -133,6 +142,7 @@ def build_activities(
         SchedulingActivities(session_factory, http, tokens, mongo),
         AppointmentChangeActivities(session_factory, http, tokens, mongo),
         ScheduleChangeActivities(session_factory, http, tokens, mongo, client),
+        ReconcilerActivities(session_factory, client, mongo, http, tokens),
     )
 
 
@@ -152,7 +162,7 @@ async def main() -> int:
         return 1
 
     try:
-        activities, changes, schedule_changes = build_activities(client)
+        activities, changes, schedule_changes, reconciler = build_activities(client)
     except ServiceTokenUnavailable:
         # The secret is never logged; only the fact that it could not be read.
         log.error("worker.client_secret_unavailable")
@@ -180,6 +190,7 @@ async def main() -> int:
                 *waitlist.all(),
                 *maintenance.all(),
                 *schedule_changes.all(),
+                *reconciler.all(),
             ],
             graceful_shutdown_timeout=GRACEFUL_SHUTDOWN,
         ):

@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.scheduling.domain.enums import WaitlistStatus
@@ -172,6 +172,28 @@ async def claim_next_entry(
     )
     await db.refresh(candidate)
     return candidate
+
+
+async def list_stuck_matched(
+    db: AsyncSession, *, older_than_minutes: float, limit: int
+) -> list[WaitlistEntry]:
+    """Entries stuck `matched` (plan 02.1-11, S4): `status = 'matched' AND
+    updated_at < now() - older_than_minutes`, oldest first, at most `limit`.
+    `updated_at` is set by the claim, so the age is time since the match; the
+    reconciler resolves each through `resolve_entry` (conditional)."""
+    rows = await db.scalars(
+        select(WaitlistEntry)
+        .where(
+            WaitlistEntry.status == WaitlistStatus.MATCHED,
+            WaitlistEntry.updated_at
+            < text("now() - make_interval(secs => :age)").bindparams(
+                age=float(older_than_minutes) * 60.0
+            ),
+        )
+        .order_by(WaitlistEntry.updated_at, WaitlistEntry.id)
+        .limit(limit)
+    )
+    return list(rows.all())
 
 
 async def fail_waiting_entry(db: AsyncSession, *, entry_id: uuid.UUID, reason: str) -> bool:

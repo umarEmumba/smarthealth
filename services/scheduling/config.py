@@ -87,5 +87,29 @@ class SchedulingSettings(SharedSettings):
         default=30, ge=0, validation_alias="SCHEDULING_NO_SHOW_GRACE_MINUTES"
     )
 
+    # S4 (plan 02.1-11): the Scheduling reconciler Schedule. Every
+    # `reconciler_interval_seconds` it (a) fails `pending` appointments older
+    # than `reconcile_pending_after_minutes` whose booking workflow is gone (the
+    # hold TTL is 10 minutes, so a live saga is long finished by then), (b)
+    # resolves waitlist entries stuck `matched` for `reconcile_matched_after_minutes`,
+    # (c) voids billing for appointments failed (hold_expired / workflow_lost) in
+    # the last `reconcile_billing_lookback_hours`, and (d) marks no-shows. At most
+    # `reconcile_batch_limit` rows per list per run, oldest first.
+    reconciler_interval_seconds: int = Field(
+        default=60, gt=0, validation_alias="SCHEDULING_RECONCILER_INTERVAL_SECONDS"
+    )
+    reconcile_pending_after_minutes: int = Field(
+        default=10, ge=0, validation_alias="SCHEDULING_RECONCILE_PENDING_AFTER_MINUTES"
+    )
+    reconcile_matched_after_minutes: int = Field(
+        default=15, ge=0, validation_alias="SCHEDULING_RECONCILE_MATCHED_AFTER_MINUTES"
+    )
+    reconcile_billing_lookback_hours: int = Field(
+        default=24, gt=0, validation_alias="SCHEDULING_RECONCILE_BILLING_LOOKBACK_HOURS"
+    )
+    reconcile_batch_limit: int = Field(
+        default=50, gt=0, validation_alias="SCHEDULING_RECONCILE_BATCH_LIMIT"
+    )
+
 
 settings = SchedulingSettings()

@@ -44,7 +44,12 @@ async def id_prefix(compose_temporal: Client) -> AsyncIterator[str]:
     try:
         yield prefix
     finally:
-        for suffix in ("hold-reaper", "pending-starter", "schedule-change-poller"):
+        for suffix in (
+            "hold-reaper",
+            "pending-starter",
+            "schedule-change-poller",
+            "reconciler",
+        ):
             with contextlib.suppress(RPCError):
                 await compose_temporal.get_schedule_handle(f"{prefix}-{suffix}").delete()
 
@@ -59,6 +64,7 @@ async def test_ensure_schedules_creates_all_with_overlap_skip_then_is_a_no_op(
             f"{id_prefix}-hold-reaper",
             f"{id_prefix}-pending-starter",
             f"{id_prefix}-schedule-change-poller",
+            f"{id_prefix}-reconciler",
         ]
     )
     expected = {
@@ -78,6 +84,12 @@ async def test_ensure_schedules_creates_all_with_overlap_skip_then_is_a_no_op(
             f"{id_prefix}-schedule-change-poller-run",
             timedelta(seconds=settings.schedule_change_poll_seconds),
         ),
+        # Plan 02.1-11 (S4): stuck pending/matched rows, billing orphans, no-shows.
+        f"{id_prefix}-reconciler": (
+            "ReconcilerWorkflow",
+            f"{id_prefix}-reconciler-run",
+            timedelta(seconds=settings.reconciler_interval_seconds),
+        ),
     }
     for schedule_id, (workflow_type, run_id, every) in expected.items():
         schedule = (await compose_temporal.get_schedule_handle(schedule_id).describe()).schedule
@@ -94,4 +106,4 @@ async def test_ensure_schedules_creates_all_with_overlap_skip_then_is_a_no_op(
     listed = [
         s.id async for s in await compose_temporal.list_schedules() if s.id.startswith(id_prefix)
     ]
-    assert len(listed) <= 3  # visibility may lag; never more than the three
+    assert len(listed) <= 4  # visibility may lag; never more than the four

@@ -88,6 +88,10 @@ class FailureReason:
     SLOT_IN_PAST = "SlotInPast"
     ACTIVITY_TIMEOUT = "activity_timeout"
     ACTIVITY_FAILED = "activity_failed"
+    # S4 (plan 02.1-11): the booking workflow is gone (terminated, timed out or
+    # closed without writing a terminal state) and the appointment was still
+    # `pending`; the reconciler failed it, released its hold and voided billing.
+    WORKFLOW_LOST = "workflow_lost"
 
 
 class WaitlistStatus:

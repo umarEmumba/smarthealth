@@ -47,6 +47,18 @@ ACT_START_PENDING = "maintenance.start_pending_bookings"
 OUTCOME_CONFIRMED = "confirmed"
 OUTCOME_FAILED = "failed"
 
+# Scheduling reconciler (plan 02.1-11; S4, S5, M1). A new workflow type run by a
+# Temporal Schedule: it needs no `workflow.patched`, but any later change to its
+# command sequence does. The activities live in `activities/reconcile.py`.
+RECONCILER_WORKFLOW = "ReconcilerWorkflow"
+ACT_RECONCILE_PENDING = "reconcile.stuck_pending"
+ACT_RECONCILE_WAITLIST = "reconcile.stuck_waitlist"
+ACT_RECONCILE_NO_SHOWS = "reconcile.no_shows"
+# History note written once a billing void attempt resolved (voided, no record
+# or a terminal refusal) so the lookback never repeats it.
+BILLING_VOID_CHECKED = "billing_void_checked"
+RECONCILER_ACTOR = "system:reconciler"
+
 # Schedule-change propagation (plan 02.1-08; M2). Provider writes one durable
 # event per schedule-affecting change; `ScheduleChangePollerWorkflow` (run by a
 # Temporal Schedule) drains the feed and starts one `ScheduleChangeWorkflow` per
@@ -202,6 +214,23 @@ class MaintenanceResult:
     # How many items one maintenance run handled (holds released, or booking
     # workflows started). A plain int: a count, never an id or a value.
     processed: int
+
+
+@dataclass
+class ReconcilePendingResult:
+    # Appointments failed in this run (booking workflow gone) and billing
+    # records voided by the lookback sweep (counts only).
+    failed: int
+    billing_voids: int
+
+
+@dataclass
+class ReconcileResult:
+    # What one reconciler run did, summed by `ReconcilerWorkflow` (counts only).
+    pending: int
+    billing_voids: int
+    waitlist: int
+    no_shows: int
 
 
 @dataclass
