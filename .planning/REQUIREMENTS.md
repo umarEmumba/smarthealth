@@ -29,7 +29,7 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 
 ### Appointment Scheduling (SCHED)
 
-- [ ] **SCHED-01**: Patient/front-desk can book an appointment against an available provider slot
+- [x] **SCHED-01**: Patient/front-desk can book an appointment against an available provider slot
 - [ ] **SCHED-02**: Booking runs as a durable Temporal workflow (validate eligibility → reserve slot → prevent conflicts → schedule notifications → billing pre-check → confirm); appointment is marked confirmed only after successful processing
 - [ ] **SCHED-03**: Concurrent booking attempts for the same slot cannot double-book (enforced at the data layer, not only in application code)
 - [ ] **SCHED-04**: Booking is idempotent — a retried/duplicate booking request does not create a second appointment
@@ -163,7 +163,7 @@ Explicitly excluded to prevent scope creep.
 | OBS-04 | Phase 1 | Complete |
 | DASH-01 | Phase 1 | Complete |
 | DASH-02 | Phase 1 | Complete |
-| SCHED-01 | Phase 2 | Pending |
+| SCHED-01 | Phase 2 | Complete |
 | SCHED-02 | Phase 2 | Pending |
 | SCHED-03 | Phase 2 | Pending |
 | SCHED-04 | Phase 2 | Pending |

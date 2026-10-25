@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
 status: executing
-stopped_at: Completed 02.1-04-PLAN.md
-last_updated: "2026-10-25T05:15:28.612Z"
+stopped_at: Completed 02.1-05-PLAN.md
+last_updated: "2026-10-25T05:24:51.785Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 94a337f88990830a5df15af84556f5913ba1ddeb
+state_head: f6354c62b16f0cd2546caaebc311dedfc470fa07
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 42
-  completed_plans: 33
+  completed_plans: 34
   percent: 20
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
-Plan: 5 of 13
+Plan: 6 of 13
 Status: Ready to execute
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
@@ -85,6 +85,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 02.1 P02 | 20min | 3 tasks | 14 files |
 | Phase 02.1 P03 | 25 min | 3 tasks | 16 files |
 | Phase 02.1 P04 | 16 min | 3 tasks | 13 files |
+| Phase 02.1 P05 | 25min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -152,6 +153,7 @@ Recent decisions affecting current work:
 - [Phase 02.1]: 02.1-03: list pagination uses one libs.pagination.page_params dependency (limit 1..200 default 50, offset >= 0, 422 outside), a plain-array body, an X-Total-Count header and a stable (created_at, id) order on patient, clinic and provider lists
 - [Phase 02.1]: 02.1-04: NFR-01..08 are targets justified from an explicit demand model (50,000 requests/day, 60% in a 2h peak, 25 req/s sustained, 100 req/s burst) with one numeric source loadtest/nfr.json that the PRD table, docs/nfr.md and the k6 thresholds are tested against; measuring them is Phase 3
 - [Phase 02.1]: 02.1-04: load test is k6 from the pinned grafana/k6:1.8.2 image (no new dependency); each profile starts at its own booking-plan offset and one seed serves one run of each; the seed defaults to 5 providers so the plan holds the 21,150 entries smoke+sustained+burst need
+- [Phase 02.1]: 02.1-05: Provider schedule changes use a pull-based outbox (schedule_change_events written in the change's own transaction, drained by Scheduling over /internal/schedule-changes with an explicit ack) instead of a push or a cursor, so no event is lost when Scheduling or Temporal is down
 
 ### Pending Todos
 
@@ -185,6 +187,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T05:15:28.560Z
-Stopped at: Completed 02.1-04-PLAN.md
+Last session: 2026-10-25T05:24:51.732Z
+Stopped at: Completed 02.1-05-PLAN.md
 Resume file: None
