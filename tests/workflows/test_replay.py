@@ -29,7 +29,10 @@ child BookingWorkflow, resolve), for its own future changes.
 
 Plan 02-11: `visit_completed_v1.json` is Visit's `VisitCompletedWorkflow`
 (billing finalized, both intents recorded), captured from the gateway tracer
-scenario (recorder `-k record_visit`).
+scenario (recorder `-k record_visit`). Plan 02.1-09 added a fourth, patched branch:
+that fixture is the PRE-patch history and stays frozen (the recorder refuses to
+overwrite it with a patched run); `visit_completed_p21.json` and the replay proofs
+live in `test_replay_visit_completion.py`.
 
 Re-record (only for a deliberate, versioned change; add `_v2` files and keep
 the old ones replaying):
@@ -434,18 +437,27 @@ async def test_record_visit_history(
     visit_worker: object,
     temporal_env: WorkflowEnvironment,
 ) -> None:
-    from tests.visit.conftest import _visit_world  # noqa: PLC0415
+    from tests.visit.conftest import _visit_world, widened_checkin_window  # noqa: PLC0415
     from tests.visit.test_downstream import _completed_visit  # noqa: PLC0415
 
-    async for vw in _visit_world(client, mesh):
-        visit, _, completed = await _completed_visit(client, mesh, vw)
-        assert completed.status_code == 200, completed.text
-        handle = temporal_env.client.get_workflow_handle(
-            visit_completed_workflow_id(visit["id"]), result_type=VisitCompletedResult
+    # Plan 02.1-09: check-in now needs the widened window (the world's slots are far out).
+    with widened_checkin_window():
+        async for vw in _visit_world(client, mesh):
+            visit, _, completed = await _completed_visit(client, mesh, vw)
+            assert completed.status_code == 200, completed.text
+            handle = temporal_env.client.get_workflow_handle(
+                visit_completed_workflow_id(visit["id"]), result_type=VisitCompletedResult
+            )
+            async with temporal_env.time_skipping_unlocked():
+                assert (await handle.result()).billing == "finalized"
+            history = await handle.fetch_history()
+            document = _scrub(history.to_json_dict())
+    if '"core_patch"' in json.dumps(document):
+        # The workflow now records workflow.patched markers (plan 02.1-09);
+        # `visit_completed_v1.json` must stay a marker-free, pre-patch history.
+        pytest.skip(
+            "VisitCompletedWorkflow records patch markers now; the patched history "
+            "is recorded by tests/workflows/test_replay_visit_completion.py"
         )
-        async with temporal_env.time_skipping_unlocked():
-            assert (await handle.result()).billing == "finalized"
-        history = await handle.fetch_history()
-        document = _scrub(history.to_json_dict())
-        HISTORIES.mkdir(exist_ok=True)
-        (HISTORIES / VISIT_FIXTURES[0]).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    HISTORIES.mkdir(exist_ok=True)
+    (HISTORIES / VISIT_FIXTURES[0]).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
