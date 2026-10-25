@@ -9,14 +9,18 @@ single FastAPI service; **Phase 1.1 re-delivered it as six independently deploya
 services** after the week-1 mentor review. **Phase 2 adds scheduling, visits and billing**:
 slots, asynchronous booking as a Temporal saga with compensation, cancel, reschedule, a
 waitlist that auto-books freed slots, the visit lifecycle with non-blocking downstream work,
-and a simulated billing pre-check — run by two dedicated Temporal worker containers. The
-event backbone (Kafka), Celery jobs and operational analytics are Phase 3 and are **not
-built yet**.
+and a simulated billing pre-check — run by two dedicated Temporal worker containers.
+**Phase 2.1 closes the Week 1-2 mentor review** (items M1, M2, S3-S7, C1-C5, D1, D2): the
+appointment state machine with a check-in window, provider schedule-change propagation,
+reconcilers for stuck states, single-use refresh tokens, paginated lists, self-service reads,
+and quantified NFR targets with a runnable load test. The event backbone (Kafka), Celery jobs
+and operational analytics are Phase 3 and are **not built yet**.
 
 - Architecture & decision record (open directly from disk, no server needed):
   `docs/architecture-dashboard.html`
 - Service breakdown and flows: `docs/architecture.md` (Mermaid) / `docs/architecture.html`
 - Per-service schemas: `docs/erd.md` / `docs/erd.html`
+- Non-functional requirements and the load test: `docs/nfr.md`, `loadtest/README.md`
 - Planning context: `.planning/PROJECT.md`
 
 ## What exists today
@@ -24,12 +28,13 @@ built yet**.
 | Layer | Status |
 |---|---|
 | API Gateway, Identity, Organization, Provider, Patient services | Built and running in Docker Compose |
-| Scheduling service (Phase 2) | Slots, appointments (202 + polling), cancel, reschedule, waitlist; booking / cancel / reschedule / waitlist-advance workflows |
+| Scheduling service (Phase 2, 2.1) | Slots, appointments (202 + polling), cancel, reschedule, waitlist; booking / cancel / reschedule / waitlist-advance workflows. Phase 2.1: appointment states `checked_in`, `completed`, `no_show` with a check-in window; the schedule-change workflow (withdraws slots, flags bookings); the reconciler |
 | Billing service (Phase 2) | Simulated, deterministic pre-check and the billing record state machine; internal API plus a read-only `/api/billing` route |
-| Visit service (Phase 2) | Check-in → in progress → completed; completion starts a downstream workflow after its commit |
+| Visit service (Phase 2, 2.1) | Check-in (moves the appointment to `checked_in` first) → in progress → completed; completion starts a downstream workflow after its commit, which also completes the appointment; settlement markers and a reconciler Schedule |
 | `scheduling-worker`, `visit-worker` (Phase 2) | Temporal workers (same images as their APIs, separate containers) polling `scheduling-tq` / `visit-tq` |
 | PostgreSQL (one database per service), MongoDB `audit_log`, Redis | Built and in use |
-| Temporal (`auto-setup`, local dev only) | In use since Phase 2: sagas, retries, Schedules (hold reaper, pending-booking starter, visit sweeper) |
+| Temporal (`auto-setup`, local dev only) | In use since Phase 2: sagas, retries, Schedules (hold reaper, pending-booking starter, visit sweeper; Phase 2.1 adds the schedule-change poller, the Scheduling reconciler and the Visit reconciler) |
+| k6 load test, NFR targets (Phase 2.1) | `loadtest/` (k6, pinned image) and `docs/nfr.md`: targets are defined and the profiles are runnable; they are **not yet measured** against the real stack (Phase 3) |
 | Jaeger, Prometheus, Grafana | Tracing and per-service metrics wired; Grafana dashboards not built yet; the workers expose no metrics yet |
 | Kafka + Schema Registry, Celery + RabbitMQ | Containers run and report healthy; **no application code uses them yet** (Phase 3) |
 
@@ -62,9 +67,12 @@ is production-hardened. Known gaps are listed under [Known limitations](#known-l
                      (one Postgres container; one database + one role per service)
 
                               +------------------ Temporal (temporal:7233, UI :8080) ------+
-   scheduling API --start-->  | scheduling-tq: Booking, Cancel, Reschedule, WaitlistAdvance |
-                              |   + Schedules: hold reaper, pending-booking starter          |
-   visit API --start------->  | visit-tq: VisitCompleted + Schedule: downstream sweeper      |
+   scheduling API --start-->  | scheduling-tq: Booking, Cancel, Reschedule, WaitlistAdv.,  |
+                              |   ScheduleChange, Reconciler                               |
+                              |   + Schedules: hold reaper, pending starter,               |
+                              |     schedule-change poller, reconciler                     |
+   visit API --start------->  | visit-tq: VisitCompleted + Schedules: downstream           |
+                              |     sweeper, visit reconciler                              |
                               +------------------------------------------------------------+
                                    ^ polled by                     ^ polled by
                             scheduling-worker                 visit-worker
@@ -101,6 +109,14 @@ Key rules (see the dashboard's decision cards for alternatives and tradeoffs):
 - **Service tokens for workers.** Workflows outlive the HTTP request, so activities call
   `/internal/*` with short-lived, audience-scoped service tokens minted by Identity from a
   per-service client secret (Compose secrets; never env values or image content).
+- **Appointment state machine in the database (Phase 2.1).** `pending → confirmed → checked_in →
+  completed`, plus `no_show`, `cancelled` and `failed`. Every state that holds a slot is covered
+  by the same unique index and patient-overlap exclusion, and a check-in is accepted only inside
+  a window judged by the database clock. Cancel and reschedule are refused once a patient has
+  checked in.
+- **Convergence for stuck states (Phase 2.1).** Reconciler Schedules re-derive what should have
+  happened from the database (dead `pending` bookings, waitlist entries stuck `matched`, voided
+  billing, no-shows, unsettled visits) and repeat idempotent steps; they never guess.
 
 ## Local development
 
@@ -215,6 +231,13 @@ pytest tests/ -x -k "not integration and not e2e"
 # Postgres/Mongo/Redis containers for the integration tests)
 pytest tests/ -x -m "not e2e"
 
+# Run with OTEL_SDK_DISABLED=true to silence exporter retries when no collector is up. The
+# trace tests (tests/workflows/test_trace.py and the two trace-header tests in tests/libs and
+# tests/gateway) need a live span, so run those separately WITHOUT that variable.
+# The integration suites share databases with the live stack: while the Compose workers run
+# their Schedules, keep the schedule-change poller paused (it acknowledges Provider's events
+# that the feed tests read) and use fresh rows; see "Known limitations".
+
 # Real stack through the published gateway port (stack must be up).
 # Set SMARTHEALTH_E2E_REQUIRE_STACK=1 to fail instead of skip when no stack is reachable.
 # The Phase 2 suites seed several accounts per test, so start the gateway with
@@ -228,10 +251,23 @@ with the slot re-offered and billing `voided`; a cancel refunds and the waitlist
 next patient; check-in → start → complete finalizes billing. `tests/e2e/test_worker_crash.py`
 kills a worker mid-saga on the Compose Temporal and shows the booking still confirms.
 
+`tests/docs/test_phase21_traceability.py` maps each Phase 2.1 review item (M1, M2, S3-S7,
+C1-C5, D1, D2) to the test files that prove it and fails if a mapped file disappears or the
+docs stop naming the item.
+
 The in-process suites mount every service ASGI app into one HTTP client, so cross-service
 calls run without sockets. They do **not** exercise real network behaviour: a container going
 down mid-request, real retry timing and a cold start from an empty volume have not been
 verified (see [Known limitations](#known-limitations)).
+
+### Load test (Phase 2.1)
+
+`loadtest/` holds a runnable k6 load test for the booking path (`loadtest/run.sh smoke`,
+`sustained`, `burst`, `contention`; k6 runs from a pinned Docker image, nothing is installed).
+The numeric targets are single-sourced in `loadtest/nfr.json` and explained in `docs/nfr.md`.
+The profiles need the gateway rate limits raised and a seeded world; follow
+`loadtest/README.md`, and run it only against a local or dedicated stack. The targets are
+**not yet measured** (Phase 3 observability measures them).
 
 ## API overview
 
@@ -242,23 +278,38 @@ internal-only `/metrics`.
 | Gateway route | Owning service | Notes |
 |---|---|---|
 | `POST /api/auth/register` | Identity | Public; always creates a `patient` account |
-| `POST /api/auth/login`, `/refresh`, `/logout` | Identity | Access (~15 min) and refresh (~7 days) tokens; logout denylists the `jti` |
+| `POST /api/auth/login`, `/refresh`, `/logout` | Identity | Access (~15 min) and refresh (~7 days) tokens. **Refresh tokens are single-use and rotated:** `/refresh` returns a new pair and a second use of the old refresh token is `401`, so a client must store the new one (an unreachable Redis is `503` and the token is not consumed). Access tokens carry an `rjti` claim naming their paired refresh token, so logout denylists both. Email is case-insensitive: new accounts are stored lowercase, legacy mixed-case rows keep their casing and are matched through `lower(email)`, and `uq_users_email_lower` rejects a case-variant duplicate |
 | `POST /api/auth/admin/users` | Identity | Admin only; creates staff/provider/admin accounts |
 | `GET /api/admin/ping` | Identity | Admin-only RBAC probe |
 | `GET /.well-known/jwks.json` | Identity | Public RS256 keys |
-| `/api/clinics`, `/api/clinics/{id}`, `.../deactivate` | Organization | Admin only; create, list, get, PATCH, soft-delete |
-| `/api/clinics/{clinic_id}/departments[...]` | Organization | Admin only; same verbs |
-| `/api/providers`, `/api/providers/{id}`, `.../deactivate` | Provider | Admin only; providers with specialties |
+| `/api/clinics`, `/api/clinics/{id}`, `.../deactivate` | Organization | Admin only; create, list (paginated), get, PATCH, soft-delete |
+| `/api/clinics/{clinic_id}/departments[...]` | Organization | Admin only; same verbs (the department list inside one clinic is not paginated) |
+| `/api/providers`, `/api/providers/{id}`, `.../deactivate` | Provider | Admin only; providers with specialties; the list is paginated |
 | `/api/providers/{id}/availability[...]` | Provider | Provider (own) or admin; weekly availability templates |
-| `/api/patients`, `/api/patients/{id}`, `.../deactivate` | Patient | Front-desk (clinic-scoped) or admin; the only PHI |
+| `/api/patients`, `/api/patients/{id}`, `.../deactivate` | Patient | Front-desk (clinic-scoped) or admin; the only PHI; the list is paginated |
+| `GET /api/patients/me` | Patient | A patient reads their own profile (the one linked to their account); `404 patient profile not found` when none is linked |
 | `POST /api/slots/generate`, `GET /api/slots`, `POST /api/slots/{id}/cancel` | Scheduling | Generate slots from templates (admin/front-desk, ≤31 days), search by provider and range, cancel an unbooked slot |
-| `POST /api/appointments` | Scheduling | **`Idempotency-Key` header required**; writes `pending`, starts the booking saga, returns **202** with a status URL. Same key + same body replays; a different body is `422`; a taken slot is `409` |
-| `GET /api/appointments/{id}`, `GET /api/appointments` | Scheduling | Poll status (`pending` → `confirmed` / `failed` with a reason) and history; list by clinic/patient/provider/range |
-| `POST /api/appointments/{id}/cancel`, `.../reschedule` | Scheduling | **202**; cancel refunds before a 24 h cutoff (staff may waive), reschedule holds the new slot then swaps in one transaction |
+| `POST /api/appointments` | Scheduling | **`Idempotency-Key` header required**; writes `pending`, starts the booking saga, returns **202** with a status URL. Same key + same body replays; a different body is `422`; a taken slot is `409`; a slot that has already started is `422 slot has already started` |
+| `GET /api/appointments/{id}`, `GET /api/appointments` | Scheduling | Poll status and history; list by clinic/patient/provider/status/range, `?flagged=true` for appointments a provider schedule change affected (combine with `status=confirmed`). Patients see their own; **a provider reads only their own appointments** (scoped by the provider profile, `503` if Provider is unreachable). The appointment list takes `limit` (default 100, max 200) and has no `X-Total-Count`; page a long window with `start`/`end`. Responses carry `schedule_change_flagged` and `schedule_change_reason` |
+| `POST /api/appointments/{id}/cancel`, `.../reschedule` | Scheduling | **202**; cancel refunds before a 24 h cutoff (staff may waive), reschedule holds the new slot then swaps in one transaction. Both are **`409`** once the appointment is `checked_in` (`appointment already checked in`), `completed` (`appointment already completed`) or `no_show` (`appointment was a no-show`) |
 | `/api/waitlist`, `/api/waitlist/{id}`, `.../cancel` | Scheduling | Join a provider's waitlist (optional window); a freed slot auto-books the first matching entry |
-| `POST /api/visits`, `GET /api/visits`, `GET /api/visits/{id}`, `.../start`, `.../complete` | Visit | Check-in (front-desk/admin, confirmed appointments only), provider starts/completes; clinic-scoped status list for ops (polling) |
+| `POST /api/visits`, `GET /api/visits`, `GET /api/visits/{id}`, `.../start`, `.../complete` | Visit | Check-in (front-desk/admin, confirmed appointments only, **inside the check-in window**: `409` with `appointment not confirmed`, `check-in window not open` or `check-in window closed`), provider starts/completes; clinic-scoped status list for ops (polling; own `limit`/`offset`, default 50, max 200) |
 | `GET /api/billing/records?appointment_id=`, `/api/billing/records/{id}` | Billing | Read-only billing record and its status history (front-desk/admin, clinic-scoped) |
 | `/health` | each service / gateway | Liveness |
+
+**Appointment states (Phase 2.1):** `pending` → `confirmed` → `checked_in` → `completed`, plus
+`no_show`, `cancelled` and `failed`. Check-in is accepted from `SCHEDULING_CHECKIN_OPENS_BEFORE_MINUTES`
+before the slot starts until the slot ends (plus `SCHEDULING_CHECKIN_CLOSES_AFTER_END_MINUTES`),
+judged by the Scheduling database clock. Visit calls Scheduling's internal check-in route first
+and inserts the visit second; completing the visit completes the appointment. `no_show` is set
+only by the reconciler's sweep, once the slot has ended plus `SCHEDULING_NO_SHOW_GRACE_MINUTES`
+(there is no manual staff action). `failed` appointments carry a machine-readable reason, now
+including `workflow_lost` (a booking whose workflow disappeared).
+
+**Pagination (Phase 2.1):** `GET /api/patients`, `/api/providers` and `/api/clinics` return a plain
+JSON array, take `limit` (1..200, default 50) and `offset` (>= 0), order by `(created_at, id)` and
+put the total in the `X-Total-Count` response header. A value outside the bounds is `422`, never
+silently clamped.
 
 Not routed by the gateway (they return `404` at the edge): `/internal/*` (reference lookups
 between services) and any path containing dot segments, encoded slashes or NUL. Billing has no
@@ -307,7 +358,18 @@ credentials, and never place the private key in an environment variable or image
 | `SCHEDULING_CANCEL_CUTOFF_HOURS` | both | `24` | Cancels earlier than this are refunded; later ones are `no_refund` unless staff waive |
 | `SCHEDULING_SLOT_HORIZON_DAYS` / `SCHEDULING_SLOT_MAX_RANGE_DAYS` | `.env` (optional) | `28` / `31` | Rolling slot-generation horizon and the widest generate/search range |
 | `SCHEDULING_REAPER_INTERVAL_SECONDS` / `SCHEDULING_STARTER_INTERVAL_SECONDS` / `SCHEDULING_STARTER_GRACE_SECONDS` | `.env` (optional) | `60` / `30` / `30` | Hold-reaper and pending-booking-starter Schedules |
+| `SCHEDULING_CHECKIN_OPENS_BEFORE_MINUTES` | `.env` (optional) | `60` | A check-in is accepted this many minutes before the slot starts (database clock, read per request) |
+| `SCHEDULING_CHECKIN_CLOSES_AFTER_END_MINUTES` | `.env` (optional) | `0` | ... and until this many minutes after the slot ends |
+| `SCHEDULING_NO_SHOW_GRACE_MINUTES` | `.env` (optional) | `30` | A confirmed appointment becomes `no_show` only after slot end plus this grace |
+| `SCHEDULING_SCHEDULE_CHANGE_POLL_SECONDS` | `.env` (optional) | `15` | How often the schedule-change poller Schedule drains Provider's change feed |
+| `SCHEDULING_RECONCILER_INTERVAL_SECONDS` | `.env` (optional) | `60` | Scheduling reconciler Schedule interval |
+| `SCHEDULING_RECONCILE_PENDING_AFTER_MINUTES` | `.env` (optional) | `10` | A `pending` appointment older than this whose booking workflow is gone is failed (`workflow_lost`) |
+| `SCHEDULING_RECONCILE_MATCHED_AFTER_MINUTES` | `.env` (optional) | `15` | A waitlist entry stuck `matched` longer than this is resolved from its appointment |
+| `SCHEDULING_RECONCILE_BILLING_LOOKBACK_HOURS` | `.env` (optional) | `24` | Failed bookings (`hold_expired`, `workflow_lost`) in this window get their billing voided if it was not |
+| `SCHEDULING_RECONCILE_BATCH_LIMIT` | `.env` (optional) | `50` | Rows per list per reconciler run, oldest first |
 | `VISIT_SWEEPER_INTERVAL_SECONDS` / `VISIT_SWEEPER_GRACE_SECONDS` | `.env` (optional) | `60` / `30` | Visit downstream sweeper Schedule |
+| `VISIT_RECONCILE_INTERVAL_SECONDS` / `VISIT_RECONCILE_GRACE_MINUTES` | `.env` (optional) | `60` / `10` | Visit reconciler Schedule; how long a completed visit's billing or appointment marker may stay empty before it steps in |
+| `IDENTITY_BCRYPT_THREADS` | `.env` (optional) | `4` | Size of the bounded thread pool that runs bcrypt off the event loop |
 | `BILLING_PRECHECK_FAIL_PREFIX` | both | `DENY-` | A `coverage_ref` with this prefix is deterministically denied (demo/test lever) |
 | `BOOKING_DEMO_ADMIN_EMAIL` / `BOOKING_DEMO_ADMIN_PASSWORD` | shell only | none | Admin for `scripts/demo_concurrent_booking.py` |
 | `GATEWAY_HOST_PORT` | `infra/.env` | `8000` | The only published application port |
@@ -334,7 +396,7 @@ Prometheus 9090, Grafana 3000.
 Python 3.12 · FastAPI · SQLAlchemy 2.0 async + asyncpg · Alembic (per service) · PostgreSQL ·
 MongoDB (async PyMongo) · Redis · python-jose (RS256) · httpx · structlog · Temporal
 (`temporalio` 1.34.0 SDK, `auto-setup` server for local dev) · OpenTelemetry → Jaeger (OTLP) ·
-Prometheus + Grafana · Docker Compose. Present as scaffolding for Phase 3: Kafka + Schema
+Prometheus + Grafana · Docker Compose · k6 for the load test (pinned Docker image, nothing installed). Present as scaffolding for Phase 3: Kafka + Schema
 Registry, Celery + RabbitMQ.
 
 ## Known limitations
@@ -375,7 +437,58 @@ Phase 2 (scheduling, visits, billing):
   (`audit.write_failed`) instead of changing the outcome. The transition stays durable in
   `appointment_status_history`; the lost audit entry is the known gap until Phase 3's
   transactional outbox.
-- No load test beyond the concurrency suites and the demo.
+- **Load and NFRs are targets, not results.** The quantified requirements (NFR-01 to NFR-08)
+  and a runnable k6 load test exist (`docs/nfr.md`, `loadtest/README.md`), but the targets are
+  **not yet measured**: the full profiles have never been run against the real stack, and the
+  local single-instance stack is not claimed to meet NFR-01 or NFR-02. Measuring them is Phase 3
+  observability work. The concurrency suites and the live demo remain the only load evidence.
+
+Phase 2.1 (mentor review remediation) — what is interim, what is open:
+
+- **Audit entries after a committed step are best effort (S3).** A failed Mongo write after a
+  committed confirm, cancel, swap, check-in, complete or schedule-change apply is logged
+  (`audit.write_failed`) and the outcome stands. If Mongo is down at that moment the audit entry
+  can be lost for good (the transition itself is durable in `appointment_status_history`, but
+  nothing backfills the audit entry). The general fix is Phase 3's transactional outbox.
+- **Schedule changes and reconciliation are polled, not event-driven.** Provider writes each
+  schedule-affecting change as a row in `schedule_change_events` in the same transaction; a
+  Schedule polls it (default every 15 s), starts one workflow per event and acknowledges after the
+  start (delivered rows are never purged). The reconcilers run every 60 s. Phase 3 can publish the
+  same rows to Kafka. Waiting waitlist entries of a deactivated provider are not cleaned up.
+- **Schedule-change gap at the second pass.** A slot still `held` by an in-flight booking is
+  skipped in pass 1 and re-checked after the hold TTL; if the hold reaper has not freed it by
+  then, no third pass follows and the stale slot stays bookable until the next change event or a
+  re-run of the (idempotent) apply. A flagged appointment stays `confirmed` and keeps its slot
+  until staff cancel or reschedule it (the flag also stays on a cancelled appointment; filter with
+  `status=confirmed&flagged=true`).
+- **Cancel and reschedule billing is still bounded.** Their billing steps that exhaust the retry
+  budget are recorded as `cancel_incomplete:billing_pending` / `reschedule_incomplete:billing_pending`
+  for an operator. Only a failed booking's billing (the lookback void), the no-show refund state and visit
+  billing are reconciled, and only visit billing retries open-endedly (so a visit workflow can stay open while Billing is down).
+- **Reconciler fairness.** Each list is oldest first and capped at
+  `SCHEDULING_RECONCILE_BATCH_LIMIT` (50; the visit reconciler caps at 100). More rows stuck for a
+  persistent retryable reason than the cap would starve newer ones; there is no per-row backoff.
+- **`no_show` is automated only** (no manual staff action). Visits created before Phase 2.1 have
+  no `checked_in` appointment: they settle their appointment as `not_checked_in`, with no
+  backfill of earlier data.
+- **Refresh tokens are single-use.** A client must store the rotated token. Access tokens issued
+  before the change carry no `rjti`, so logout revokes only the access token itself; the refresh
+  jti is denylisted for the full 7 days (it self-expires). A Redis outage blocks refresh (`503`).
+  Legacy mixed-case emails are matched but not rewritten.
+- **Replay discipline.** Workflow command-sequence changes are behind `workflow.patched` with
+  recorded-history replay tests. The open-ended visit billing retry only changes activity options,
+  which Temporal's replay does not compare, so its patch is a convention that makes a run's
+  version visible in its history, not something replay enforces.
+- **Pagination covers patients, providers and clinics.** Appointment lists (including a
+  provider's own) are limited by `limit` (max 200) without `X-Total-Count`, and the department
+  list inside a clinic is unpaginated.
+- **Provider reads depend on Provider.** A provider's appointment read makes one service-token call
+  to Provider and is `503` while it is down.
+- **The e2e visit flow depends on the clock.** It books a slot inside the check-in window and
+  skips within 40 minutes of clinic-local midnight.
+- **Tests share databases with the live reconcilers.** While the Compose workers run, seed fresh
+  rows (a slot that ended a minute ago, a pending row reconciled with threshold 0) and keep the
+  schedule-change poller paused for the feed tests.
 
 Carried from Phase 1.1 (details in
 `.planning/phases/01.1-microservice-re-architecture/deferred-items.md`):

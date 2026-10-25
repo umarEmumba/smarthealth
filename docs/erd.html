@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SmartHealth — Entity-Relationship Diagrams (Phase 2)</title>
+<title>SmartHealth — Entity-Relationship Diagrams (Phase 2.1)</title>
 <style>
   :root{
     --bg:#0f1720; --panel:#16212e; --ink:#e7edf3; --muted:#9fb0c0; --line:#2b3a4a;
@@ -39,7 +39,9 @@
   .col{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .type{color:var(--muted);font-size:11.5px;white-space:nowrap}
   .keys{white-space:nowrap;text-align:right}
+  .keys small{display:block;white-space:normal;font-size:10px;color:var(--muted);margin-top:2px;line-height:1.3}
   .note{color:var(--muted);font-size:11px;font-style:italic}
+  .entity .note,.keys small{overflow-wrap:anywhere}
   .empty{opacity:.85;border-style:dashed}
   .empty > h3{background:#241f10}
   .rel,.cons{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-top:18px}
@@ -60,7 +62,7 @@
 <div class="wrap">
   <header>
     <h1>SmartHealth — Entity-Relationship Diagrams</h1>
-    <p>One PostgreSQL schema per service · Phase 2 · 7 databases, 17 tables (one is the provider ↔ specialty association) · no foreign key crosses a service</p>
+    <p>One PostgreSQL schema per service · Phase 2.1 · 7 databases, 18 tables (one is the provider ↔ specialty association) · no foreign key crosses a service</p>
   </header>
 
   <div class="legend">
@@ -68,25 +70,26 @@
     <span><i class="badge b-fk">FK</i> foreign key (within one service only)</span>
     <span><i class="badge b-uk">UK</i> unique</span>
     <span><i class="badge b-ref">REF</i> dashed id-only link to another service (plain UUID, no FK)</span>
+    <span><i class="badge b-uk">UK</i> on two columns of one table = one composite unique constraint · “partial” = unique only for active rows</span>
     <span><i class="badge b-phi">PHI</i> never logged/audited</span>
-    <span>Phase 2 tables are marked “Phase 2”</span>
+    <span>Phase 2 tables are marked “Phase 2”, Phase 2.1 additions “Phase 2.1”</span>
   </div>
 
   <!-- identity_db -->
   <div class="schema">
-    <h2>identity_db <em>Identity · role identity_svc · baseline identity_0001_accounts</em></h2>
+    <h2>identity_db <em>Identity · role identity_svc · identity_0001_accounts → identity_0002_email_lower_unique (Phase 2.1)</em></h2>
     <p>Accounts only: credentials, role and clinic scope. No profile data.</p>
     <div class="grid">
       <div class="entity">
         <h3>users</h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">email</td><td class="type">varchar(320)</td><td class="keys"><i class="badge b-uk">UK</i></td></tr>
-          <tr><td class="col">hashed_password</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
+          <tr><td class="col">email</td><td class="type">varchar(320)</td><td class="keys"><i class="badge b-uk">UK</i><small>on lower(email): uq_users_email_lower</small></td></tr>
+          <tr><td class="col">hashed_<wbr>password</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
           <tr><td class="col">role</td><td class="type">varchar(32)</td><td class="keys"></td></tr>
-          <tr><td class="col">clinic_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-          <tr><td colspan="3" class="note">CHECK role ∈ patient · provider · front_desk · admin<br>clinic_id → organization_db.clinics, validated via owner API (D-05)</td></tr>
+          <tr><td class="col">clinic_<wbr>id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">CHECK role ∈ patient · provider · front_desk · admin<br>clinic_id → organization_db.clinics, validated via owner API (D-05) · ix_users_clinic_id<br><b>uq_users_email_lower</b> (Phase 2.1): UNIQUE(lower(email)), case-insensitive identity; the migration refuses over duplicates (count only) and rewrites no row</td></tr>
         </table>
       </div>
     </div>
@@ -103,20 +106,20 @@
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
           <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
           <tr><td class="col">timezone</td><td class="type">varchar(64)</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-          <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
-          <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">is_<wbr>active</td><td class="type">boolean</td><td class="keys"></td></tr>
+          <tr><td class="col">deactivated_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
         </table>
       </div>
       <div class="entity">
         <h3>departments <em>soft-delete</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">clinic_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
           <tr><td class="col">name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-          <tr><td class="col">is_active</td><td class="type">boolean</td><td class="keys"></td></tr>
-          <tr><td class="col">deactivated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">is_<wbr>active</td><td class="type">boolean</td><td class="keys"></td></tr>
+          <tr><td class="col">deactivated_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
         </table>
       </div>
     </div>
@@ -124,17 +127,17 @@
 
   <!-- provider_db -->
   <div class="schema">
-    <h2>provider_db <em>Provider · role provider_svc · baseline provider_0001_providers</em></h2>
+    <h2>provider_db <em>Provider · role provider_svc · provider_0001_providers → provider_0002_schedule_change_events (Phase 2.1)</em></h2>
     <p>Holds no clinic data: the clinic and its timezone are reachable through the department's Organization reference.</p>
     <div class="grid">
       <div class="entity">
         <h3>providers <em>soft-delete</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">user_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
-          <tr><td class="col">department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">full_name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
+          <tr><td class="col">user_<wbr>id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">department_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">full_<wbr>name</td><td class="type">varchar(255)</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at / is_<wbr>active / deactivated_<wbr>at</td><td class="type">…</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note">user_id → identity_db.users · department_id → organization_db.departments, both validated via owner API (D-05)</td></tr>
         </table>
       </div>
@@ -148,24 +151,36 @@
       <div class="entity">
         <h3>provider_specialties <em>M:N</em></h3>
         <table>
-          <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
-          <tr><td class="col">specialty_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">provider_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">specialty_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-fk">FK</i></td></tr>
         </table>
       </div>
       <div class="entity">
         <h3>availability_templates <em>soft-delete</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-          <tr><td class="col">department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">day_of_week</td><td class="type">smallint</td><td class="keys"></td></tr>
-          <tr><td class="col">start_time</td><td class="type">time</td><td class="keys"></td></tr>
-          <tr><td class="col">end_time</td><td class="type">time</td><td class="keys"></td></tr>
-          <tr><td class="col">slot_duration_minutes</td><td class="type">int · d30</td><td class="keys"></td></tr>
-          <tr><td class="col">effective_from</td><td class="type">date</td><td class="keys"></td></tr>
-          <tr><td class="col">effective_to</td><td class="type">date · null</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
+          <tr><td class="col">provider_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">department_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">day_<wbr>of_<wbr>week</td><td class="type">smallint</td><td class="keys"></td></tr>
+          <tr><td class="col">start_<wbr>time</td><td class="type">time</td><td class="keys"></td></tr>
+          <tr><td class="col">end_<wbr>time</td><td class="type">time</td><td class="keys"></td></tr>
+          <tr><td class="col">slot_<wbr>duration_<wbr>minutes</td><td class="type">int · d30</td><td class="keys"></td></tr>
+          <tr><td class="col">effective_<wbr>from</td><td class="type">date</td><td class="keys"></td></tr>
+          <tr><td class="col">effective_<wbr>to</td><td class="type">date · null</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at / is_<wbr>active / deactivated_<wbr>at</td><td class="type">…</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note">CHECK day_of_week BETWEEN 0 AND 6<br>department_id → organization_db.departments, validated at create only (D-05)</td></tr>
+        </table>
+      </div>
+      <div class="entity">
+        <h3>schedule_change_events <em>Phase 2.1</em></h3>
+        <table>
+          <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">provider_<wbr>id</td><td class="type">uuid</td><td class="keys"><small>plain id · same db, no FK</small></td></tr>
+          <tr><td class="col">change_<wbr>type</td><td class="type">varchar(32)</td><td class="keys"></td></tr>
+          <tr><td class="col">template_<wbr>id</td><td class="type">uuid · null</td><td class="keys"><small>plain id · same db, no FK · null for provider_deactivated</small></td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">delivered_<wbr>at</td><td class="type">timestamptz · null</td><td class="keys"><small>NULL = pending</small></td></tr>
+          <tr><td colspan="3" class="note">Outbox, written in the same transaction as the change it describes · CHECK change_type ∈ template_updated · template_deactivated · provider_deactivated (ck_schedule_change_events_type_valid)<br>partial ix_schedule_change_events_pending (created_at, id) WHERE delivered_at IS NULL<br>Flow: outbox row → Scheduling poller (GET /internal/schedule-changes) → ScheduleChangeWorkflow → ack. Delivered rows are never purged; Phase 3 can publish the same rows to Kafka</td></tr>
         </table>
       </div>
     </div>
@@ -180,13 +195,13 @@
         <h3>patients <em>soft-delete</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">user_id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
-          <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">full_name</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
-          <tr><td class="col">date_of_birth</td><td class="type">date</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
+          <tr><td class="col">user_<wbr>id</td><td class="type">uuid · null</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">clinic_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">full_<wbr>name</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
+          <tr><td class="col">date_<wbr>of_<wbr>birth</td><td class="type">date</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
           <tr><td class="col">phone</td><td class="type">varchar(32) · null</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
           <tr><td class="col">address</td><td class="type">text · null</td><td class="keys"><i class="badge b-phi">PHI</i></td></tr>
-          <tr><td class="col">created_at / is_active / deactivated_at</td><td class="type">…</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at / is_<wbr>active / deactivated_<wbr>at</td><td class="type">…</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note">user_id → identity_db.users · clinic_id → organization_db.clinics, both validated via owner API (D-05)</td></tr>
         </table>
       </div>
@@ -195,20 +210,20 @@
 
   <!-- scheduling_db -->
   <div class="schema">
-    <h2>scheduling_db <em>Scheduling · role scheduling_svc · scheduling_0001 → 0002_appointments → 0003_waitlist</em></h2>
+    <h2>scheduling_db <em>Scheduling · role scheduling_svc · scheduling_0001 → 0002_appointments → 0003_waitlist → 0004_appointment_states → 0005_schedule_change_flags (Phase 2.1)</em></h2>
     <p>Slots, appointments and the waitlist. Two arbiters close double-booking in the database: the slot no-overlap exclusion and the partial unique index on active appointments.</p>
     <div class="grid">
       <div class="entity">
         <h3>provider_slots</h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">clinic_id / department_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> Phase 2</td></tr>
-          <tr><td class="col">start_time</td><td class="type">timestamptz</td><td class="keys"><i class="badge b-uk">UK</i> with provider_id</td></tr>
-          <tr><td class="col">end_time</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">provider_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i><small>with start_time</small></td></tr>
+          <tr><td class="col">clinic_<wbr>id / department_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i><small>Phase 2</small></td></tr>
+          <tr><td class="col">start_<wbr>time</td><td class="type">timestamptz</td><td class="keys"><i class="badge b-uk">UK</i><small>with provider_id</small></td></tr>
+          <tr><td class="col">end_<wbr>time</td><td class="type">timestamptz</td><td class="keys"></td></tr>
           <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">held_until</td><td class="type">timestamptz · null</td><td class="keys">Phase 2</td></tr>
-          <tr><td class="col">held_by_appointment_id</td><td class="type">uuid · null</td><td class="keys">Phase 2</td></tr>
+          <tr><td class="col">held_<wbr>until</td><td class="type">timestamptz · null</td><td class="keys"><small>Phase 2</small></td></tr>
+          <tr><td class="col">held_<wbr>by_<wbr>appointment_<wbr>id</td><td class="type">uuid · null</td><td class="keys"><small>Phase 2 · appointments.id · same db, no FK</small></td></tr>
           <tr><td colspan="3" class="note">CHECK status ∈ available·held·booked·cancelled · ck_provider_slots_end_after_start<br>uq_provider_slots_provider_start · ex_provider_slots_no_overlap (gist) WHERE status≠cancelled</td></tr>
         </table>
       </div>
@@ -216,26 +231,29 @@
         <h3>appointments <em>Phase 2</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">clinic_id / patient_id / provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">slot_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-          <tr><td class="col">slot_start / slot_end</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">clinic_<wbr>id / patient_<wbr>id / provider_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">slot_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i> <i class="badge b-uk">UK</i><small>partial (pending·confirmed·checked_in·completed·no_show)</small></td></tr>
+          <tr><td class="col">slot_<wbr>start / slot_<wbr>end</td><td class="type">timestamptz</td><td class="keys"></td></tr>
           <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">failure_reason</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
-          <tr><td class="col">coverage_ref</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">failure_<wbr>reason</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">coverage_<wbr>ref</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
           <tr><td class="col">version</td><td class="type">int</td><td class="keys"></td></tr>
-          <tr><td class="col">workflow_started_at</td><td class="type">timestamptz · null</td><td class="keys"></td></tr>
-          <tr><td class="col">created_by / created_at / updated_at</td><td class="type">…</td><td class="keys"></td></tr>
-          <tr><td colspan="3" class="note">CHECK status ∈ pending·confirmed·cancelled·failed<br><b>uq_appointments_active_slot</b>: UNIQUE(slot_id) WHERE status ∈ pending·confirmed<br>ex_appointments_patient_no_overlap (gist, active only)<br>coverage_ref: opaque, never logged or in workflow I/O</td></tr>
+          <tr><td class="col">workflow_<wbr>started_<wbr>at</td><td class="type">timestamptz · null</td><td class="keys"></td></tr>
+          <tr><td class="col">schedule_<wbr>change_<wbr>flagged_<wbr>at</td><td class="type">timestamptz · null</td><td class="keys"><small>Phase 2.1 · set once</small></td></tr>
+          <tr><td class="col">schedule_<wbr>change_<wbr>reason</td><td class="type">varchar(32) · null</td><td class="keys"><small>Phase 2.1</small></td></tr>
+          <tr><td class="col">created_<wbr>by</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i><small>Identity user</small></td></tr>
+          <tr><td class="col">created_<wbr>at / updated_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">CHECK status ∈ pending·confirmed·checked_in·completed·no_show·cancelled·failed<br><b>uq_appointments_active_slot</b>: UNIQUE(slot_id) WHERE status ∈ pending·confirmed·checked_in·completed·no_show<br>ex_appointments_patient_no_overlap (gist, same five statuses) · both widened in scheduling_0004<br>partial ix_appointments_schedule_flagged (clinic_id, slot_start) WHERE flagged · scheduling_0005<br>coverage_ref: opaque, never logged or in workflow I/O</td></tr>
         </table>
       </div>
       <div class="entity">
         <h3>idempotency_keys <em>Phase 2</em></h3>
         <table>
-          <tr><td class="col">caller_user_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
+          <tr><td class="col">caller_<wbr>user_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i> <i class="badge b-ref">REF</i><small>Identity user</small></td></tr>
           <tr><td class="col">key</td><td class="type">varchar(255)</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">request_hash</td><td class="type">char(64)</td><td class="keys"></td></tr>
-          <tr><td class="col">appointment_id</td><td class="type">uuid</td><td class="keys"></td></tr>
-          <tr><td class="col">expires_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">request_<wbr>hash</td><td class="type">char(64)</td><td class="keys"></td></tr>
+          <tr><td class="col">appointment_<wbr>id</td><td class="type">uuid</td><td class="keys"><small>appointments.id · same db, no FK</small></td></tr>
+          <tr><td class="col">expires_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note">Duplicate POST /api/appointments returns the original appointment; same key + different body → 422. Expired rows are overwritten, never deleted.</td></tr>
         </table>
       </div>
@@ -243,25 +261,28 @@
         <h3>appointment_status_history <em>Phase 2</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">appointment_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-          <tr><td class="col">from_status / to_status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
+          <tr><td class="col">appointment_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
+          <tr><td class="col">from_<wbr>status / to_<wbr>status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
           <tr><td class="col">reason</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
           <tr><td class="col">actor</td><td class="type">varchar(64)</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-          <tr><td colspan="3" class="note">Append-only; actor is a user id or <code>workflow:&lt;id&gt;</code></td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">Append-only; actor is a user id, <code>workflow:&lt;id&gt;</code> or <code>system:reconciler</code>. A note (<code>schedule_changed:&lt;reason&gt;</code>, <code>billing_void_checked</code>) has from_status = to_status</td></tr>
         </table>
       </div>
       <div class="entity">
         <h3>waitlist_entries <em>Phase 2</em></h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">clinic_id / provider_id / patient_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
-          <tr><td class="col">window_start / window_end</td><td class="type">timestamptz · null</td><td class="keys"></td></tr>
-          <tr><td class="col">coverage_ref</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">clinic_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">provider_<wbr>id / patient_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i><small>partial, together (waiting·matched)</small></td></tr>
+          <tr><td class="col">window_<wbr>start / window_<wbr>end</td><td class="type">timestamptz · null</td><td class="keys"></td></tr>
+          <tr><td class="col">coverage_<wbr>ref</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
           <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">failure_reason</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
-          <tr><td class="col">matched_ / booked_appointment_id</td><td class="type">uuid · null</td><td class="keys"></td></tr>
+          <tr><td class="col">failure_<wbr>reason</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">matched_<wbr> / booked_<wbr>appointment_<wbr>id</td><td class="type">uuid · null</td><td class="keys"><small>appointments.id · same db, no FK</small></td></tr>
           <tr><td class="col">attempts</td><td class="type">int</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>by</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i><small>Identity user</small></td></tr>
+          <tr><td class="col">created_<wbr>at / updated_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note">CHECK status ∈ waiting·matched·booked·failed·cancelled · window order CHECK<br>uq_waitlist_active_patient_provider WHERE status ∈ waiting·matched · ix_waitlist_fifo</td></tr>
         </table>
       </div>
@@ -270,30 +291,34 @@
 
   <!-- visit_db -->
   <div class="schema">
-    <h2>visit_db <em>Visit · role visit_svc · baseline visit_0001_visits · Phase 2</em></h2>
+    <h2>visit_db <em>Visit · role visit_svc · visit_0001_visits → visit_0002_settlement_markers (Phase 2.1)</em></h2>
     <p>One visit per appointment; the downstream marker lets the sweeper find completions whose workflow start was lost.</p>
     <div class="grid">
       <div class="entity">
         <h3>visits</h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">appointment_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
-          <tr><td class="col">clinic_id / patient_id / provider_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">appointment_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">clinic_<wbr>id / patient_<wbr>id / provider_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
           <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">checked_in_at / started_at / completed_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-          <tr><td class="col">downstream_started_at</td><td class="type">timestamptz · null</td><td class="keys"></td></tr>
-          <tr><td class="col">created_by / created_at / updated_at</td><td class="type">…</td><td class="keys"></td></tr>
-          <tr><td colspan="3" class="note">CHECK status ∈ checked_in·in_progress·completed · <b>uq_visits_appointment</b><br>partial ix_visits_downstream_pending (completed AND marker NULL)</td></tr>
+          <tr><td class="col">checked_<wbr>in_<wbr>at / started_<wbr>at / completed_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">downstream_<wbr>started_<wbr>at</td><td class="type">timestamptz · null</td><td class="keys"></td></tr>
+          <tr><td class="col">billing_<wbr>settled_<wbr>at / billing_<wbr>outcome</td><td class="type">timestamptz · null / varchar(32) · null</td><td class="keys"><small>Phase 2.1 · set once</small></td></tr>
+          <tr><td class="col">appointment_<wbr>settled_<wbr>at / appointment_<wbr>outcome</td><td class="type">timestamptz · null / varchar(32) · null</td><td class="keys"><small>Phase 2.1 · set once</small></td></tr>
+          <tr><td class="col">created_<wbr>by</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i><small>Identity user</small></td></tr>
+          <tr><td class="col">created_<wbr>at / updated_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note">CHECK status ∈ checked_in·in_progress·completed · <b>uq_visits_appointment</b><br>partial ix_visits_downstream_pending (completed AND marker NULL)<br>partial <b>ix_visits_unsettled</b> (completed AND a settlement marker NULL): the visit reconciler's input. Pre-2.1 visits are not backfilled and settle as not_checked_in</td></tr>
         </table>
       </div>
       <div class="entity">
         <h3>visit_state_history</h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">visit_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-          <tr><td class="col">from_status / to_status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
+          <tr><td class="col">visit_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i> <i class="badge b-uk">UK</i><small>with to_status</small></td></tr>
+          <tr><td class="col">from_<wbr>status</td><td class="type">varchar(16) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">to_<wbr>status</td><td class="type">varchar(16)</td><td class="keys"><i class="badge b-uk">UK</i><small>with visit_id</small></td></tr>
           <tr><td class="col">actor</td><td class="type">varchar(64)</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note"><b>uq_visit_history_visit_to</b> (visit_id, to_status): each state recorded once</td></tr>
         </table>
       </div>
@@ -309,12 +334,12 @@
         <h3>billing_records</h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">appointment_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
-          <tr><td class="col">clinic_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
+          <tr><td class="col">appointment_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i> <i class="badge b-uk">UK</i></td></tr>
+          <tr><td class="col">clinic_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-ref">REF</i></td></tr>
           <tr><td class="col">status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">coverage_kind</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">reason_code</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at / updated_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td class="col">coverage_<wbr>kind</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
+          <tr><td class="col">reason_<wbr>code</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">created_<wbr>at / updated_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
           <tr><td colspan="3" class="note">CHECK status ∈ pending·verified·failed·voided·refund_pending·refunded·no_refund·finalized<br>uq_billing_records_appointment_id</td></tr>
         </table>
       </div>
@@ -322,13 +347,13 @@
         <h3>billing_status_history</h3>
         <table>
           <tr><td class="col">id</td><td class="type">uuid</td><td class="keys"><i class="badge b-pk">PK</i></td></tr>
-          <tr><td class="col">record_id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i></td></tr>
-          <tr><td class="col">from_status / to_status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
-          <tr><td class="col">reason_code</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
-          <tr><td class="col">idempotency_key</td><td class="type">varchar(200) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">record_<wbr>id</td><td class="type">uuid</td><td class="keys"><i class="badge b-fk">FK</i> <i class="badge b-uk">UK</i><small>with idempotency_key</small></td></tr>
+          <tr><td class="col">from_<wbr>status / to_<wbr>status</td><td class="type">varchar(16)</td><td class="keys"></td></tr>
+          <tr><td class="col">reason_<wbr>code</td><td class="type">varchar(64) · null</td><td class="keys"></td></tr>
+          <tr><td class="col">idempotency_<wbr>key</td><td class="type">varchar(200) · null</td><td class="keys"><i class="badge b-uk">UK</i><small>with record_id</small></td></tr>
           <tr><td class="col">actor</td><td class="type">varchar(64)</td><td class="keys"></td></tr>
-          <tr><td class="col">created_at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
-          <tr><td colspan="3" class="note"><b>uq_billing_history_record_key</b> (record_id, idempotency_key): a retried call is a no-op</td></tr>
+          <tr><td class="col">created_<wbr>at</td><td class="type">timestamptz</td><td class="keys"></td></tr>
+          <tr><td colspan="3" class="note"><b>uq_billing_history_record_key</b> (record_id, idempotency_key): a retried call is a no-op; rows with a NULL key are not constrained</td></tr>
         </table>
       </div>
     </div>
@@ -342,6 +367,8 @@
       <li><b>providers</b> ∞ ◀─▶ ∞ <b>specialties</b> (via provider_specialties, provider_db)</li>
       <li><b>provider_slots</b> 1 ─▶ ∞ <b>appointments</b> (FK slot_id, scheduling_db; at most one active)</li>
       <li><b>appointments</b> 1 ─▶ ∞ <b>appointment_status_history</b> (FK, scheduling_db)</li>
+      <li><b>appointments</b> ┄ <b>idempotency_keys</b>.appointment_id, <b>provider_slots</b>.held_by_appointment_id, <b>waitlist_entries</b>.matched_/booked_appointment_id (plain ids, same db, no FK)</li>
+      <li><b>providers</b> / <b>availability_templates</b> ┄ <b>schedule_change_events</b>.provider_id / template_id (plain ids, same db, no FK)</li>
       <li><b>visits</b> 1 ─▶ ∞ <b>visit_state_history</b> (FK, visit_db)</li>
       <li><b>billing_records</b> 1 ─▶ ∞ <b>billing_status_history</b> (FK, billing_db)</li>
     </ul>
@@ -358,7 +385,7 @@
       <li class="dashed"><b>provider_db.availability_templates.department_id</b> ┄▶ organization_db.departments (create only)</li>
       <li class="dashed"><b>scheduling_db.provider_slots.provider_id / clinic_id / department_id</b> ┄▶ provider_db / organization_db (slot generation)</li>
       <li class="dashed"><b>scheduling_db.appointments.patient_id / provider_id</b> ┄▶ patient_db / provider_db (booking saga validate step)</li>
-      <li class="dashed"><b>visit_db.visits.appointment_id</b> ┄▶ scheduling_db.appointments (must be confirmed at check-in)</li>
+      <li class="dashed"><b>visit_db.visits.appointment_id</b> ┄▶ scheduling_db.appointments (Scheduling's internal check-in moves it confirmed → checked_in first; refusals are 409)</li>
       <li class="dashed"><b>billing_db.billing_records.appointment_id</b> ┄▶ scheduling_db.appointments (created by the pre-check)</li>
     </ul>
     <p class="note">Checked at write time only: missing or inactive → 422; owner cannot answer → 503; nothing written either way. Deactivation never cascades (D-06). Reads return ids only (D-07).</p>
@@ -368,14 +395,15 @@
     <h2>Load-bearing constraints</h2>
     <table>
       <tr><th>Table</th><th>Constraint</th><th>Guarantees</th></tr>
-      <tr><td class="mono">scheduling_db.appointments</td><td class="mono">uq_appointments_active_slot: UNIQUE(slot_id) WHERE status ∈ {pending,confirmed}</td><td><b>Double-booking impossible at the storage layer</b>: of N concurrent bookings exactly one commits</td></tr>
-      <tr><td class="mono">scheduling_db.appointments</td><td class="mono">ex_appointments_patient_no_overlap (gist, active only)</td><td>A patient never holds two overlapping active appointments</td></tr>
+      <tr><td class="mono">scheduling_db.appointments</td><td class="mono">uq_appointments_active_slot: UNIQUE(slot_id) WHERE status ∈ {pending,confirmed,checked_in,completed,no_show}</td><td><b>Double-booking impossible at the storage layer</b>: of N concurrent bookings exactly one commits</td></tr>
+      <tr><td class="mono">scheduling_db.appointments</td><td class="mono">ex_appointments_patient_no_overlap (gist, same five statuses); ck_appointments_status_valid (seven states)</td><td>A patient never holds two overlapping active appointments, including after check-in or completion; the state vocabulary is enforced in the DB</td></tr>
       <tr><td class="mono">scheduling_db.provider_slots</td><td class="mono">ex_provider_slots_no_overlap (gist) WHERE status≠cancelled; ck_provider_slots_end_after_start; uq_provider_slots_provider_start</td><td>No overlapping or empty slots; regeneration is idempotent (needs <code>btree_gist</code>)</td></tr>
       <tr><td class="mono">scheduling_db.idempotency_keys</td><td class="mono">PK (caller_user_id, key) + request_hash</td><td>A retried booking never creates a second appointment</td></tr>
       <tr><td class="mono">scheduling_db.waitlist_entries</td><td class="mono">uq_waitlist_active_patient_provider</td><td>One active waitlist entry per patient and provider</td></tr>
-      <tr><td class="mono">visit_db.visits / visit_state_history</td><td class="mono">uq_visits_appointment; uq_visit_history_visit_to</td><td>One visit per appointment; each state recorded once</td></tr>
+      <tr><td class="mono">visit_db.visits / visit_state_history</td><td class="mono">uq_visits_appointment; uq_visit_history_visit_to; partial ix_visits_unsettled</td><td>One visit per appointment; each state recorded once; the reconciler finds unsettled visits cheaply</td></tr>
+      <tr><td class="mono">provider_db.schedule_change_events</td><td class="mono">ck_schedule_change_events_type_valid; partial ix_schedule_change_events_pending</td><td>Only the three known change types; draining the feed stays cheap</td></tr>
       <tr><td class="mono">billing_db.billing_records / billing_status_history</td><td class="mono">uq_billing_records_appointment_id; uq_billing_history_record_key</td><td>One record per appointment; retried billing calls are no-ops</td></tr>
-      <tr><td class="mono">identity_db.users</td><td class="mono">CHECK role ∈ {patient,provider,front_desk,admin}; UNIQUE(email)</td><td>RBAC vocabulary enforced in the DB; no duplicate accounts</td></tr>
+      <tr><td class="mono">identity_db.users</td><td class="mono">CHECK role ∈ {patient,provider,front_desk,admin}; uq_users_email_lower: UNIQUE(lower(email)); ix_users_clinic_id</td><td>RBAC vocabulary enforced in the DB; no duplicate accounts whatever the casing (legacy rows matched, not rewritten)</td></tr>
       <tr><td class="mono">provider_db.availability_templates</td><td class="mono">CHECK day_of_week 0..6</td><td>Valid weekday only</td></tr>
       <tr><td class="mono">patients / providers</td><td class="mono">user_id UNIQUE, NULLABLE</td><td>Profile may have no login (PPL-01); an account maps to at most one profile (a second link is a 409)</td></tr>
       <tr><td class="mono">provider_db.specialties</td><td class="mono">UNIQUE(name)</td><td>No duplicate specialties, even under concurrent creation</td></tr>

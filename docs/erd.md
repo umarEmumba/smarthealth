@@ -2,20 +2,24 @@
 
 Since Phase 1.1 there is no single system-of-record schema. Each service owns one PostgreSQL database
 and one SQLAlchemy `DeclarativeBase`, and each has its own Alembic baseline. Phase 2 extends
-`scheduling_db` (appointments, idempotency keys, history, waitlist) and adds `visit_db` and `billing_db`:
+`scheduling_db` (appointments, idempotency keys, history, waitlist) and adds `visit_db` and `billing_db`.
+Phase 2.1 adds five migrations (the appointment state machine, schedule-change flags and feed, visit
+settlement markers and the case-insensitive email index):
 
 | Service | Database | Models | Baseline migration |
 |---|---|---|---|
-| Identity | `identity_db` | `services/identity/repository/models.py` | `identity_0001_accounts` |
+| Identity | `identity_db` | `services/identity/repository/models.py` | `identity_0001_accounts` → `identity_0002_email_lower_unique` (Phase 2.1) |
 | Organization | `organization_db` | `services/organization/repository/models.py` | `organization_0001_org_hierarchy` |
-| Provider | `provider_db` | `services/provider/repository/models.py` | `provider_0001_providers` |
+| Provider | `provider_db` | `services/provider/repository/models.py` | `provider_0001_providers` → `provider_0002_schedule_change_events` (Phase 2.1) |
 | Patient | `patient_db` | `services/patient/repository/models.py` | `patient_0001_patients` |
-| Scheduling | `scheduling_db` | `services/scheduling/repository/models.py` | `scheduling_0001_provider_slots` → `scheduling_0002_appointments` → `scheduling_0003_waitlist` (Phase 2) |
-| Visit (Phase 2) | `visit_db` | `services/visit/repository/models.py` | `visit_0001_visits` |
+| Scheduling | `scheduling_db` | `services/scheduling/repository/models.py` | `scheduling_0001_provider_slots` → `scheduling_0002_appointments` → `scheduling_0003_waitlist` (Phase 2) → `scheduling_0004_appointment_states` → `scheduling_0005_schedule_change_flags` (Phase 2.1) |
+| Visit (Phase 2) | `visit_db` | `services/visit/repository/models.py` | `visit_0001_visits` → `visit_0002_settlement_markers` (Phase 2.1) |
 | Billing (Phase 2) | `billing_db` | `services/billing/repository/models.py` | `billing_0001_billing_records` |
 
 **Legend:** `PK` primary key · `FK` foreign key (always *within* one service) · `UK` unique · 🔒 PHI-bearing
 (never logged, audited or sent to another service) · soft-deletable tables carry `is_active` + `deactivated_at`.
+`UK` on two columns of one table = one composite unique constraint (the comment names it) · `UK` with "partial" = unique only
+for the active rows the comment names. A dashed line *inside* one schema is a plain id in the same database with no FK.
 **No foreign key crosses a service.** A column that points at another service's row is a plain UUID, drawn as a
 **dashed id-only link** in the last diagram and validated at write time through the owner's API (D-05), never at
 read time and never with a cascade (D-06). This is asserted by `tests/libs/test_service_isolation.py`.
@@ -28,15 +32,18 @@ read time and never with a cascade (D-06). This is asserted by `tests/libs/test_
 erDiagram
     USERS {
         uuid id PK "gen_random_uuid()"
-        varchar(320) email UK
+        varchar(320) email UK "unique on lower(email): uq_users_email_lower (identity_0002)"
         varchar(255) hashed_password
         varchar(32) role "CHECK: patient|provider|front_desk|admin"
-        uuid clinic_id "nullable, plain UUID (Organization), no FK"
+        uuid clinic_id "nullable, plain UUID (Organization), no FK; indexed: ix_users_clinic_id"
         timestamptz created_at
     }
 ```
 
 Accounts only: credentials, role and clinic scope. No patient or provider profile data lives here.
+Email identity is case-insensitive: the unique index is on `lower(email)` (`uq_users_email_lower`, Phase 2.1),
+so `Alice@x` and `alice@x` are one account. The migration refuses over case-insensitive duplicates (it reports a
+group count, never an address) and rewrites no row; legacy mixed-case rows keep their casing.
 
 ## organization_db
 
@@ -69,6 +76,8 @@ erDiagram
     PROVIDERS ||--o{ AVAILABILITY_TEMPLATES : "defines"
     PROVIDERS ||--o{ PROVIDER_SPECIALTIES : ""
     SPECIALTIES ||--o{ PROVIDER_SPECIALTIES : ""
+    PROVIDERS |o..o{ SCHEDULE_CHANGE_EVENTS : "provider_id (same db, no FK)"
+    AVAILABILITY_TEMPLATES |o..o{ SCHEDULE_CHANGE_EVENTS : "template_id (same db, no FK)"
 
     PROVIDERS {
         uuid id PK
@@ -101,10 +110,28 @@ erDiagram
         boolean is_active
         timestamptz deactivated_at "nullable"
     }
+    SCHEDULE_CHANGE_EVENTS {
+        uuid id PK
+        uuid provider_id "plain id, no FK, not even to providers"
+        varchar(32) change_type "CHECK: template_updated|template_deactivated|provider_deactivated"
+        uuid template_id "nullable (null for provider_deactivated), plain id, no FK"
+        timestamptz created_at
+        timestamptz delivered_at "NULL = pending; set by the consumer's acknowledgement"
+    }
 ```
 
 Provider holds no clinic data; the clinic (and its timezone) is reachable through the department's
 Organization reference.
+
+`schedule_change_events` (Phase 2.1, `provider_0002`) is Provider's **outbox** for changes that can make
+already-generated slots wrong. A row is written in the same transaction as the template edit, template
+deactivation or provider deactivation (a change that alters nothing writes none), carries ids and a change
+type only, and has no foreign key so it outlives any later cleanup of its subject. Event flow: Provider
+outbox row → Scheduling's poller Schedule reads the pending rows over `GET /internal/schedule-changes` →
+starts one `ScheduleChangeWorkflow` per event → acknowledges (`delivered_at`) → the workflow withdraws slots
+and flags appointments in `scheduling_db`. Partial index `ix_schedule_change_events_pending (created_at, id)
+WHERE delivered_at IS NULL` serves the feed; delivered rows are never purged. Phase 3 can publish the same
+rows to Kafka.
 
 ## patient_db
 
@@ -134,68 +161,81 @@ service's database, or the Mongo audit trail (field names only).
 erDiagram
     PROVIDER_SLOTS ||--o{ APPOINTMENTS : "slot_id (FK, same db)"
     APPOINTMENTS ||--o{ APPOINTMENT_STATUS_HISTORY : "appointment_id (FK)"
-    APPOINTMENTS ||--o{ IDEMPOTENCY_KEYS : "appointment_id"
+    APPOINTMENTS ||..o{ IDEMPOTENCY_KEYS : "appointment_id (same db, no FK)"
+    APPOINTMENTS |o..o| PROVIDER_SLOTS : "held_by_appointment_id (same db, no FK)"
+    APPOINTMENTS |o..o{ WAITLIST_ENTRIES : "matched_/booked_appointment_id (same db, no FK)"
     PROVIDER_SLOTS {
         uuid id PK
-        uuid provider_id "plain UUID (Provider), no FK"
+        uuid provider_id UK "plain UUID (Provider), no FK; UK with start_time"
         uuid clinic_id "plain UUID (Organization) - Phase 2"
         uuid department_id "plain UUID (Organization) - Phase 2"
-        timestamptz start_time "UK with provider_id"
+        timestamptz start_time UK "with provider_id (uq_provider_slots_provider_start)"
         timestamptz end_time "CHECK end_time > start_time"
         varchar(16) status "CHECK: available|held|booked|cancelled"
         timestamptz held_until "Phase 2: hold expiry (reaper)"
-        uuid held_by_appointment_id "Phase 2"
+        uuid held_by_appointment_id "Phase 2; appointments.id, same db, no FK"
     }
     APPOINTMENTS {
         uuid id PK
         uuid clinic_id "plain UUID"
         uuid patient_id "plain UUID (Patient)"
         uuid provider_id "plain UUID (Provider)"
-        uuid slot_id FK
+        uuid slot_id FK, UK "partial: uq_appointments_active_slot (pending|confirmed|checked_in|completed|no_show)"
         timestamptz slot_start "copied from slot"
         timestamptz slot_end "copied from slot"
-        varchar(16) status "CHECK: pending|confirmed|cancelled|failed"
-        varchar(64) failure_reason "machine-readable (BillingRejected, ...)"
+        varchar(16) status "CHECK: pending|confirmed|checked_in|completed|no_show|cancelled|failed"
+        varchar(64) failure_reason "machine-readable (BillingRejected, hold_expired, workflow_lost, ...)"
         varchar(64) coverage_ref "opaque; never logged or in workflow I/O"
         int version "bumped by cancel/reschedule attempts"
         timestamptz workflow_started_at "NULL = start lost (starter Schedule)"
-        uuid created_by
+        timestamptz schedule_change_flagged_at "nullable; set once when a provider schedule change affected this booking (scheduling_0005)"
+        varchar(32) schedule_change_reason "nullable; template_updated|template_deactivated|provider_deactivated"
+        uuid created_by "plain UUID (Identity user)"
     }
     IDEMPOTENCY_KEYS {
-        uuid caller_user_id PK
+        uuid caller_user_id PK "plain UUID (Identity user)"
         varchar(255) key PK
         char(64) request_hash "SHA-256 of the canonical body"
-        uuid appointment_id
+        uuid appointment_id "appointments.id, same db, no FK"
         timestamptz expires_at "lazy expiry, overwritten not deleted"
     }
     APPOINTMENT_STATUS_HISTORY {
         uuid id PK
         uuid appointment_id FK
         varchar(16) from_status
-        varchar(16) to_status
+        varchar(16) to_status "equal to from_status for a note (schedule_changed:..., billing_void_checked)"
         varchar(64) reason
-        varchar(64) actor "user id or workflow:<id>"
+        varchar(64) actor "user id, workflow:<id> or system:reconciler"
     }
     WAITLIST_ENTRIES {
         uuid id PK
-        uuid clinic_id
-        uuid provider_id "plain UUID"
-        uuid patient_id "plain UUID"
+        uuid clinic_id "plain UUID (Organization)"
+        uuid provider_id UK "plain UUID (Provider); partial UK with patient_id (waiting|matched)"
+        uuid patient_id UK "plain UUID (Patient); partial UK with provider_id"
         timestamptz window_start "optional"
         timestamptz window_end "optional, CHECK after start"
         varchar(64) coverage_ref "never returned"
         varchar(16) status "CHECK: waiting|matched|booked|failed|cancelled"
         varchar(64) failure_reason
-        uuid matched_appointment_id
-        uuid booked_appointment_id
+        uuid matched_appointment_id "appointments.id, same db, no FK"
+        uuid booked_appointment_id "appointments.id, same db, no FK"
         int attempts
+        uuid created_by "plain UUID (Identity user)"
+        timestamptz created_at
+        timestamptz updated_at
     }
 ```
 
 `ex_provider_slots_no_overlap` (GiST, `btree_gist`) still stops overlapping slots for one provider.
 Phase 2 adds the appointment-level arbiters: `uq_appointments_active_slot` (partial unique index on
-`slot_id` where status is `pending` or `confirmed`) and `ex_appointments_patient_no_overlap` (one patient
-cannot hold two overlapping active appointments). Partial indexes `ix_provider_slots_held_until` (reaper),
+`slot_id`) and `ex_appointments_patient_no_overlap` (one patient cannot hold two overlapping active
+appointments). Since Phase 2.1 (`scheduling_0004`) "active" means every slot-holding status: `pending`,
+`confirmed`, `checked_in`, `completed` and `no_show`, so a patient who checked in, or whose visit is done,
+still holds the slot and cannot be double-booked at the storage layer. The status CHECK lists the same five
+plus `cancelled` and `failed`; the model builds both from one vocabulary
+(`services/scheduling/domain/enums.py`). `scheduling_0005` adds the two nullable flag columns and the partial
+index `ix_appointments_schedule_flagged (clinic_id, slot_start) WHERE schedule_change_flagged_at IS NOT NULL`
+(the staff worklist). Partial indexes `ix_provider_slots_held_until` (reaper),
 `ix_appointments_pending_unstarted` (starter) and `ix_waitlist_fifo` (FIFO claim) serve the background
 workflows.
 
@@ -206,25 +246,35 @@ erDiagram
     VISITS ||--o{ VISIT_STATE_HISTORY : "visit_id (FK)"
     VISITS {
         uuid id PK
-        uuid appointment_id "UK uq_visits_appointment; plain UUID (Scheduling)"
-        uuid clinic_id
-        uuid patient_id
-        uuid provider_id
+        uuid appointment_id UK "uq_visits_appointment; plain UUID (Scheduling)"
+        uuid clinic_id "plain UUID (Organization)"
+        uuid patient_id "plain UUID (Patient)"
+        uuid provider_id "plain UUID (Provider)"
         varchar(16) status "CHECK: checked_in|in_progress|completed"
         timestamptz checked_in_at
         timestamptz started_at
         timestamptz completed_at
         timestamptz downstream_started_at "NULL after completion = sweeper picks it up"
-        uuid created_by
+        timestamptz billing_settled_at "nullable; set once when billing finalize landed or reached a terminal outcome (visit_0002)"
+        varchar(32) billing_outcome "nullable; finalized|no_record|not_finalizable|..."
+        timestamptz appointment_settled_at "nullable; set once when the appointment completion landed or reached a terminal outcome"
+        varchar(32) appointment_outcome "nullable; completed|no_appointment|not_checked_in"
+        uuid created_by "plain UUID (Identity user)"
     }
     VISIT_STATE_HISTORY {
         uuid id PK
-        uuid visit_id FK
+        uuid visit_id FK, UK "UK with to_status"
         varchar(16) from_status
-        varchar(16) to_status "UK with visit_id"
+        varchar(16) to_status UK "with visit_id (uq_visit_history_visit_to)"
         varchar(64) actor
     }
 ```
+
+The settlement markers (`visit_0002`) record which downstream steps of a completed visit have landed. NULL
+means "not settled yet" and is what the visit reconciler reads, through the partial index `ix_visits_unsettled
+(completed_at) WHERE status = 'completed' AND (billing_settled_at IS NULL OR appointment_settled_at IS NULL)`.
+Visits completed before Phase 2.1 have both markers NULL and are not backfilled; their appointment settles as
+`not_checked_in`.
 
 ## billing_db (Phase 2)
 
@@ -233,19 +283,19 @@ erDiagram
     BILLING_RECORDS ||--o{ BILLING_STATUS_HISTORY : "record_id (FK)"
     BILLING_RECORDS {
         uuid id PK
-        uuid appointment_id "UK; plain UUID (Scheduling)"
-        uuid clinic_id
+        uuid appointment_id UK "uq_billing_records_appointment_id; plain UUID (Scheduling)"
+        uuid clinic_id "plain UUID (Organization)"
         varchar(16) status "CHECK: pending|verified|failed|voided|refund_pending|refunded|no_refund|finalized"
         varchar(16) coverage_kind "coarse kind only, never the reference"
         varchar(64) reason_code
     }
     BILLING_STATUS_HISTORY {
         uuid id PK
-        uuid record_id FK
+        uuid record_id FK, UK "UK with idempotency_key"
         varchar(16) from_status
         varchar(16) to_status
         varchar(64) reason_code
-        varchar(200) idempotency_key "UK with record_id"
+        varchar(200) idempotency_key UK "with record_id; rows with a NULL key are not constrained"
         varchar(64) actor
     }
 ```
@@ -314,7 +364,7 @@ erDiagram
 | `availability_templates.department_id` | Organization | template create only | 422 | 503 |
 | `provider_slots.provider_id`, `clinic_id`, `department_id` | Provider, Organization | slot generation | 422 | 503 |
 | `appointments.patient_id`, `provider_id`, clinic scope | Patient, Provider, Organization | booking saga `validate` step (and the API for patient self-booking) | appointment `failed` (`ReferenceInvalid`) | activity retried, then `failed` |
-| `visits.appointment_id` | Scheduling | check-in | 409 "appointment not confirmed" / 404 | 503 |
+| `visits.appointment_id` | Scheduling (internal check-in, which also moves the appointment to `checked_in`) | check-in | 409 `appointment not confirmed`, `check-in window not open` or `check-in window closed` / 404 | 503 |
 | `billing_records.appointment_id` | — (Billing trusts its callers, which are aud-scoped service tokens) | pre-check | — | — |
 
 All Phase 2 references are ids only; reads never enrich across services.
@@ -324,16 +374,19 @@ All Phase 2 references are ids only; reads never enrich across services.
 | Table | Constraint | What it guarantees |
 |---|---|---|
 | `scheduling_db.provider_slots` | `EXCLUDE USING gist (provider_id WITH =, tstzrange(start_time,end_time) WITH &&) WHERE status <> 'cancelled'` (`ex_provider_slots_no_overlap`) | A provider's slots never overlap (requires `btree_gist`). |
-| `scheduling_db.appointments` | `uq_appointments_active_slot`: `UNIQUE (slot_id) WHERE status IN ('pending','confirmed')` | **Double-booking is impossible at the storage layer**: of N concurrent bookings for one slot exactly one row commits; the rest get 409 (proven by the concurrency suite and the live demo). |
-| `scheduling_db.appointments` | `ex_appointments_patient_no_overlap`: GiST exclusion on `(patient_id, tstzrange(slot_start, slot_end))` for active appointments | One patient cannot be in two places at once. |
+| `scheduling_db.appointments` | `uq_appointments_active_slot`: `UNIQUE (slot_id) WHERE status IN ('pending','confirmed','checked_in','completed','no_show')` (widened in `scheduling_0004`) | **Double-booking is impossible at the storage layer**: of N concurrent bookings for one slot exactly one row commits; the rest get 409 (proven by the concurrency suite and the live demo). |
+| `scheduling_db.appointments` | `ex_appointments_patient_no_overlap`: GiST exclusion on `(patient_id, tstzrange(slot_start, slot_end))` for the same five active statuses (widened in `scheduling_0004`) | One patient cannot be in two places at once, including after check-in or completion. |
+| `scheduling_db.appointments` | `ck_appointments_status_valid` (`pending`, `confirmed`, `checked_in`, `completed`, `no_show`, `cancelled`, `failed`) | The seven-state vocabulary is enforced in the database. |
 | `scheduling_db.provider_slots` | `ck_provider_slots_end_after_start`; `uq_provider_slots_provider_start` | No empty/negative slots; regeneration is idempotent (`ON CONFLICT DO NOTHING`). |
 | `scheduling_db.idempotency_keys` | `PRIMARY KEY (caller_user_id, key)` + `request_hash` | A retried booking returns the original appointment; the same key with a different body is 422. |
 | `scheduling_db.waitlist_entries` | `uq_waitlist_active_patient_provider`: `UNIQUE (patient_id, provider_id) WHERE status IN ('waiting','matched')` | A patient waits at most once per provider. |
 | `visit_db.visits` | `uq_visits_appointment` | One visit per appointment; a repeated check-in returns the existing visit. |
+| `visit_db.visits` | partial index `ix_visits_unsettled` | The reconciler finds completed visits with an empty settlement marker without scanning the table. |
+| `provider_db.schedule_change_events` | `ck_schedule_change_events_type_valid`; partial index `ix_schedule_change_events_pending` (`WHERE delivered_at IS NULL`) | Only the three known change types are stored; draining the feed stays cheap however many delivered rows exist. |
 | `visit_db.visit_state_history` | `uq_visit_history_visit_to` (`visit_id`, `to_status`) | Each visit state is recorded once, however often a transition is retried. |
 | `billing_db.billing_records` | `uq_billing_records_appointment_id` | One billing record per appointment. |
-| `billing_db.billing_status_history` | `uq_billing_history_record_key` (`record_id`, `idempotency_key`) | A retried billing call is a no-op instead of a second transition. |
-| `identity_db.users` | `CHECK role IN ('patient','provider','front_desk','admin')`; `UNIQUE(email)` | The 4-role RBAC vocabulary is enforced in the DB; no duplicate accounts. |
+| `billing_db.billing_status_history` | `uq_billing_history_record_key` (`record_id`, `idempotency_key`) | A retried billing call is a no-op instead of a second transition. `idempotency_key` is nullable and NULLs never collide, so rows written without a key are not covered. |
+| `identity_db.users` | `CHECK role IN ('patient','provider','front_desk','admin')`; `uq_users_email_lower`: `UNIQUE (lower(email))` (`identity_0002`); `ix_users_clinic_id` | The 4-role RBAC vocabulary is enforced in the DB; no duplicate accounts, whatever the casing (legacy mixed-case rows are matched, not rewritten). |
 | `provider_db.availability_templates` | `CHECK day_of_week BETWEEN 0 AND 6` | Weekly-template day is always a valid weekday. |
 | `patient_db.patients.user_id`, `provider_db.providers.user_id` | `UNIQUE`, `NULLABLE` | A profile may exist with no login (PPL-01), but an account maps to at most one profile (a second link is a 409). |
 | `provider_db.specialties.name` | `UNIQUE` | No duplicate specialties; concurrent creations of the same new specialty share one row. |
@@ -350,7 +403,12 @@ All Phase 2 references are ids only; reads never enrich across services.
   assumption ORG-03, awaiting mentor confirmation).
 - **Status, not deletion (Phase 2)** — appointments, visits, billing records and waitlist entries never
   leave their tables: failed bookings, cancellations and compensations are forward status transitions with an
-  append-only history row, so every outcome is reconstructable.
+  append-only history row, so every outcome is reconstructable. Phase 2.1 adds `checked_in`, `completed` and
+  `no_show` to that history; `no_show` is set only by the reconciler sweep, and a flagged appointment (a provider
+  schedule change) stays `confirmed` with its two flag columns set.
+- **Outbox, pulled (Phase 2.1)** — `provider_db.schedule_change_events` is written atomically with the change it
+  describes and read by Scheduling's poller; the event ids are plain ids with no foreign key, and a delivered
+  row is never deleted (a retention job is not part of Phase 2.1).
 - **Soft-delete** — every operational table except `provider_slots` (which uses `status`) and the reference
   tables `users`, `specialties`, `provider_specialties` carries `is_active` + `deactivated_at`; deletion is a
   status flip, never a row removal, and it never cascades across services (D-06).
