@@ -23,7 +23,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.scheduling.domain.enums import AppointmentStatus
+from services.scheduling.domain.enums import AppointmentStatus, SlotStatus
 from services.scheduling.domain.errors import IdempotencyKeyReused, PatientOverlap, SlotTaken
 from services.scheduling.repository.idempotency_repo import (
     claim_idempotency_key,
@@ -354,11 +354,14 @@ async def list_appointments(
     start: datetime | None = None,
     end: datetime | None = None,
     limit: int = 100,
+    flagged: bool | None = None,
 ) -> list[Appointment]:
     """Appointments matching every given filter, ordered by slot start.
 
     `start`/`end` bound `slot_start` as `[start, end)`. Scope filters
     (`clinic_id`, `patient_id`) are applied by the caller from the user's role.
+    `flagged=True` keeps only appointments a schedule change flagged (M2, plan
+    02.1-08), `flagged=False` only the unflagged ones, `None` both.
     """
     query = select(Appointment)
     if clinic_id is not None:
@@ -373,6 +376,10 @@ async def list_appointments(
         query = query.where(Appointment.slot_start >= start)
     if end is not None:
         query = query.where(Appointment.slot_start < end)
+    if flagged is True:
+        query = query.where(Appointment.schedule_change_flagged_at.is_not(None))
+    elif flagged is False:
+        query = query.where(Appointment.schedule_change_flagged_at.is_(None))
     query = query.order_by(Appointment.slot_start, Appointment.id).limit(limit)
     return list((await db.scalars(query)).all())
 
@@ -408,7 +415,10 @@ async def cancel_appointment(
     """
     row = (
         await db.execute(
-            text("SELECT status, slot_id FROM appointments WHERE id = :a FOR UPDATE"),
+            text(
+                "SELECT status, slot_id, (schedule_change_flagged_at IS NOT NULL) AS flagged "
+                "FROM appointments WHERE id = :a FOR UPDATE"
+            ),
             {"a": appointment_id},
         )
     ).one_or_none()
@@ -429,15 +439,22 @@ async def cancel_appointment(
         ),
         {"a": appointment_id},
     )
+    # A slot the schedule no longer offers (the appointment was flagged by a
+    # schedule change, M2) is WITHDRAWN when its booking goes away, not freed:
+    # freeing it would make a slot the provider no longer works bookable again.
     await db.execute(
         text(
             """
             UPDATE provider_slots
-               SET status = 'available', held_until = NULL, held_by_appointment_id = NULL
+               SET status = :freed, held_until = NULL, held_by_appointment_id = NULL
              WHERE id = :s AND held_by_appointment_id = :a AND status = 'booked'
             """
         ),
-        {"s": row.slot_id, "a": appointment_id},
+        {
+            "s": row.slot_id,
+            "a": appointment_id,
+            "freed": SlotStatus.CANCELLED.value if row.flagged else SlotStatus.AVAILABLE.value,
+        },
     )
     await append_status_history(
         db,
@@ -464,7 +481,9 @@ async def swap_slot(
     transaction: the new slot `held` (by this appointment) -> `booked`, the
     appointment repointed (`slot_id`, `slot_start`, `slot_end`,
     `version + 1`), the old slot -> `available`, and one
-    `confirmed -> confirmed` history row with reason `rescheduled`.
+    `confirmed -> confirmed` history row with reason `rescheduled`. A successful
+    swap also clears the schedule-change flag (M2, plan 02.1-08): the booking
+    now sits on a valid slot.
 
     * "swapped"  - done now.
     * "already"  - the appointment already points at the new slot (a retry):
@@ -479,7 +498,10 @@ async def swap_slot(
     """
     row = (
         await db.execute(
-            text("SELECT status, slot_id FROM appointments WHERE id = :a FOR UPDATE"),
+            text(
+                "SELECT status, slot_id, (schedule_change_flagged_at IS NOT NULL) AS flagged "
+                "FROM appointments WHERE id = :a FOR UPDATE"
+            ),
             {"a": appointment_id},
         )
     ).one_or_none()
@@ -512,6 +534,7 @@ async def swap_slot(
                 """
                 UPDATE appointments
                    SET slot_id = :new, slot_start = :st, slot_end = :en,
+                       schedule_change_flagged_at = NULL, schedule_change_reason = NULL,
                        version = version + 1, updated_at = now()
                  WHERE id = :a AND slot_id = :old AND status = 'confirmed'
                 RETURNING id
@@ -532,15 +555,21 @@ async def swap_slot(
     if moved is None:  # pragma: no cover - the row is locked as confirmed on old above
         return "rejected"
 
+    # The old slot of a flagged appointment (M2) no longer exists in the
+    # provider's schedule: withdraw it instead of freeing it.
     await db.execute(
         text(
             """
             UPDATE provider_slots
-               SET status = 'available', held_until = NULL, held_by_appointment_id = NULL
+               SET status = :freed, held_until = NULL, held_by_appointment_id = NULL
              WHERE id = :s AND held_by_appointment_id = :a AND status = 'booked'
             """
         ),
-        {"s": old_slot_id, "a": appointment_id},
+        {
+            "s": old_slot_id,
+            "a": appointment_id,
+            "freed": SlotStatus.CANCELLED.value if row.flagged else SlotStatus.AVAILABLE.value,
+        },
     )
     await append_status_history(
         db,
@@ -813,3 +842,62 @@ async def list_no_show_candidates(
         .limit(limit)
     )
     return list((await db.scalars(query)).all())
+
+
+# --- plan 02.1-08: schedule-change flags (M2) -------------------------------------
+
+SCHEDULE_CHANGE_NOTE_PREFIX = "schedule_changed:"
+SCHEDULE_CHANGE_ACTOR = "system:schedule-change"
+
+
+async def active_appointment_on_slot(db: AsyncSession, *, slot_id: uuid.UUID) -> uuid.UUID | None:
+    """The id of the `confirmed` or `checked_in` appointment pointing at
+    `slot_id` (the only states a schedule change flags), or None. At most one
+    exists (`uq_appointments_active_slot`). Read-only."""
+    return await db.scalar(
+        text(
+            "SELECT id FROM appointments "
+            "WHERE slot_id = :s AND status IN ('confirmed', 'checked_in') LIMIT 1"
+        ),
+        {"s": slot_id},
+    )
+
+
+async def flag_schedule_change(
+    db: AsyncSession, *, appointment_id: uuid.UUID, reason: str
+) -> bool:
+    """Flag a `confirmed` or `checked_in` appointment whose slot a schedule
+    change removed (M2): set `schedule_change_flagged_at = now()` and
+    `schedule_change_reason`, and write the `schedule_changed:<reason>` history
+    note (actor `system:schedule-change`), in the caller's transaction.
+
+    The UPDATE is conditional on `schedule_change_flagged_at IS NULL` and the
+    status, so the flag is set once: True when THIS call flagged the
+    appointment, False when it was already flagged, is in another state
+    (cancelled, failed, completed, pending...) or is missing. The status, slot
+    and version are never changed: staff decide whether to cancel or
+    reschedule. Flushes only; the caller commits.
+    """
+    flagged = await db.scalar(
+        text(
+            """
+            UPDATE appointments
+               SET schedule_change_flagged_at = now(), schedule_change_reason = :r,
+                   updated_at = now()
+             WHERE id = :a
+               AND schedule_change_flagged_at IS NULL
+               AND status IN ('confirmed', 'checked_in')
+            RETURNING id
+            """
+        ),
+        {"a": appointment_id, "r": reason},
+    )
+    if flagged is None:
+        return False
+    await record_history_note(
+        db,
+        appointment_id=appointment_id,
+        reason=f"{SCHEDULE_CHANGE_NOTE_PREFIX}{reason}",
+        actor=SCHEDULE_CHANGE_ACTOR,
+    )
+    return True

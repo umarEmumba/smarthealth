@@ -3,6 +3,7 @@
     POST /api/appointments                   PATIENT, FRONT_DESK, ADMIN   202 Accepted
     GET  /api/appointments/{appointment_id}  PATIENT (own), FRONT_DESK (own clinic), ADMIN
     GET  /api/appointments                   same scope rules, with filters
+                                             (`?flagged=true`: schedule-change flagged, M2)
     POST /api/appointments/{id}/cancel       same scope rules   202 / 200 no-op  (plan 02-08)
     POST /api/appointments/{id}/reschedule   same scope rules   202              (plan 02-08)
 
@@ -375,6 +376,8 @@ def _to_out(appointment: Appointment, history: list | None = None) -> Appointmen
         version=appointment.version,
         created_at=appointment.created_at,
         updated_at=appointment.updated_at,
+        schedule_change_flagged=appointment.schedule_change_flagged_at is not None,
+        schedule_change_reason=appointment.schedule_change_reason,
         history=[
             AppointmentHistoryOut(
                 from_status=h.from_status,
@@ -414,6 +417,8 @@ async def list_appointments(
     appointment_status: str | None = Query(default=None, alias="status"),
     start: datetime | None = None,
     end: datetime | None = None,
+    # M2 (plan 02.1-08): true = only appointments a schedule change flagged.
+    flagged: bool | None = None,
     limit: int = Query(default=100, ge=1, le=LIST_LIMIT_MAX),
     user: AuthenticatedUser = Depends(require_role(*BOOKING_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -448,6 +453,7 @@ async def list_appointments(
         start=start,
         end=end,
         limit=limit,
+        flagged=flagged,
     )
     return [_to_out(a) for a in rows]
 

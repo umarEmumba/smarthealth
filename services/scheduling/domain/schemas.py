@@ -75,6 +75,13 @@ class AppointmentOut(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+    # M2 (plan 02.1-08): True when a provider schedule change removed the
+    # appointment's slot. The appointment stays confirmed; staff cancel or
+    # reschedule it (a reschedule clears the flag). `schedule_change_reason` is a
+    # fixed code (template_updated, template_deactivated, provider_deactivated),
+    # None when not flagged.
+    schedule_change_flagged: bool = False
+    schedule_change_reason: str | None = None
     # Filled on the single-appointment read; empty in list responses.
     history: list[AppointmentHistoryOut] = Field(default_factory=list)
 
