@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -19,17 +21,29 @@ import structlog
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+from pymongo import AsyncMongoClient
 from temporalio.client import WorkflowExecutionStatus
+from temporalio.exceptions import ApplicationError
 from temporalio.service import RPCError, RPCStatusCode
-from temporalio.testing import WorkflowEnvironment
+from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 
+from libs.auth.service_tokens import ServiceTokenProvider, load_client_secret
 from libs.db.postgres import get_session_factory
+from libs.internal_client import UpstreamServiceUnavailable
 from libs.observability.logging import configure_logging
+from libs.temporal_policies import VISIT_TASK_QUEUE
 from services.visit.api import visits as visits_api
 from services.visit.config import settings as visit_settings
-from services.visit.domain.contracts import VisitCompletedResult, visit_completed_workflow_id
+from services.visit.activities.downstream import VisitActivities
+from services.visit.domain.contracts import (
+    VISIT_COMPLETED_WORKFLOW,
+    VisitCompletedInput,
+    VisitCompletedResult,
+    visit_completed_workflow_id,
+)
 from services.visit.downstream import sweep_unstarted
-from tests.conftest import harness_apps
+from services.visit.repository import visit_repo
+from tests.conftest import degraded_mesh, harness_apps
 from tests.scheduling.seed import auth
 from tests.visit.conftest import (
     VisitWorld,
@@ -493,3 +507,279 @@ async def test_tracer_completion_completes_the_appointment(
     assert markers["appointment_settled_at"] is not None
     assert markers["appointment_outcome"] == "completed"
     assert await audit_count(visit["id"], "visit.appointment_completed") == 1
+
+
+# --- plan 02.1-09 Task 2: refusal and recovery paths, driven through the real activities ---
+
+
+def _activities(http: httpx.AsyncClient, mongo: AsyncMongoClient) -> VisitActivities:
+    """`VisitActivities` wired like the worker's, over `http` (the mesh or a degraded one)."""
+    tokens = ServiceTokenProvider(
+        "visit",
+        load_client_secret(visit_settings.client_secret_path),
+        visit_settings.identity_service_url,
+        http=http,
+    )
+    return VisitActivities(get_session_factory(visit_settings.database_url), http, tokens, mongo, None)
+
+
+async def _run_activity(method: Any, visit_id: str, appointment_id: str, vw: VisitWorld) -> Any:
+    """Run one activity method through `ActivityEnvironment` under the visit's
+    deterministic workflow id (its audit dedupe key reads it)."""
+    environment = ActivityEnvironment()
+    environment.info = replace(environment.info, workflow_id=visit_completed_workflow_id(visit_id))
+    return await environment.run(
+        method,
+        VisitCompletedInput(
+            visit_id=visit_id, appointment_id=appointment_id, clinic_id=str(vw.clinic_id)
+        ),
+    )
+
+
+async def _legacy_completed_visit(vw: VisitWorld, appointment_id: str) -> str:
+    """A completed visit row inserted by SQL for an appointment that was never
+    checked in: what a visit created before plan 02.1-06 looks like."""
+    world = vw.world
+    visit_id = uuid.uuid4()
+    engine = create_async_engine(visit_settings.database_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO visits (id, appointment_id, clinic_id, patient_id, provider_id, "
+                    "status, completed_at, created_by) VALUES (:id, :a, :c, :pt, :pr, 'completed', "
+                    "now(), :by)"
+                ),
+                {
+                    "id": visit_id,
+                    "a": appointment_id,
+                    "c": world.clinic_id,
+                    "pt": world.patient_id,
+                    "pr": world.provider_id,
+                    "by": uuid.uuid4(),
+                },
+            )
+    finally:
+        await engine.dispose()
+    return str(visit_id)
+
+
+async def test_legacy_visit_settles_as_not_checked_in_and_never_blocks_billing(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    visit_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """A visit whose appointment is still `confirmed` (created before the
+    check-in integration): Scheduling refuses the completion (409), the marker
+    records `not_checked_in`, the branch reports the skip, and billing and the
+    intents still land in the same run."""
+    appointment_id = await confirmed_appointment(visit_world, with_billing=True, mesh=mesh)
+    visit_id = await _legacy_completed_visit(visit_world, appointment_id)
+
+    handle = await temporal_env.client.start_workflow(
+        VISIT_COMPLETED_WORKFLOW,
+        VisitCompletedInput(
+            visit_id=visit_id, appointment_id=appointment_id, clinic_id=str(visit_world.clinic_id)
+        ),
+        id=visit_completed_workflow_id(visit_id),
+        task_queue=VISIT_TASK_QUEUE,
+        result_type=VisitCompletedResult,
+    )
+    # Time skipping stays locked: no step here waits on a timer, and unlocking
+    # right after the start would fast-forward past the cold workflow task.
+    result = await handle.result()
+
+    assert result == VisitCompletedResult(
+        outcome="completed",
+        billing="finalized",
+        followup="recorded",
+        analytics="recorded",
+        appointment="skipped:AppointmentNotCheckedIn",
+    )
+    markers = await _markers(visit_id)
+    assert markers["appointment_outcome"] == "not_checked_in"
+    assert markers["appointment_settled_at"] is not None
+    assert markers["billing_outcome"] == "finalized"
+    assert await _appointment_status(client, visit_world, appointment_id) == "confirmed"
+    assert await audit_count(visit_id, "visit.appointment_completed") == 0
+    assert await _billing_status(client, visit_world, appointment_id) == "finalized"
+
+
+async def test_legacy_visit_activity_raises_the_non_retryable_business_error(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    mongo_client: AsyncMongoClient,
+) -> None:
+    appointment_id = await confirmed_appointment(visit_world)
+    visit_id = await _legacy_completed_visit(visit_world, appointment_id)
+    activities = _activities(mesh, mongo_client)
+
+    with pytest.raises(ApplicationError) as exc_info:
+        await _run_activity(activities.complete_appointment, visit_id, appointment_id, visit_world)
+    assert exc_info.value.type == "AppointmentNotCheckedIn"
+    assert exc_info.value.non_retryable is True
+    assert (await _markers(visit_id))["appointment_outcome"] == "not_checked_in"
+
+
+async def test_missing_appointment_settles_as_no_appointment(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    mongo_client: AsyncMongoClient,
+) -> None:
+    appointment_id = str(uuid.uuid4())  # Scheduling has no such appointment (404)
+    visit_id = await _legacy_completed_visit(visit_world, appointment_id)
+    activities = _activities(mesh, mongo_client)
+
+    outcome = await _run_activity(
+        activities.complete_appointment, visit_id, appointment_id, visit_world
+    )
+    assert outcome == "no_appointment"
+    markers = await _markers(visit_id)
+    assert markers["appointment_outcome"] == "no_appointment"
+    assert markers["appointment_settled_at"] is not None
+
+
+async def test_another_clinics_appointment_is_never_completed(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    other_world: VisitWorld,
+    mongo_client: AsyncMongoClient,
+) -> None:
+    """T-02.1-35: the explicit clinic id is re-applied by Scheduling, so an
+    appointment of another clinic answers 404 and is left untouched."""
+    visit, appointment_id, completed = await _completed_visit(client, mesh, other_world)
+    assert completed.status_code == 200, completed.text
+    activities = _activities(mesh, mongo_client)
+
+    # The activity input names `visit_world`'s clinic, not the appointment's.
+    outcome = await _run_activity(
+        activities.complete_appointment, visit["id"], appointment_id, visit_world
+    )
+    assert outcome == "no_appointment"
+    assert await _appointment_status(client, other_world, appointment_id) == "checked_in"
+
+
+async def test_complete_appointment_twice_completes_once(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    mongo_client: AsyncMongoClient,
+) -> None:
+    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
+    assert completed.status_code == 200, completed.text
+    assert await _appointment_status(client, visit_world, appointment_id) == "checked_in"
+    activities = _activities(mesh, mongo_client)
+
+    first = await _run_activity(
+        activities.complete_appointment, visit["id"], appointment_id, visit_world
+    )
+    marker = (await _markers(visit["id"]))["appointment_settled_at"]
+    second = await _run_activity(
+        activities.complete_appointment, visit["id"], appointment_id, visit_world
+    )
+
+    assert (first, second) == ("completed", "completed")
+    assert await _appointment_status(client, visit_world, appointment_id) == "completed"
+    assert (await _markers(visit["id"]))["appointment_settled_at"] == marker
+    assert await audit_count(visit["id"], "visit.appointment_completed") == 1
+
+
+async def test_scheduling_outage_is_retryable_and_leaves_the_marker_open(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    mongo_client: AsyncMongoClient,
+) -> None:
+    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
+    assert completed.status_code == 200, completed.text
+
+    async with degraded_mesh("scheduling") as degraded:
+        down = _activities(degraded, mongo_client)
+        with pytest.raises(UpstreamServiceUnavailable):
+            await _run_activity(down.complete_appointment, visit["id"], appointment_id, visit_world)
+    markers = await _markers(visit["id"])
+    assert markers["appointment_settled_at"] is None
+    assert markers["appointment_outcome"] is None
+    assert await _appointment_status(client, visit_world, appointment_id) == "checked_in"
+
+    # Scheduling is back: the retry lands.
+    up = _activities(mesh, mongo_client)
+    assert (
+        await _run_activity(up.complete_appointment, visit["id"], appointment_id, visit_world)
+        == "completed"
+    )
+    assert (await _markers(visit["id"]))["appointment_outcome"] == "completed"
+
+
+async def test_billing_marker_outcomes_and_a_repeat_never_overwrites(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    mongo_client: AsyncMongoClient,
+) -> None:
+    from tests.billing.conftest import service_token  # noqa: PLC0415
+    from tests.billing.conftest import transition as billing_transition  # noqa: PLC0415
+
+    activities = _activities(mesh, mongo_client)
+
+    # finalized
+    visit, appointment_id, _ = await _completed_visit(client, mesh, visit_world)
+    assert (
+        await _run_activity(activities.finalize_billing, visit["id"], appointment_id, visit_world)
+        == "finalized"
+    )
+    first = await _markers(visit["id"])
+    assert first["billing_outcome"] == "finalized"
+    assert first["billing_settled_at"] is not None
+    assert first["appointment_outcome"] is None  # the other marker is untouched
+    await _run_activity(activities.finalize_billing, visit["id"], appointment_id, visit_world)
+    assert await _markers(visit["id"]) == first  # a repeat keeps the first marker
+
+    # no_record: an appointment with no billing record at all
+    bare = await confirmed_appointment(visit_world)
+    resp = await check_in(client, visit_world.world.front_desk, bare)
+    assert resp.status_code == 201, resp.text
+    bare_visit = resp.json()["id"]
+    assert (
+        await _run_activity(activities.finalize_billing, bare_visit, bare, visit_world)
+        == "no_record"
+    )
+    assert (await _markers(bare_visit))["billing_outcome"] == "no_record"
+
+    # not_finalizable: the record was voided first (terminal, non-retryable)
+    voided = await confirmed_appointment(visit_world, with_billing=True, mesh=mesh)
+    token = await service_token(mesh, "scheduling")
+    moved = await billing_transition(mesh, token, voided, "voided", reason_code="booking_compensated")
+    assert moved.status_code == 200, moved.text
+    resp = await check_in(client, visit_world.world.front_desk, voided)
+    assert resp.status_code == 201, resp.text
+    voided_visit = resp.json()["id"]
+    with pytest.raises(ApplicationError) as exc_info:
+        await _run_activity(activities.finalize_billing, voided_visit, voided, visit_world)
+    assert exc_info.value.type == "BillingNotFinalizable"
+    assert (await _markers(voided_visit))["billing_outcome"] == "not_finalizable"
+
+
+async def test_marker_repository_functions_are_conditional(
+    client: AsyncClient, mesh: httpx.AsyncClient, visit_world: VisitWorld
+) -> None:
+    """The second write of a marker is a no-op that keeps the first outcome."""
+    visit, _, _ = await _completed_visit(client, mesh, visit_world)
+    factory = get_session_factory(visit_settings.database_url)
+    visit_id = uuid.UUID(visit["id"])
+    async with factory() as db:
+        assert await visit_repo.mark_appointment_settled(db, visit_id=visit_id, outcome="completed")
+        assert not await visit_repo.mark_appointment_settled(
+            db, visit_id=visit_id, outcome="not_checked_in"
+        )
+        assert await visit_repo.mark_billing_settled(db, visit_id=visit_id, outcome="finalized")
+        assert not await visit_repo.mark_billing_settled(db, visit_id=visit_id, outcome="no_record")
+        await db.commit()
+    markers = await _markers(visit["id"])
+    assert markers["appointment_outcome"] == "completed"
+    assert markers["billing_outcome"] == "finalized"
