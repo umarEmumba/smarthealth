@@ -374,3 +374,65 @@ async def test_reschedule_is_refused_after_check_in(
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"] == "appointment already checked in"
     assert await appointment_status(visit_world, appointment_id) == "checked_in"
+
+
+# --- S3 (plan 02.1-07): a failed audit AFTER the commit is not a failed check-in ----------
+
+
+def _failing_audit(monkeypatch: pytest.MonkeyPatch, module: Any, action: str) -> list[str]:
+    """`write_audit` in `module` raises for `action` only; returns the list the
+    failing calls append their action to."""
+    real = module.write_audit
+    failed: list[str] = []
+
+    async def flaky(mongo: Any, **kwargs: Any) -> None:
+        if kwargs.get("action") == action:
+            failed.append(action)
+            raise RuntimeError("audit sink down")
+        await real(mongo, **kwargs)
+
+    monkeypatch.setattr(module, "write_audit", flaky)
+    return failed
+
+
+async def test_a_failed_scheduling_audit_does_not_fail_the_check_in(
+    client: AsyncClient, visit_world: VisitWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scheduling's `appointment.check_in` audit is written after its commit; a
+    Mongo failure there must not turn an applied transition into a 500 that the
+    patient has to repeat."""
+    from services.scheduling.api import internal  # noqa: PLC0415
+
+    world = visit_world.world
+    appointment_id = await confirmed_appointment(visit_world)
+    failed = _failing_audit(monkeypatch, internal, "appointment.check_in")
+
+    resp = await check_in(client, world.front_desk, appointment_id)
+
+    assert resp.status_code == 201, resp.text
+    assert failed == ["appointment.check_in"]
+    assert (await get_appointment(client, world.front_desk, appointment_id))["status"] == "checked_in"
+    assert await visit_rows(appointment_id) == 1
+    # The transition stays durable in the history table without its audit entry.
+    assert await scheduling_history(visit_world, appointment_id) == [("confirmed", "checked_in")]
+    assert await audit_count(appointment_id, "appointment.check_in") == 0
+    assert await audit_count(resp.json()["id"], "visit.check_in") == 1
+
+
+async def test_a_failed_visit_audit_does_not_fail_the_check_in(
+    client: AsyncClient, visit_world: VisitWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Visit's own `visit.check_in` audit follows its commit; a failure there is
+    logged and the 201 still reports the created visit."""
+    world = visit_world.world
+    appointment_id = await confirmed_appointment(visit_world)
+    failed = _failing_audit(monkeypatch, visits_api, "visit.check_in")
+
+    resp = await check_in(client, world.front_desk, appointment_id)
+
+    assert resp.status_code == 201, resp.text
+    assert failed == ["visit.check_in"]
+    assert await visit_rows(appointment_id) == 1
+    assert await audit_count(resp.json()["id"], "visit.check_in") == 0
+    # Scheduling's own entry is unaffected.
+    assert await audit_count(appointment_id, "appointment.check_in") == 1

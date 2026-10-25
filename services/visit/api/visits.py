@@ -158,19 +158,33 @@ async def _detail(db: AsyncSession, visit: Visit) -> VisitDetailOut:
 async def _audit(
     mongo: AsyncMongoClient, user: AuthenticatedUser, visit: Visit, action: str
 ) -> None:
-    await write_audit(
-        mongo,
-        actor_id=user.sub,
-        actor_role=user.role.value,
-        action=action,
-        entity_type=ENTITY_TYPE,
-        entity_id=str(visit.id),
-        clinic_id=str(visit.clinic_id),
-        outcome="success",
-        changed_fields=["status"],
-        # One entry per (visit, action) even if an applied write were replayed.
-        dedupe_key=f"visit-{visit.id}:{action}",
-    )
+    """Best effort (plan 02.1-07, S3): every caller writes this AFTER the visit
+    change and its history row committed, so a failed audit write is logged
+    (`audit.write_failed`: action, ids and the exception type only) and never
+    turns an applied check-in/start/complete into a 500. Phase 3's
+    transactional outbox is the general fix."""
+    try:
+        await write_audit(
+            mongo,
+            actor_id=user.sub,
+            actor_role=user.role.value,
+            action=action,
+            entity_type=ENTITY_TYPE,
+            entity_id=str(visit.id),
+            clinic_id=str(visit.clinic_id),
+            outcome="success",
+            changed_fields=["status"],
+            # One entry per (visit, action) even if an applied write were replayed.
+            dedupe_key=f"visit-{visit.id}:{action}",
+        )
+    except Exception as exc:  # noqa: BLE001 - deliberately non-fatal
+        log.error(
+            "audit.write_failed",
+            action=action,
+            entity_type=ENTITY_TYPE,
+            entity_id=str(visit.id),
+            error=type(exc).__name__,
+        )
 
 
 def _unavailable(service: str) -> HTTPException:

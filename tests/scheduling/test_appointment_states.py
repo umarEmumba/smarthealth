@@ -291,6 +291,44 @@ async def test_complete_refuses_unchecked_in_and_missing(
     assert await history(engine, appt.appointment_id) == []
 
 
+async def test_a_failed_audit_does_not_fail_an_applied_complete(
+    mesh: httpx.AsyncClient,
+    state_world: VisitWorld,
+    seed: Seeder,
+    committed_scheduling_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S3 (plan 02.1-07): the `appointment.complete` audit is written after the
+    commit; if the audit sink is down the route still answers 200 and the
+    transition (with its history row) stands."""
+    from services.scheduling.api import internal  # noqa: PLC0415
+
+    engine = committed_scheduling_engine
+    world = state_world.world
+    appt = await seed(status="checked_in", clinic_id=world.clinic_id)
+    real = internal.write_audit
+
+    async def flaky(mongo, **kwargs):
+        if kwargs.get("action") == "appointment.complete":
+            raise RuntimeError("audit sink down")
+        await real(mongo, **kwargs)
+
+    monkeypatch.setattr(internal, "write_audit", flaky)
+
+    resp = await mesh.post(
+        _url(appt.appointment_id, "complete", world.clinic_id),
+        headers=_bearer(await _visit_token(mesh)),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "completed"
+    assert await row(engine, appt.appointment_id) == ("completed", 2)
+    assert [(h[0], h[1]) for h in await history(engine, appt.appointment_id)] == [
+        ("checked_in", "completed")
+    ]
+    assert await audit_count(str(appt.appointment_id), "appointment.complete") == 0
+
+
 # --- no-show --------------------------------------------------------------------------------
 
 

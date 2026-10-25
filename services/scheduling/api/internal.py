@@ -134,18 +134,31 @@ async def _scoped_for_transition(
 async def _audit_transition(
     mongo: AsyncMongoClient, caller: InternalCaller, appointment, *, action: str, step: str
 ) -> None:
-    await write_audit(
-        mongo,
-        actor_id=caller.sub,
-        actor_role="service",
-        action=action,
-        entity_type="appointment",
-        entity_id=str(appointment.id),
-        clinic_id=str(appointment.clinic_id),
-        outcome="success",
-        changed_fields=CHECK_IN_FIELDS,
-        dedupe_key=f"appointment:{appointment.id}:{step}",
-    )
+    """Best effort (plan 02.1-07, S3): called only AFTER the transition and its
+    history row committed, so a failed audit write is logged (`audit.write_failed`:
+    action, ids and the exception type only) and never turns an applied
+    transition into a 500. Phase 3's transactional outbox is the general fix."""
+    try:
+        await write_audit(
+            mongo,
+            actor_id=caller.sub,
+            actor_role="service",
+            action=action,
+            entity_type="appointment",
+            entity_id=str(appointment.id),
+            clinic_id=str(appointment.clinic_id),
+            outcome="success",
+            changed_fields=CHECK_IN_FIELDS,
+            dedupe_key=f"appointment:{appointment.id}:{step}",
+        )
+    except Exception as exc:  # noqa: BLE001 - deliberately non-fatal
+        log.error(
+            "audit.write_failed",
+            action=action,
+            entity_type="appointment",
+            entity_id=str(appointment.id),
+            error=type(exc).__name__,
+        )
 
 
 @router.post("/appointments/{appointment_id}/check-in", response_model=AppointmentRef)
