@@ -14,6 +14,18 @@ registered under its `ACT_*` name; the workflows call them by name.
   a record that cannot be finalized (voided, refunded, ...) is the
   non-retryable business outcome `BillingNotFinalizable`; transport trouble,
   401/403/5xx and `ServiceTokenUnavailable` propagate and Temporal retries.
+* `complete_appointment` (plan 02.1-09, M1) - Scheduling's internal complete
+  route over an aud=scheduling service token minted for `service:visit`
+  (`checked_in -> completed`; a repeat is a 200 no-op there). Outcomes:
+  `completed`, `no_appointment` (404), and the terminal business refusal
+  `AppointmentNotCheckedIn` (409: a visit created before plan 02.1-06 whose
+  appointment is still `confirmed`), which is never retried. Transport trouble
+  and `ServiceTokenUnavailable` propagate and Temporal retries.
+* Settlement markers (plan 02.1-09, S4 groundwork): `finalize_billing` and
+  `complete_appointment` each stamp a timestamp + outcome on the visit row
+  (conditional on the marker still being NULL, so a repeat never overwrites)
+  once the step has landed OR reached a terminal business outcome. A reconciler
+  (plan 02.1-10) reads the NULL ones.
 * `record_followup_intent` / `record_analytics_intent` - Phase 2 stubs (D-11):
   a log line and an audit entry, ids only. They are the single Phase 3 seams
   (Celery follow-up job, Kafka `visit.completed` event).
@@ -26,6 +38,7 @@ logs carry no values.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -40,19 +53,25 @@ from libs.audit.writer import write_audit
 from libs.auth.service_tokens import ServiceTokenProvider
 from libs.internal_client import InternalConflict, InternalNotFound, internal_request
 from libs.observability.logging import get_logger
-from services.visit import downstream
+from services.visit import downstream, references
 from services.visit.config import settings
 from services.visit.domain.contracts import (
     ACT_ANALYTICS_INTENT,
+    ACT_COMPLETE_APPOINTMENT,
     ACT_FINALIZE_BILLING,
     ACT_FOLLOWUP_INTENT,
     ACT_SWEEP,
+    APPOINTMENT_COMPLETED,
+    APPOINTMENT_NO_APPOINTMENT,
+    APPOINTMENT_NOT_CHECKED_IN,
     BILLING_FINALIZED,
     BILLING_NO_RECORD,
+    BILLING_NOT_FINALIZABLE,
     INTENT_RECORDED,
     SweepResult,
     VisitCompletedInput,
 )
+from services.visit.repository import visit_repo
 
 log = get_logger(__name__)
 
@@ -92,6 +111,7 @@ class VisitActivities:
         """Every activity, for `Worker(activities=...)`."""
         return [
             self.finalize_billing,
+            self.complete_appointment,
             self.record_followup_intent,
             self.record_analytics_intent,
             self.sweep_unstarted,
@@ -110,6 +130,18 @@ class VisitActivities:
             dedupe_key=f"{_workflow_id()}:{step}",
         )
 
+    async def _settle(self, inp: VisitCompletedInput, *, step: str, outcome: str) -> None:
+        """Stamp the step's settlement marker in its own short transaction.
+        Conditional on the marker being NULL: a repeat keeps the first outcome."""
+        mark = (
+            visit_repo.mark_billing_settled
+            if step == "billing"
+            else visit_repo.mark_appointment_settled
+        )
+        async with self._session_factory() as db:
+            await mark(db, visit_id=uuid.UUID(inp.visit_id), outcome=outcome)
+            await db.commit()
+
     @activity.defn(name=ACT_FINALIZE_BILLING)
     async def finalize_billing(self, inp: VisitCompletedInput) -> str:
         workflow_id = _workflow_id()
@@ -127,15 +159,59 @@ class VisitActivities:
             )
         except InternalNotFound:
             log.info("visit.billing_finalize", visit_id=inp.visit_id, outcome=BILLING_NO_RECORD)
+            await self._settle(inp, step="billing", outcome=BILLING_NO_RECORD)
             return BILLING_NO_RECORD
         except InternalConflict as exc:
-            log.info("visit.billing_finalize", visit_id=inp.visit_id, outcome="not_finalizable")
+            log.info(
+                "visit.billing_finalize", visit_id=inp.visit_id, outcome=BILLING_NOT_FINALIZABLE
+            )
+            await self._settle(inp, step="billing", outcome=BILLING_NOT_FINALIZABLE)
             raise ApplicationError(
                 "billing not finalizable", type="BillingNotFinalizable", non_retryable=True
             ) from exc
         log.info("visit.billing_finalize", visit_id=inp.visit_id, outcome=BILLING_FINALIZED)
+        await self._settle(inp, step="billing", outcome=BILLING_FINALIZED)
         await self._audit(inp, action="visit.billing_finalize_requested", step="finalize")
         return BILLING_FINALIZED
+
+    @activity.defn(name=ACT_COMPLETE_APPOINTMENT)
+    async def complete_appointment(self, inp: VisitCompletedInput) -> str:
+        """Tell Scheduling the visit is over (M1, VISIT-04). The visit is already
+        committed, so this catches up; Scheduling's route is idempotent, which
+        makes a retry or a reconciler call harmless."""
+        try:
+            ref = await references.complete_appointment(
+                self._http,
+                self._tokens,
+                appointment_id=uuid.UUID(inp.appointment_id),
+                clinic_id=uuid.UUID(inp.clinic_id),
+            )
+        except references.CompleteRefused as exc:
+            # A business refusal (appointment never checked in): terminal. The
+            # marker records it so nothing loops, then the branch reports a skip.
+            log.info(
+                "visit.appointment_complete",
+                visit_id=inp.visit_id,
+                outcome=APPOINTMENT_NOT_CHECKED_IN,
+            )
+            await self._settle(inp, step="appointment", outcome=APPOINTMENT_NOT_CHECKED_IN)
+            raise ApplicationError(
+                "appointment not checked in", type="AppointmentNotCheckedIn", non_retryable=True
+            ) from exc
+        if ref is None:
+            log.info(
+                "visit.appointment_complete",
+                visit_id=inp.visit_id,
+                outcome=APPOINTMENT_NO_APPOINTMENT,
+            )
+            await self._settle(inp, step="appointment", outcome=APPOINTMENT_NO_APPOINTMENT)
+            return APPOINTMENT_NO_APPOINTMENT
+        log.info(
+            "visit.appointment_complete", visit_id=inp.visit_id, outcome=APPOINTMENT_COMPLETED
+        )
+        await self._settle(inp, step="appointment", outcome=APPOINTMENT_COMPLETED)
+        await self._audit(inp, action="visit.appointment_completed", step="complete_appointment")
+        return APPOINTMENT_COMPLETED
 
     @activity.defn(name=ACT_FOLLOWUP_INTENT)
     async def record_followup_intent(self, inp: VisitCompletedInput) -> str:

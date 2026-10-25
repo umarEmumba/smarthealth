@@ -17,6 +17,9 @@ Two data-layer guards make transitions duplicate-safe (research Pattern 9):
 `downstream_started_at` stays NULL at completion; plan 02-11's sweeper finds
 completed visits whose downstream workflow was never started through the
 partial index `ix_visits_downstream_pending`.
+Plan 02.1-09 adds the settlement markers (`billing_settled_at/_outcome`,
+`appointment_settled_at/_outcome`) the downstream activities set and a later
+reconciler reads through `ix_visits_unsettled`.
 
 Visit declares its OWN `DeclarativeBase` (never a shared one; RESEARCH
 Pitfall 2). Async-only per CLAUDE.md.
@@ -74,6 +77,16 @@ class Visit(VisitBase):
     downstream_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Settlement markers (plan 02.1-09, S4 groundwork): one timestamp + outcome
+    # per downstream step that must land. NULL = not settled yet.
+    billing_settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    billing_outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    appointment_settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    appointment_outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -90,6 +103,14 @@ class Visit(VisitBase):
             "ix_visits_downstream_pending",
             "completed_at",
             postgresql_where=text("status = 'completed' AND downstream_started_at IS NULL"),
+        ),
+        Index(
+            "ix_visits_unsettled",
+            "completed_at",
+            postgresql_where=text(
+                "status = 'completed' AND "
+                "(billing_settled_at IS NULL OR appointment_settled_at IS NULL)"
+            ),
         ),
     )
 

@@ -78,6 +78,33 @@ async def _marker(visit_id: str) -> Any:
         await engine.dispose()
 
 
+async def _markers(visit_id: str) -> dict[str, Any]:
+    """The visit's settlement markers (plan 02.1-09), read straight from visit_db."""
+    engine = create_async_engine(visit_settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT billing_settled_at, billing_outcome, appointment_settled_at, "
+                        "appointment_outcome FROM visits WHERE id = :v"
+                    ),
+                    {"v": visit_id},
+                )
+            ).one()
+            return dict(row._mapping)
+    finally:
+        await engine.dispose()
+
+
+async def _appointment_status(client: AsyncClient, vw: VisitWorld, appointment_id: str) -> str:
+    resp = await client.get(
+        f"/api/appointments/{appointment_id}", headers=auth(vw.world.front_desk)
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["status"]
+
+
 async def _finalized_rows(appointment_id: str) -> int:
     """The number of finalize moves Billing recorded for the appointment."""
     from services.billing.config import settings as billing_settings  # noqa: PLC0415
@@ -132,7 +159,11 @@ async def test_complete_returns_200_and_downstream_finalizes_billing(
 
     result = await _result(temporal_env, visit["id"])
     assert result == VisitCompletedResult(
-        outcome="completed", billing="finalized", followup="recorded", analytics="recorded"
+        outcome="completed",
+        billing="finalized",
+        followup="recorded",
+        analytics="recorded",
+        appointment="completed",
     )
     assert await _billing_status(client, visit_world, appointment_id) == "finalized"
     assert await _marker(visit["id"]) is not None
@@ -242,7 +273,11 @@ async def test_repeat_complete_with_null_marker_starts_workflow(
 
     assert await _marker(visit["id"]) is not None
     assert await _result(temporal_env, visit["id"]) == VisitCompletedResult(
-        outcome="completed", billing="finalized", followup="recorded", analytics="recorded"
+        outcome="completed",
+        billing="finalized",
+        followup="recorded",
+        analytics="recorded",
+        appointment="completed",
     )
     assert await _billing_status(client, visit_world, appointment_id) == "finalized"
     assert await _finalized_rows(appointment_id) == 1
@@ -389,6 +424,7 @@ async def test_voided_billing_reports_not_finalizable_and_intents_still_recorded
         billing="skipped:BillingNotFinalizable",
         followup="recorded",
         analytics="recorded",
+        appointment="completed",
     )
     assert await _billing_status(client, visit_world, appointment_id) == "voided"
     assert await _finalized_rows(appointment_id) == 0
@@ -431,3 +467,29 @@ async def test_deferred_start_logs_downstream_start_deferred(
     serialized = json.dumps(deferred[0])
     assert appointment_id not in serialized
     assert "temporal unavailable" not in serialized
+
+
+async def test_tracer_completion_completes_the_appointment(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    visit_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """M1 tracer (plan 02.1-09): completing the visit completes its appointment
+    in Scheduling through the fourth, patched branch, and both settlement
+    markers land in visit_db."""
+    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
+    assert completed.status_code == 200, completed.text
+
+    result = await _result(temporal_env, visit["id"])
+    assert result.appointment == "completed"
+    assert result.billing == "finalized"
+    assert await _appointment_status(client, visit_world, appointment_id) == "completed"
+
+    markers = await _markers(visit["id"])
+    assert markers["billing_settled_at"] is not None
+    assert markers["billing_outcome"] == "finalized"
+    assert markers["appointment_settled_at"] is not None
+    assert markers["appointment_outcome"] == "completed"
+    assert await audit_count(visit["id"], "visit.appointment_completed") == 1

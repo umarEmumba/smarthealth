@@ -212,3 +212,43 @@ async def list_downstream_unstarted(
         .limit(limit)
     )
     return list((await db.scalars(query)).all())
+
+
+async def _mark_settled(
+    db: AsyncSession, *, visit_id: uuid.UUID, at_column: str, outcome_column: str, outcome: str
+) -> bool:
+    marked = await db.execute(
+        update(Visit)
+        .where(Visit.id == visit_id, getattr(Visit, at_column).is_(None))
+        .values(**{at_column: func.now(), outcome_column: outcome})
+        .returning(Visit.id)
+        .execution_options(synchronize_session=False)
+    )
+    return marked.first() is not None
+
+
+async def mark_billing_settled(db: AsyncSession, *, visit_id: uuid.UUID, outcome: str) -> bool:
+    """Record how the billing finalize settled (plan 02.1-09): `finalized`,
+    `no_record` or `not_finalizable`. Conditional (`WHERE billing_settled_at IS
+    NULL`), so a repeat never overwrites an earlier marker: True when this call
+    set it. Flushes only; the caller commits."""
+    return await _mark_settled(
+        db,
+        visit_id=visit_id,
+        at_column="billing_settled_at",
+        outcome_column="billing_outcome",
+        outcome=outcome,
+    )
+
+
+async def mark_appointment_settled(db: AsyncSession, *, visit_id: uuid.UUID, outcome: str) -> bool:
+    """Record how the appointment completion settled (plan 02.1-09):
+    `completed`, `no_appointment` or `not_checked_in`. Conditional on the marker
+    being NULL, like `mark_billing_settled`. Flushes only; the caller commits."""
+    return await _mark_settled(
+        db,
+        visit_id=visit_id,
+        at_column="appointment_settled_at",
+        outcome_column="appointment_outcome",
+        outcome=outcome,
+    )

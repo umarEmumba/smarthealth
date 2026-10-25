@@ -21,11 +21,21 @@ SWEEPER_WORKFLOW = "VisitDownstreamSweeperWorkflow"
 ACT_FINALIZE_BILLING = "visit.finalize_billing"
 ACT_FOLLOWUP_INTENT = "visit.record_followup_intent"
 ACT_ANALYTICS_INTENT = "visit.record_analytics_intent"
+ACT_COMPLETE_APPOINTMENT = "visit.complete_appointment"
 ACT_SWEEP = "visit.sweep_unstarted"
+
+# workflow.patched id (plan 02.1-09, M1): VisitCompletedWorkflow gains a fourth
+# concurrent branch that completes the appointment in Scheduling. Histories
+# recorded before it have no marker and replay the original three branches.
+VISIT_COMPLETE_APPOINTMENT_PATCH_ID = "visit-complete-appointment-v1"
 
 OUTCOME_COMPLETED = "completed"
 BILLING_FINALIZED = "finalized"
 BILLING_NO_RECORD = "no_record"
+BILLING_NOT_FINALIZABLE = "not_finalizable"
+APPOINTMENT_COMPLETED = "completed"
+APPOINTMENT_NO_APPOINTMENT = "no_appointment"
+APPOINTMENT_NOT_CHECKED_IN = "not_checked_in"
 INTENT_RECORDED = "recorded"
 SKIPPED_PREFIX = "skipped:"
 
@@ -40,12 +50,16 @@ class VisitCompletedInput:
 @dataclass
 class VisitCompletedResult:
     """`outcome` is always "completed"; each branch is "finalized" /
-    "no_record" (billing), "recorded" (intents) or "skipped:<ErrorType>"."""
+    "no_record" (billing), "recorded" (intents), "completed" /
+    "no_appointment" (appointment, plan 02.1-09) or "skipped:<ErrorType>".
+    `appointment` defaults to "" so results recorded before the fourth branch
+    still decode."""
 
     outcome: str
     billing: str
     followup: str
     analytics: str
+    appointment: str = ""
 
 
 @dataclass
