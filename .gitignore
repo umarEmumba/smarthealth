@@ -32,3 +32,6 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Load-test world and booking plan (holds a front-desk password; never commit)
+loadtest/data/
