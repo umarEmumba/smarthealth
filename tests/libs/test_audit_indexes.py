@@ -57,3 +57,9 @@ async def test_audit_indexes_created(mongo_client: AsyncMongoClient) -> None:
         assert not existing["ix_audit_actor_id_timestamp"].get("unique", False)
     finally:
         await collection.drop()
+        # Dropping the collection also drops its indexes, including the partial unique
+        # `ix_audit_dedupe_key`. Services create them only at start-up, so restore them,
+        # or every later test (and every running service) in this database loses the
+        # audit dedupe guarantee (plan 02.1-13 found a visit-reconciler race test failing
+        # in a full-suite run because of exactly this).
+        await ensure_audit_indexes(mongo_client)

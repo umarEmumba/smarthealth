@@ -33,6 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from temporalio.testing import ActivityEnvironment
 
+from libs.audit.mongo_indexes import ensure_audit_indexes
 from libs.db.postgres import get_session_factory
 from libs.observability.logging import configure_logging
 from services.visit import downstream
@@ -345,6 +346,12 @@ async def test_a_pass_racing_the_workflow_step_finalizes_once(
     """The reconciler and the workflow's `finalize_billing` activity (same
     deterministic workflow id) run at the same time for one visit: Billing
     records a single `finalized` move and the audit has a single entry."""
+    # The audit dedupe is enforced by the partial unique index `ix_audit_dedupe_key`.
+    # Services create it at start-up, but `tests/libs/test_audit_indexes.py` drops the
+    # shared `audit_log` collection (and with it every index) when it finishes, so in a
+    # full-suite run the index is gone by the time this test runs. State the
+    # precondition instead of depending on test order.
+    await ensure_audit_indexes(mongo_client)
     visit_id, appointment_id = await _stuck_visit(client, mesh, visit_world)
     acts = _activities(mesh, mongo_client)
 
