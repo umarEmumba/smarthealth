@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
 status: executing
-stopped_at: Completed 02.1-09-PLAN.md
-last_updated: "2026-10-25T07:10:33.694Z"
+stopped_at: Completed 02.1-10-PLAN.md
+last_updated: "2026-10-25T07:30:44.087Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 96c124c71afcede4699c391320e174f7cad7746a
+state_head: fbcfda3641a3368a9b0b56cdfd3724304791d3f0
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 42
-  completed_plans: 38
+  completed_plans: 39
   percent: 20
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
-Plan: 10 of 13
+Plan: 11 of 13
 Status: Ready to execute
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
@@ -90,6 +90,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 02.1 P07 | 45min | 3 tasks | 23 files |
 | Phase 02.1 P08 | 31min | 3 tasks | 21 files |
 | Phase 02.1 P09 | 41min | 3 tasks | 13 files |
+| Phase 02.1 P10 | 20min | 3 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -168,6 +169,8 @@ Recent decisions affecting current work:
 - [Phase 02.1]: [Phase 02.1-09]: The appointment-completion step is a fourth concurrent VisitCompletedWorkflow branch behind workflow.patched(visit-complete-appointment-v1), not a sequential step, so a slow billing branch cannot starve it
 - [Phase 02.1]: [Phase 02.1-09]: Downstream steps leave conditional settlement markers (timestamp + outcome) in visit_db; a business refusal writes its terminal marker before raising a non-retryable error
 - [Phase 02.1]: [Phase 02.1-09]: The older visit recorder skips instead of overwriting visit_completed_v1.json once the workflow records patch markers; the patched history lives in visit_completed_p21.json
+- [Phase 02.1]: [02.1-10] Visit billing finalize retries open-endedly (unlimited attempts, backoff capped at 5 min, BillingNotFinalizable terminal) behind workflow.patched visit-billing-retry-v1; replay ignores activity options so the patch is convention, a reordered marker is what breaks replay
+- [Phase 02.1]: [02.1-10] Visit reconciler is a Schedule + workflow that calls the workflow's own step bodies under visit-completed-{visit_id}; never-started visits stay with the sweeper; reconcile tests use grace 0 on fresh visits because a live reconciler shares the Compose databases
 
 ### Pending Todos
 
@@ -201,6 +204,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T07:10:33.640Z
-Stopped at: Completed 02.1-09-PLAN.md
+Last session: 2026-10-25T07:30:44.035Z
+Stopped at: Completed 02.1-10-PLAN.md
 Resume file: None
