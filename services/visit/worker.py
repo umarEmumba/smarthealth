@@ -2,18 +2,20 @@
 
 A separate process from the Visit API (same image, command override in
 Compose, plan 02-12). It polls `visit-tq`, runs `VisitCompletedWorkflow` (the
-downstream fan-out after a completion) and `VisitDownstreamSweeperWorkflow`
-(lost-trigger recovery) with `VisitActivities`, and authenticates every
-outgoing `/internal/*` call with Visit's aud-scoped service tokens (D-06).
+downstream fan-out after a completion), `VisitDownstreamSweeperWorkflow`
+(lost-trigger recovery) and `VisitReconcilerWorkflow` (plan 02.1-10, S4: settles
+completed visits whose billing or appointment marker stayed empty) with
+`VisitActivities`, and authenticates every outgoing `/internal/*` call with
+Visit's aud-scoped service tokens (D-06).
 
 Start-up: logging, audit indexes, then an EAGER Temporal connection retried
 every 2 s for up to 60 s; after that the process exits non-zero and the
 orchestrator restarts it. Then `ensure_visit_schedules(client)` registers the
-`visit-downstream-sweeper` Schedule (idempotent; a failure exits 1), and one
-`sweep_unstarted` runs immediately so visits whose start was lost while the
-worker was down are picked up at once (a failure is logged, never fatal: the
-Schedule retries). It never runs database migrations: the API container owns
-them.
+`visit-downstream-sweeper` and `visit-reconciler` Schedules (idempotent; a
+failure exits 1), and one `sweep_unstarted` runs immediately so visits whose
+start was lost while the worker was down are picked up at once, followed by one
+reconcile pass (a failure of either is logged, never fatal: the Schedules
+retry). It never runs database migrations: the API container owns them.
 
 Shutdown: SIGTERM/SIGINT set a stop event; the worker stops polling and gives
 running activities `graceful_shutdown_timeout` to finish (every activity is
@@ -49,10 +51,11 @@ from services.visit.activities.downstream import VisitActivities
 from services.visit.config import settings
 from services.visit.downstream import sweep_unstarted
 from services.visit.schedules import ensure_visit_schedules
+from services.visit.workflows.reconciler import VisitReconcilerWorkflow
 from services.visit.workflows.sweeper import VisitDownstreamSweeperWorkflow
 from services.visit.workflows.visit_completed import VisitCompletedWorkflow
 
-WORKFLOWS = [VisitCompletedWorkflow, VisitDownstreamSweeperWorkflow]
+WORKFLOWS = [VisitCompletedWorkflow, VisitDownstreamSweeperWorkflow, VisitReconcilerWorkflow]
 
 log = get_logger(__name__)
 
@@ -141,6 +144,10 @@ async def main() -> int:
         )
     except Exception as exc:  # noqa: BLE001 - the Schedule sweeps again; never fatal
         log.warning("visit.startup_sweep_failed", error=type(exc).__name__)
+    try:
+        await activities.reconcile()
+    except Exception as exc:  # noqa: BLE001 - the Schedule reconciles again; never fatal
+        log.warning("visit.startup_reconcile_failed", error=type(exc).__name__)
 
     heartbeat = asyncio.create_task(_heartbeat(stop))
     try:

@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -252,3 +252,34 @@ async def mark_appointment_settled(db: AsyncSession, *, visit_id: uuid.UUID, out
         outcome_column="appointment_outcome",
         outcome=outcome,
     )
+
+
+async def list_unsettled(
+    db: AsyncSession, *, older_than_minutes: int, limit: int = 100
+) -> list[Visit]:
+    """Completed visits whose billing or appointment marker is still empty after
+    a grace period (plan 02.1-10, S4): `status = 'completed' AND
+    downstream_started_at IS NOT NULL AND completed_at < now() - older_than AND
+    (billing_settled_at IS NULL OR appointment_settled_at IS NULL)`, oldest
+    first, at most `limit`. Served by the partial index `ix_visits_unsettled`.
+
+    `downstream_started_at IS NOT NULL` leaves visits whose trigger was never
+    started to the sweeper, which starts the workflow (and the workflow then
+    settles them); the reconciler covers workflows that already ran or were
+    started and did not settle. No row lock: the reconciler re-checks each row
+    through the conditional marker functions and the idempotent step bodies."""
+    query = (
+        select(Visit)
+        .where(
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.downstream_started_at.is_not(None),
+            Visit.completed_at
+            < text("now() - make_interval(secs => :grace)").bindparams(
+                grace=float(older_than_minutes) * 60.0
+            ),
+            or_(Visit.billing_settled_at.is_(None), Visit.appointment_settled_at.is_(None)),
+        )
+        .order_by(Visit.completed_at)
+        .limit(limit)
+    )
+    return list((await db.scalars(query)).all())

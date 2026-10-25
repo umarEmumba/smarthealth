@@ -17,12 +17,14 @@ from dataclasses import dataclass
 
 VISIT_COMPLETED_WORKFLOW = "VisitCompletedWorkflow"
 SWEEPER_WORKFLOW = "VisitDownstreamSweeperWorkflow"
+VISIT_RECONCILER_WORKFLOW = "VisitReconcilerWorkflow"
 
 ACT_FINALIZE_BILLING = "visit.finalize_billing"
 ACT_FOLLOWUP_INTENT = "visit.record_followup_intent"
 ACT_ANALYTICS_INTENT = "visit.record_analytics_intent"
 ACT_COMPLETE_APPOINTMENT = "visit.complete_appointment"
 ACT_SWEEP = "visit.sweep_unstarted"
+ACT_RECONCILE = "visit.reconcile_unsettled"
 
 # workflow.patched id (plan 02.1-09, M1): VisitCompletedWorkflow gains a fourth
 # concurrent branch that completes the appointment in Scheduling. Histories

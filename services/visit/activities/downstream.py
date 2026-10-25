@@ -24,8 +24,16 @@ registered under its `ACT_*` name; the workflows call them by name.
 * Settlement markers (plan 02.1-09, S4 groundwork): `finalize_billing` and
   `complete_appointment` each stamp a timestamp + outcome on the visit row
   (conditional on the marker still being NULL, so a repeat never overwrites)
-  once the step has landed OR reached a terminal business outcome. A reconciler
+  once the step has landed OR reached a terminal business outcome. The reconciler
   (plan 02.1-10) reads the NULL ones.
+* `reconcile_unsettled` (plan 02.1-10, S4) - the reconciler pass: completed visits
+  whose billing or appointment marker is still empty after a grace period (a
+  legacy `skipped` run, a terminated workflow, a lost trigger) are settled by
+  the SAME step bodies the workflow uses (`_finalize_billing`,
+  `_complete_appointment`), called with the explicit workflow id
+  `visit-completed-{visit_id}`: Billing's Idempotency-Key and the audit dedupe
+  key are therefore identical whether the workflow or the reconciler runs the
+  step, and the two can race without a double effect.
 * `record_followup_intent` / `record_analytics_intent` - Phase 2 stubs (D-11):
   a log line and an audit entry, ids only. They are the single Phase 3 seams
   (Celery follow-up job, Kafka `visit.completed` event).
@@ -60,6 +68,7 @@ from services.visit.domain.contracts import (
     ACT_COMPLETE_APPOINTMENT,
     ACT_FINALIZE_BILLING,
     ACT_FOLLOWUP_INTENT,
+    ACT_RECONCILE,
     ACT_SWEEP,
     APPOINTMENT_COMPLETED,
     APPOINTMENT_NO_APPOINTMENT,
@@ -70,6 +79,7 @@ from services.visit.domain.contracts import (
     INTENT_RECORDED,
     SweepResult,
     VisitCompletedInput,
+    visit_completed_workflow_id,
 )
 from services.visit.repository import visit_repo
 
@@ -97,6 +107,7 @@ class VisitActivities:
         client: Client | None,
         *,
         sweeper_grace_seconds: int | None = None,
+        reconcile_grace_minutes: int | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._http = http
@@ -105,6 +116,11 @@ class VisitActivities:
         self._client = client
         self._grace = (
             settings.sweeper_grace_seconds if sweeper_grace_seconds is None else sweeper_grace_seconds
+        )
+        self._reconcile_grace = (
+            settings.reconcile_grace_minutes
+            if reconcile_grace_minutes is None
+            else reconcile_grace_minutes
         )
 
     def all(self) -> list[Callable[..., Any]]:
@@ -115,9 +131,12 @@ class VisitActivities:
             self.record_followup_intent,
             self.record_analytics_intent,
             self.sweep_unstarted,
+            self.reconcile_unsettled,
         ]
 
-    async def _audit(self, inp: VisitCompletedInput, *, action: str, step: str) -> None:
+    async def _audit(
+        self, inp: VisitCompletedInput, *, action: str, step: str, workflow_id: str | None = None
+    ) -> None:
         await write_audit(
             self._mongo,
             actor_id=AUDIT_ACTOR_ID,
@@ -127,7 +146,7 @@ class VisitActivities:
             entity_id=inp.visit_id,
             clinic_id=inp.clinic_id,
             outcome="success",
-            dedupe_key=f"{_workflow_id()}:{step}",
+            dedupe_key=f"{workflow_id or _workflow_id()}:{step}",
         )
 
     async def _settle(self, inp: VisitCompletedInput, *, step: str, outcome: str) -> None:
@@ -144,7 +163,13 @@ class VisitActivities:
 
     @activity.defn(name=ACT_FINALIZE_BILLING)
     async def finalize_billing(self, inp: VisitCompletedInput) -> str:
-        workflow_id = _workflow_id()
+        return await self._finalize_billing(inp, _workflow_id())
+
+    async def _finalize_billing(self, inp: VisitCompletedInput, workflow_id: str) -> str:
+        """The billing step's body, shared by the workflow's activity and the
+        reconciler. `workflow_id` is `visit-completed-{visit_id}` on both paths,
+        so the Billing Idempotency-Key and the audit dedupe key do not depend on
+        who runs it."""
         token = await self._tokens.get("billing")
         try:
             await internal_request(
@@ -171,7 +196,12 @@ class VisitActivities:
             ) from exc
         log.info("visit.billing_finalize", visit_id=inp.visit_id, outcome=BILLING_FINALIZED)
         await self._settle(inp, step="billing", outcome=BILLING_FINALIZED)
-        await self._audit(inp, action="visit.billing_finalize_requested", step="finalize")
+        await self._audit(
+            inp,
+            action="visit.billing_finalize_requested",
+            step="finalize",
+            workflow_id=workflow_id,
+        )
         return BILLING_FINALIZED
 
     @activity.defn(name=ACT_COMPLETE_APPOINTMENT)
@@ -179,6 +209,11 @@ class VisitActivities:
         """Tell Scheduling the visit is over (M1, VISIT-04). The visit is already
         committed, so this catches up; Scheduling's route is idempotent, which
         makes a retry or a reconciler call harmless."""
+        return await self._complete_appointment(inp, _workflow_id())
+
+    async def _complete_appointment(self, inp: VisitCompletedInput, workflow_id: str) -> str:
+        """The appointment step's body, shared with the reconciler (see
+        `_finalize_billing` for why the workflow id is explicit)."""
         try:
             ref = await references.complete_appointment(
                 self._http,
@@ -210,7 +245,12 @@ class VisitActivities:
             "visit.appointment_complete", visit_id=inp.visit_id, outcome=APPOINTMENT_COMPLETED
         )
         await self._settle(inp, step="appointment", outcome=APPOINTMENT_COMPLETED)
-        await self._audit(inp, action="visit.appointment_completed", step="complete_appointment")
+        await self._audit(
+            inp,
+            action="visit.appointment_completed",
+            step="complete_appointment",
+            workflow_id=workflow_id,
+        )
         return APPOINTMENT_COMPLETED
 
     @activity.defn(name=ACT_FOLLOWUP_INTENT)
@@ -237,3 +277,18 @@ class VisitActivities:
             self._session_factory, self._client, grace_seconds=self._grace
         )
         return SweepResult(processed=processed)
+
+    async def reconcile(self) -> int:
+        """One reconciler pass (also run once by the worker at start-up): settle
+        completed visits whose markers are still empty after the grace period.
+        Returns how many visits ended with both markers set."""
+        return await downstream.reconcile_unsettled(
+            self._session_factory,
+            finalize_billing=self._finalize_billing,
+            complete_appointment=self._complete_appointment,
+            grace_minutes=self._reconcile_grace,
+        )
+
+    @activity.defn(name=ACT_RECONCILE)
+    async def reconcile_unsettled(self) -> SweepResult:
+        return SweepResult(processed=await self.reconcile())

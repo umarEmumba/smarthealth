@@ -41,6 +41,17 @@ class VisitSettings(SharedSettings):
     sweeper_grace_seconds: int = Field(
         default=30, ge=0, validation_alias="VISIT_SWEEPER_GRACE_SECONDS"
     )
+    # Reconciler (plan 02.1-10, S4): the Schedule's interval, and how long after
+    # a visit completed its billing/appointment markers may stay empty before the
+    # reconciler steps in (the workflow normally settles them within seconds and,
+    # with an unlimited billing retry, may legitimately still be retrying; the
+    # reconciler only covers what slipped through).
+    reconcile_interval_seconds: int = Field(
+        default=60, ge=1, validation_alias="VISIT_RECONCILE_INTERVAL_SECONDS"
+    )
+    reconcile_grace_minutes: int = Field(
+        default=10, ge=0, validation_alias="VISIT_RECONCILE_GRACE_MINUTES"
+    )
 
 
 settings = VisitSettings()
