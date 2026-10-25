@@ -8,6 +8,13 @@ state-targeted step per activity, business outcomes as NON-retryable
 propagated for Temporal to retry, commit first and audit LAST with
 `dedupe_key=f"{workflow_id}:{step}"`.
 
+Post-commit safety (plan 02.1-07, S3): the audits written right after
+`cancel_appointment` and `swap_slot` commit are best effort
+(`_audit_best_effort`): the state change and its history row are already
+durable, so a failed audit is logged (`audit.write_failed`) and must not make
+the workflow report a refusal for a change that applied. Every other audit
+here keeps its current behavior.
+
 * Cancel: `cancel_appointment` (appointment `confirmed -> cancelled` and its
   slot back to `available`, one transaction) -> `billing_cancel` (the refund
   policy decided in the API request: `refund_pending` then `refunded`, or
@@ -130,6 +137,39 @@ class AppointmentChangeActivities:
             dedupe_key=f"{_workflow_id()}:{step}",
         )
 
+    async def _audit_best_effort(
+        self,
+        *,
+        action: str,
+        entity_type: str,
+        entity_id: str,
+        clinic_id: str | None,
+        step: str,
+        changed_fields: list[str] | None = None,
+        outcome: Outcome = "success",
+    ) -> None:
+        """`_audit` for a step whose state change is already committed (S3):
+        a failure is logged with the action, entity id and exception type only
+        (never a message that could carry data) and swallowed."""
+        try:
+            await self._audit(
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                clinic_id=clinic_id,
+                step=step,
+                changed_fields=changed_fields,
+                outcome=outcome,
+            )
+        except Exception as exc:  # noqa: BLE001 - deliberately non-fatal
+            log.error(
+                "audit.write_failed",
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                error=type(exc).__name__,
+            )
+
     async def _billing_post(self, path: str, *, key: str, json: dict | None = None) -> None:
         token = await self._tokens.get("billing")
         await internal_request(
@@ -158,7 +198,7 @@ class AppointmentChangeActivities:
                 raise _business_error("NotCancellable", "appointment not cancellable")
             await db.commit()
         log.info("change.cancel_appointment", appointment_id=inp.appointment_id, outcome=outcome)
-        await self._audit(
+        await self._audit_best_effort(
             action="appointment.cancel",
             entity_type="appointment",
             entity_id=inp.appointment_id,
@@ -256,7 +296,7 @@ class AppointmentChangeActivities:
                 raise _business_error("SwapRejected", "reschedule swap rejected")
             await db.commit()
         log.info("change.swap_slot", appointment_id=inp.appointment_id, outcome=outcome)
-        await self._audit(
+        await self._audit_best_effort(
             action="appointment.reschedule",
             entity_type="appointment",
             entity_id=inp.appointment_id,

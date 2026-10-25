@@ -141,6 +141,52 @@ async def test_confirm_books_slot_and_confirms_appointment_once(
     assert [(h[0], h[1]) for h in history] == [("pending", "confirmed")]
 
 
+@pytest.mark.parametrize("status", ["checked_in", "completed", "no_show"])
+async def test_confirm_retry_after_the_appointment_progressed_reports_true_and_changes_nothing(
+    scheduling_db_session: AsyncSession, status: str
+) -> None:
+    """S3 (plan 02.1-07): a retried confirm that arrives after the appointment
+    already moved past `confirmed` must not report a lost hold for a real
+    booking (the saga would compensate it)."""
+    db = scheduling_db_session
+    slot_id = await _slot(db)
+    appt = await _pending(db, slot_id)
+    await hold_slot(db, slot_id=slot_id, appointment_id=appt, ttl_minutes=10)
+    assert await confirm_booking(db, appointment_id=appt, slot_id=slot_id) is True
+    await db.execute(
+        text("UPDATE appointments SET status = :st, version = version + 1 WHERE id = :a"),
+        {"st": status, "a": appt},
+    )
+    slot_before = await _slot_row(db, slot_id)
+    appointment_before = await _appt_row(db, appt)
+    history_before = await _history(db, appt)
+
+    assert await confirm_booking(db, appointment_id=appt, slot_id=slot_id) is True
+
+    slot_after = await _slot_row(db, slot_id)
+    assert (slot_after.status, slot_after.held_by_appointment_id) == (
+        slot_before.status,
+        slot_before.held_by_appointment_id,
+    )
+    assert tuple(await _appt_row(db, appt)) == tuple(appointment_before)
+    assert await _history(db, appt) == history_before
+
+
+async def test_confirm_on_a_progressed_appointment_whose_slot_is_not_booked_by_it_is_false(
+    scheduling_db_session: AsyncSession,
+) -> None:
+    db = scheduling_db_session
+    slot_id = await _slot(db)
+    appt = await _pending(db, slot_id, status="checked_in")
+    # The slot is held by somebody else, not booked by this appointment.
+    assert await hold_slot(db, slot_id=slot_id, appointment_id=uuid.uuid4(), ttl_minutes=10)
+
+    assert await confirm_booking(db, appointment_id=appt, slot_id=slot_id) is False
+
+    assert (await _appt_row(db, appt)).status == "checked_in"
+    assert await _history(db, appt) == []
+
+
 @pytest.mark.parametrize("reaped_to", ["available", "held_by_other"])
 async def test_confirm_after_the_hold_was_lost_changes_nothing(
     scheduling_db_session: AsyncSession, reaped_to: str

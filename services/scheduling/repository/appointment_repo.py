@@ -181,9 +181,12 @@ async def confirm_booking(
     `confirmed`, in the caller's single transaction.
 
     True when the booking is now confirmed (including a repeat: no second
-    history row). False when the hold was lost (reaped, or taken by another
-    appointment) or the appointment is no longer pending; then nothing changes
-    and the saga compensates (research Pitfall 5).
+    history row, and a retry after the appointment already progressed to
+    checked_in, completed or no_show while its slot is still booked by it, so a
+    late retry never reports a lost hold for a real booking; S3). False when
+    the hold was lost (reaped, or taken by another appointment) or the
+    appointment is no longer pending; then nothing changes and the saga
+    compensates (research Pitfall 5).
 
     The appointment row is locked first so the two updates cannot be split by
     a concurrent transition of the same appointment.
@@ -191,7 +194,7 @@ async def confirm_booking(
     current = await db.scalar(
         text("SELECT status FROM appointments WHERE id = :a FOR UPDATE"), {"a": appointment_id}
     )
-    if current == AppointmentStatus.CONFIRMED:
+    if current in AppointmentStatus.COMMITTED:
         booked = await db.scalar(
             text(
                 "SELECT 1 FROM provider_slots "

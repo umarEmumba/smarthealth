@@ -23,6 +23,17 @@ Rules every activity follows:
   entry per step"): `billing_precheck` records its outcome (success/failure,
   never the reference) and `void_billing` records an applied void; a void with
   nothing to undo writes nothing.
+* Post-commit safety (plan 02.1-07, S3): `confirm` writes its audit entry with
+  `_audit_best_effort`. The state change and its `appointment_status_history`
+  row are committed together before the audit, so a failed Mongo write must not
+  flip the saga outcome (it would run compensations over a confirmed booking).
+  The transition stays durable in the history table, an `audit.write_failed`
+  log line marks the gap, and Phase 3's transactional outbox is the general
+  mechanism. The other forward steps keep fatal audits: a failed audit after
+  them leaves state their compensation correctly undoes. `void_billing` and
+  `release_slot` additionally read the appointment's status and do nothing when
+  it is already committed (`AppointmentStatus.COMMITTED`), so no compensation
+  can undo a real booking.
 * No PHI anywhere: the coverage reference is read from the appointment row
   inside `billing_precheck` and sent only in the Billing request body; logs and
   audit carry ids, steps and outcomes.
@@ -59,6 +70,7 @@ from services.scheduling.domain.contracts import (
     BookingInput,
     MarkFailedInput,
 )
+from services.scheduling.domain.enums import AppointmentStatus
 from services.scheduling.repository import appointment_repo, slot_repo
 from services.scheduling.repository.models import Appointment
 
@@ -134,6 +146,50 @@ class SchedulingActivities:
             changed_fields=changed_fields,
             dedupe_key=f"{_workflow_id()}:{step}",
         )
+
+    async def _audit_best_effort(
+        self,
+        *,
+        action: str,
+        entity_type: str,
+        entity_id: str,
+        clinic_id: str | None,
+        step: str,
+        changed_fields: list[str] | None = None,
+        outcome: Outcome = "success",
+    ) -> None:
+        """`_audit` for a step whose state change is ALREADY committed (S3): a
+        failure is logged (action, entity id and the exception TYPE only, never
+        a message that could carry data) and swallowed, so the saga outcome
+        follows the committed state. The transition is durable in
+        `appointment_status_history` (same transaction as the state change);
+        Phase 3's transactional outbox is the general mechanism."""
+        try:
+            await self._audit(
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                clinic_id=clinic_id,
+                step=step,
+                changed_fields=changed_fields,
+                outcome=outcome,
+            )
+        except Exception as exc:  # noqa: BLE001 - deliberately non-fatal
+            log.error(
+                "audit.write_failed",
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                error=type(exc).__name__,
+            )
+
+    async def _appointment_status(self, appointment_id: str) -> str | None:
+        """The appointment's current status, or None when it does not exist."""
+        async with self._session_factory() as db:
+            return await db.scalar(
+                text("SELECT status FROM appointments WHERE id = :a"),
+                {"a": uuid.UUID(appointment_id)},
+            )
 
     # --- forward steps -----------------------------------------------------
 
@@ -305,7 +361,9 @@ class SchedulingActivities:
                 raise _business_error("ConfirmLostHold", "slot hold lost before confirm")
             await db.commit()
         log.info("booking.confirm", appointment_id=inp.appointment_id, outcome="confirmed")
-        await self._audit(
+        # Committed above: a failed audit must not fail (and so compensate) a
+        # confirmed booking (S3).
+        await self._audit_best_effort(
             action="appointment.confirm",
             entity_type="appointment",
             entity_id=inp.appointment_id,
@@ -320,7 +378,17 @@ class SchedulingActivities:
     async def release_slot(self, inp: BookingInput) -> None:
         """Return the slot this appointment holds to `available`. A hold that
         is already gone (never taken, reaped, repeat) is a no-op; a slot held
-        or booked by another appointment is never touched."""
+        or booked by another appointment is never touched. A committed
+        appointment (confirmed, checked_in, completed, no_show) is never
+        compensated (S3): its slot is left alone."""
+        status = await self._appointment_status(inp.appointment_id)
+        if status in AppointmentStatus.COMMITTED:
+            log.info(
+                "booking.release_slot",
+                appointment_id=inp.appointment_id,
+                outcome="skipped_committed",
+            )
+            return
         async with self._session_factory() as db:
             released = await slot_repo.release_hold(
                 db, slot_id=uuid.UUID(inp.slot_id), appointment_id=uuid.UUID(inp.appointment_id)
@@ -345,7 +413,17 @@ class SchedulingActivities:
     async def void_billing(self, inp: BookingInput) -> None:
         """Void the appointment's billing record. No record (the pre-check never
         ran) is a no-op; Billing treats a repeat as a no-op; a record Billing
-        cannot void any more is logged and left alone (nothing to undo)."""
+        cannot void any more is logged and left alone (nothing to undo). A
+        committed appointment (confirmed, checked_in, completed, no_show) is
+        never compensated (S3): no Billing call and no audit entry."""
+        status = await self._appointment_status(inp.appointment_id)
+        if status in AppointmentStatus.COMMITTED:
+            log.info(
+                "booking.void_billing",
+                appointment_id=inp.appointment_id,
+                outcome="skipped_committed",
+            )
+            return
         token = await self._tokens.get("billing")
         try:
             await internal_request(
