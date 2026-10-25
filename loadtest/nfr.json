@@ -1,0 +1,15 @@
+{
+  "sustained_rps": 25,
+  "sustained_seconds": 600,
+  "burst_rps": 100,
+  "burst_seconds": 60,
+  "contention_requests": 200,
+  "book_p95_ms": 300,
+  "book_p99_ms": 800,
+  "read_p95_ms": 200,
+  "read_p99_ms": 500,
+  "confirm_p95_s": 5,
+  "confirm_p99_s": 15,
+  "error_rate_max": 0.01,
+  "availability_pct": 99.9
+}
