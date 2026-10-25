@@ -21,6 +21,7 @@ from pymongo import AsyncMongoClient
 from libs.config import shared_settings
 from libs.observability.logging import add_trace_context
 from tests.conftest import bootstrap_admin_and_login, unique_email
+from tests.pagination_helpers import list_all
 
 SYNTHETIC_PHI_NAME = "Zzyzx Testpatient Synthetic"
 SYNTHETIC_PHI_DOB = "1990-01-01"
@@ -137,11 +138,13 @@ async def test_read_after_write_consistency(client: AsyncClient) -> None:
     assert get_resp.status_code == 200, get_resp.text
     assert get_resp.json() == create_resp.json()
 
-    list_resp = await client.get(
-        "/api/patients", params={"clinic_id": clinic_id}, headers=_auth_header(front_desk_tokens)
+    listed = await list_all(
+        client,
+        "/api/patients",
+        _auth_header(front_desk_tokens),
+        {"clinic_id": clinic_id},
     )
-    assert list_resp.status_code == 200
-    assert any(p["id"] == patient_id for p in list_resp.json())
+    assert any(p["id"] == patient_id for p in listed)
 
 
 @pytest.mark.integration
@@ -375,17 +378,18 @@ async def test_deactivate_patient_hides_from_default_list(client: AsyncClient) -
     assert deactivate_resp.json()["is_active"] is False
     assert deactivate_resp.json()["deactivated_at"] is not None
 
-    default_list = await client.get(
-        "/api/patients", params={"clinic_id": clinic_id}, headers=_auth_header(front_desk_tokens)
+    default_list = await list_all(
+        client, "/api/patients", _auth_header(front_desk_tokens), {"clinic_id": clinic_id}
     )
-    assert all(p["id"] != patient_id for p in default_list.json())
+    assert all(p["id"] != patient_id for p in default_list)
 
-    inactive_list = await client.get(
+    inactive_list = await list_all(
+        client,
         "/api/patients",
-        params={"clinic_id": clinic_id, "include_inactive": "true"},
-        headers=_auth_header(front_desk_tokens),
+        _auth_header(front_desk_tokens),
+        {"clinic_id": clinic_id, "include_inactive": "true"},
     )
-    assert any(p["id"] == patient_id for p in inactive_list.json())
+    assert any(p["id"] == patient_id for p in inactive_list)
 
     get_resp = await client.get(
         f"/api/patients/{patient_id}",

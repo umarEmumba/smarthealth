@@ -28,7 +28,9 @@ update, PHI-safe audit of field NAMES only) and `POST
 /api/patients/{patient_id}/deactivate` (soft-delete, NEVER a row delete)
 — both front-desk/admin, clinic-scoped identically to the create/read
 routes above. `GET` list excludes inactive patients by default;
-`?include_inactive=true` includes them.
+`?include_inactive=true` includes them. The list is paginated (C5): `limit`
+1..200 (default 50), `offset`, a stable `(created_at, id)` order and the grand
+total in the `X-Total-Count` header.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ import uuid
 from datetime import date, datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
 from sqlalchemy.exc import IntegrityError
@@ -50,6 +52,7 @@ from libs.auth.roles import Role
 from libs.db.mongo import get_mongo
 from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
+from libs.pagination import TOTAL_COUNT_HEADER, Page, page_params
 from libs.service_client import (
     ReferencedResourceInvalid,
     UpstreamServiceUnavailable,
@@ -237,7 +240,9 @@ async def create_patient(
 @router.get("", response_model=list[PatientOut])
 async def list_patients(
     clinic_id: uuid.UUID,
+    response: Response,
     include_inactive: bool = False,
+    page: Page = Depends(page_params),
     user: AuthenticatedUser = Depends(require_role(Role.FRONT_DESK, Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
     http: httpx.AsyncClient = Depends(get_internal_http_client),
@@ -259,7 +264,11 @@ async def list_patients(
     if clinic is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="clinic not found")
 
-    patients = await patient_repo.list_patients(db, clinic_id, include_inactive=include_inactive)
+    patients = await patient_repo.list_patients(
+        db, clinic_id, include_inactive=include_inactive, limit=page.limit, offset=page.offset
+    )
+    total = await patient_repo.count_patients(db, clinic_id, include_inactive=include_inactive)
+    response.headers[TOTAL_COUNT_HEADER] = str(total)
     return [_to_out(p) for p in patients]
 
 

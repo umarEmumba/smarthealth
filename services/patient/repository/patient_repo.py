@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone as dt_timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.patient.repository.models import Patient
@@ -77,16 +77,43 @@ async def get_patient_by_user(
     return result.scalar_one_or_none()
 
 
-async def list_patients(
-    db: AsyncSession, clinic_id: uuid.UUID, *, include_inactive: bool = False
-) -> list[Patient]:
-    """List patients for `clinic_id` — always scoped, never all-patients."""
+def _scoped_patients(clinic_id: uuid.UUID, include_inactive: bool):
     stmt = select(Patient).where(Patient.clinic_id == clinic_id)
     if not include_inactive:
         stmt = stmt.where(Patient.is_active.is_(True))
-    stmt = stmt.order_by(Patient.created_at)
+    return stmt
+
+
+async def list_patients(
+    db: AsyncSession,
+    clinic_id: uuid.UUID,
+    *,
+    include_inactive: bool = False,
+    limit: int,
+    offset: int,
+) -> list[Patient]:
+    """One page of patients for `clinic_id` — always scoped, never all-patients.
+
+    Ordered by `(created_at, id)`: a total order, so paging never repeats or
+    skips a row even when rows share a timestamp or arrive between pages (C5).
+    """
+    stmt = (
+        _scoped_patients(clinic_id, include_inactive)
+        .order_by(Patient.created_at, Patient.id)
+        .limit(limit)
+        .offset(offset)
+    )
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_patients(
+    db: AsyncSession, clinic_id: uuid.UUID, *, include_inactive: bool = False
+) -> int:
+    """Total patients matching the same filters as `list_patients`."""
+    subquery = _scoped_patients(clinic_id, include_inactive).subquery()
+    result = await db.execute(select(func.count()).select_from(subquery))
+    return int(result.scalar_one())
 
 
 async def update_patient(
