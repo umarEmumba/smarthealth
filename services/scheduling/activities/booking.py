@@ -13,7 +13,7 @@ Rules every activity follows:
   retry, a duplicate delivery or a re-run after a worker crash is harmless.
 * Business outcomes are NON-retryable `ApplicationError`s whose `type` is the
   machine-readable reason (`ReferenceInvalid`, `SlotUnavailable`,
-  `BillingRejected`, `ConfirmLostHold`); messages carry no values (they land in
+  `BillingRejected`, `ConfirmLostHold`, `SlotInPast`); messages carry no values (they land in
   workflow history). Infrastructure trouble (`UpstreamServiceUnavailable`,
   `ServiceTokenUnavailable`, database errors) propagates and Temporal retries it
   within the bounded policy.
@@ -70,7 +70,7 @@ from services.scheduling.domain.contracts import (
     BookingInput,
     MarkFailedInput,
 )
-from services.scheduling.domain.enums import AppointmentStatus
+from services.scheduling.domain.enums import AppointmentStatus, FailureReason
 from services.scheduling.repository import appointment_repo, slot_repo
 from services.scheduling.repository.models import Appointment
 
@@ -198,7 +198,7 @@ class SchedulingActivities:
         """Re-validate every reference at booking time (D-09 step 1, research
         Pitfall 14): active patient in this clinic, active provider whose
         department belongs to this clinic, and the slot in this clinic for this
-        provider. Read-only, so it needs no compensation and no audit."""
+        provider that has not started yet (`SlotInPast`, S6). Read-only, so it needs no compensation and no audit."""
         clinic_id = uuid.UUID(inp.clinic_id)
         invalid = _business_error("ReferenceInvalid", "reference invalid")
 
@@ -235,9 +235,24 @@ class SchedulingActivities:
                 ),
                 {"s": uuid.UUID(inp.slot_id), "c": clinic_id, "p": uuid.UUID(inp.provider_id)},
             )
+            if slot is not None:
+                # S6 (plan 02.1-07): the slot must still start in the future,
+                # judged by the DATABASE clock (the API checked the application
+                # clock when it accepted the booking; a pending booking can
+                # outlive that moment).
+                still_future = await db.scalar(
+                    text("SELECT start_time > now() FROM provider_slots WHERE id = :s"),
+                    {"s": uuid.UUID(inp.slot_id)},
+                )
         if slot is None:
             log.info("booking.validate", appointment_id=inp.appointment_id, outcome="slot_invalid")
             raise invalid
+        if not still_future:
+            log.info("booking.validate", appointment_id=inp.appointment_id, outcome="slot_in_past")
+            # Non-retryable like every business outcome; deliberately NOT added
+            # to the shared NON_RETRYABLE preset (changing a policy used inside
+            # workflow code is itself a replay risk).
+            raise _business_error(FailureReason.SLOT_IN_PAST, "slot has already started")
         log.info("booking.validate", appointment_id=inp.appointment_id, outcome="valid")
 
     @activity.defn(name=ACT_RESERVE)

@@ -23,6 +23,9 @@ key with another body is 422. Both are answered BEFORE any slot check, so a
 replay of a booking whose slot is now taken still replays. A different key for
 a taken slot is 409 ("slot not available"), and the same patient in an
 overlapping window is 409 too.
+A slot whose start time has passed is 422 ("slot has already started", plan
+02.1-07 S6), answered after the scope check and before the status check, with
+nothing written.
 
 If Temporal is unreachable when starting, the booking is still accepted (202,
 `pending`, `workflow_started_at` NULL) and `booking.workflow_start_deferred` is
@@ -264,6 +267,14 @@ async def create_appointment(
     slot = await slot_repo.get_slot(db, slot_id=payload.slot_id)
     if slot is None or not _in_scope(user, slot.clinic_id):
         raise _not_found()
+    if slot.start_time <= datetime.now(timezone.utc):
+        # S6 (plan 02.1-07): a slot that has already started cannot be booked.
+        # Nothing has been written yet (only the idempotency read above), and
+        # this precedes the status check so a past AND booked slot is 422, not
+        # 409. The saga's validate step repeats the check with the database
+        # clock for a slot that starts while the booking is pending.
+        log.info("booking.refused", slot_id=str(payload.slot_id), reason="slot_in_past")
+        raise HTTPException(status_code=422, detail="slot has already started")
     if slot.status != SlotStatus.AVAILABLE.value:
         # Early answer only; the database arbiters below are the real guard.
         raise _slot_conflict()

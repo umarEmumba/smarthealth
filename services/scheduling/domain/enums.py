@@ -84,6 +84,8 @@ class FailureReason:
     REFERENCE_INVALID = "ReferenceInvalid"
     HOLD_EXPIRED = "hold_expired"
     CONFIRM_LOST_HOLD = "ConfirmLostHold"
+    # S6 (plan 02.1-07): the slot started while the booking was pending.
+    SLOT_IN_PAST = "SlotInPast"
     ACTIVITY_TIMEOUT = "activity_timeout"
     ACTIVITY_FAILED = "activity_failed"
 
