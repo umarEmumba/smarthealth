@@ -2,7 +2,7 @@
 
 A runnable load test for the booking path (mentor review D2). It applies the quantified non-functional requirements (NFR-01 to NFR-08, see [`docs/nfr.md`](../docs/nfr.md) and `.planning/REQUIREMENTS.md`) to the gateway and fails with a non-zero exit code when a target is crossed.
 
-**What this is and is not.** The numbers are *targets*. This directory delivers the test that applies them. Measuring the system against them (dashboards, bottleneck analysis, sizing) is Phase 3 observability work, and the local Compose stack (one instance of each service) is expected to pass `smoke` but is not claimed to meet `sustained` or `burst`. See "What is verified and what is only a target" in `docs/nfr.md`.
+**What this is and is not.** The numbers are *targets*. This directory delivers the test that applies them. Measuring the system against them (dashboards, bottleneck analysis, sizing) is Phase 3 observability work, and the local Compose stack (one instance of each service) is not claimed to meet any profile: `smoke` was run against it twice (plan 02.1-13) and crossed the latency thresholds, `sustained` and `burst` have not been run. See "What is verified and what is only a target" in `docs/nfr.md`.
 
 **Local stack only.** The profiles send thousands of requests and need the gateway rate budget raised. Never run them against a shared or production environment, and never raise the gateway budget there. The runner targets only the URL you give it.
 
@@ -55,7 +55,7 @@ loadtest/run.sh contention
 
 | Profile | Applies | Duration | Maps to |
 |---------|---------|----------|---------|
-| `smoke` | 5 booking requests per second | 30 s | plumbing check; the local stack is expected to pass |
+| `smoke` | 5 booking requests per second | 30 s | plumbing check; on the local stack it exits non-zero because the latency thresholds are crossed (plan 02.1-13, two runs on a loaded laptop) |
 | `sustained` | `sustained_rps` (25) per second | `sustained_seconds` (600 s, 10 minutes) | NFR-01, NFR-03, NFR-04, NFR-05 |
 | `burst` | `burst_rps` (100) per second | `burst_seconds` (60 s) | NFR-02 |
 | `contention` | `contention_requests` (200) concurrent requests for one slot | a few seconds | NFR-07 |

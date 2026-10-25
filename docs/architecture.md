@@ -732,8 +732,11 @@ Phase 2 — interim mechanisms and gaps:
 - Not verified: a viewer inspecting workflow traces end-to-end in Jaeger.
 - **Load and NFRs are targets, not results.** NFR-01..08 and a runnable k6 load test exist
   ([`nfr.md`](./nfr.md), `loadtest/README.md`), but the targets are **not yet measured**: the full
-  profiles have never run against the real stack and the local single-instance stack is not claimed to
-  meet NFR-01 or NFR-02. Phase 3 observability measures them. The concurrency suites and the live demo
+  profiles `sustained` and `burst` have never run, and the `smoke` profile (5 requests per second for 30 s)
+  crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0
+  to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still
+  confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector). The local
+  single-instance stack is not claimed to meet NFR-01 or NFR-02. Phase 3 observability measures them. The concurrency suites and the live demo
   are the only load evidence today.
 
 Phase 2.1 — what is interim and what is open:

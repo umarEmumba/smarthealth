@@ -34,7 +34,7 @@ and operational analytics are Phase 3 and are **not built yet**.
 | `scheduling-worker`, `visit-worker` (Phase 2) | Temporal workers (same images as their APIs, separate containers) polling `scheduling-tq` / `visit-tq` |
 | PostgreSQL (one database per service), MongoDB `audit_log`, Redis | Built and in use |
 | Temporal (`auto-setup`, local dev only) | In use since Phase 2: sagas, retries, Schedules (hold reaper, pending-booking starter, visit sweeper; Phase 2.1 adds the schedule-change poller, the Scheduling reconciler and the Visit reconciler) |
-| k6 load test, NFR targets (Phase 2.1) | `loadtest/` (k6, pinned image) and `docs/nfr.md`: targets are defined and the profiles are runnable; they are **not yet measured** against the real stack (Phase 3) |
+| k6 load test, NFR targets (Phase 2.1) | `loadtest/` (k6, pinned image) and `docs/nfr.md`: targets are defined and the profiles are runnable; they are **not yet measured** (Phase 3), and the `smoke` profile crossed its latency thresholds on the local stack (see [Known limitations](#known-limitations)) |
 | Jaeger, Prometheus, Grafana | Tracing and per-service metrics wired; Grafana dashboards not built yet; the workers expose no metrics yet |
 | Kafka + Schema Registry, Celery + RabbitMQ | Containers run and report healthy; **no application code uses them yet** (Phase 3) |
 
@@ -439,9 +439,9 @@ Phase 2 (scheduling, visits, billing):
   transactional outbox.
 - **Load and NFRs are targets, not results.** The quantified requirements (NFR-01 to NFR-08)
   and a runnable k6 load test exist (`docs/nfr.md`, `loadtest/README.md`), but the targets are
-  **not yet measured**: the full profiles have never been run against the real stack, and the
-  local single-instance stack is not claimed to meet NFR-01 or NFR-02. Measuring them is Phase 3
-  observability work. The concurrency suites and the live demo remain the only load evidence.
+  **not yet measured**: the `smoke` profile (5 requests per second for 30 s) was run against the real stack twice in plan 02.1-13 and **crossed its latency thresholds both times** (booking accept p95 2.0 to 6.0 s against a 300 ms target, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking confirmed and none timed out, but 2 of 151 accepts failed in the second run) on a developer laptop under heavy load with no Jaeger collector, so that is two uncontrolled observations, not a measurement; `sustained` and `burst` have not been run. The local single-instance stack is not claimed to meet NFR-01 or
+  NFR-02. Measuring them is Phase 3 observability work. The concurrency suites and the live demo remain
+  the only correctness-under-load evidence.
 
 Phase 2.1 (mentor review remediation) — what is interim, what is open:
 
