@@ -15,7 +15,9 @@ update — `specialties`, when supplied, REPLACES the full set via the same
 get-or-create-by-name path `create_provider` uses) and `POST
 /api/providers/{provider_id}/deactivate` (soft-delete, NEVER a row
 delete) — both admin-only. `GET` list excludes inactive providers by
-default; `?include_inactive=true` includes them.
+default; `?include_inactive=true` includes them. The list is paginated (C5): `limit`
+1..200 (default 50), `offset`, a stable `(created_at, id)` order and the grand
+total in the `X-Total-Count` header.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 import httpx
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
@@ -37,6 +39,7 @@ from libs.auth.roles import Role
 from libs.db.mongo import get_mongo
 from libs.http import get_internal_http_client
 from libs.observability.logging import get_logger
+from libs.pagination import TOTAL_COUNT_HEADER, Page, page_params
 from libs.service_client import (
     ReferencedResourceInvalid,
     UpstreamServiceUnavailable,
@@ -198,14 +201,20 @@ async def create_provider(
 
 @router.get("", response_model=list[ProviderOut])
 async def list_providers(
+    response: Response,
     department_id: uuid.UUID,
     include_inactive: bool = False,
+    page: Page = Depends(page_params),
     user: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> list[ProviderOut]:
     providers = await provider_repo.list_providers(
+        db, department_id, include_inactive=include_inactive, limit=page.limit, offset=page.offset
+    )
+    total = await provider_repo.count_providers(
         db, department_id, include_inactive=include_inactive
     )
+    response.headers[TOTAL_COUNT_HEADER] = str(total)
     return [_to_out(p) for p in providers]
 
 

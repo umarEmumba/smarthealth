@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time, timezone as dt_timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -111,28 +111,50 @@ async def get_provider_by_user(db: AsyncSession, user_id: uuid.UUID) -> Provider
     return result.scalar_one_or_none()
 
 
+def _provider_filter(stmt, department_id: uuid.UUID | None, include_inactive: bool):
+    if department_id is not None:
+        stmt = stmt.where(Provider.department_id == department_id)
+    if not include_inactive:
+        stmt = stmt.where(Provider.is_active.is_(True))
+    return stmt
+
+
 async def list_providers(
     db: AsyncSession,
     department_id: uuid.UUID | None = None,
     *,
     include_inactive: bool = False,
+    limit: int,
+    offset: int,
 ) -> list[Provider]:
-    """List providers, optionally scoped to a single department.
+    """One page of providers, optionally scoped to a single department.
 
-    `department_id=None` lists across all departments — reserved for
-    admin-only call sites (the provider router guards writes to ADMIN;
-    a future cross-department admin listing view could use this, but
-    this plan's router always passes an explicit `department_id`).
+    Ordered by `(created_at, id)` (a total order, so paging never repeats or
+    skips a row — C5). `department_id=None` lists across all departments —
+    reserved for admin-only call sites (the router always passes an explicit
+    `department_id`). The `selectinload` of specialties is kept: it runs as its
+    own query for just the page's providers.
     """
-    stmt = select(Provider).options(selectinload(Provider.specialties)).order_by(
-        Provider.created_at
+    stmt = _provider_filter(
+        select(Provider).options(selectinload(Provider.specialties)),
+        department_id,
+        include_inactive,
     )
-    if department_id is not None:
-        stmt = stmt.where(Provider.department_id == department_id)
-    if not include_inactive:
-        stmt = stmt.where(Provider.is_active.is_(True))
+    stmt = stmt.order_by(Provider.created_at, Provider.id).limit(limit).offset(offset)
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_providers(
+    db: AsyncSession,
+    department_id: uuid.UUID | None = None,
+    *,
+    include_inactive: bool = False,
+) -> int:
+    """Total providers matching the same filters as `list_providers`."""
+    subquery = _provider_filter(select(Provider), department_id, include_inactive).subquery()
+    result = await db.execute(select(func.count()).select_from(subquery))
+    return int(result.scalar_one())
 
 
 async def update_provider(

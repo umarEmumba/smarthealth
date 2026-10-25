@@ -13,6 +13,7 @@ from pymongo import AsyncMongoClient
 
 from libs.config import shared_settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
+from tests.pagination_helpers import list_all
 
 
 async def _register_and_login(client: AsyncClient, *, role: str) -> dict:
@@ -140,17 +141,15 @@ async def test_provider_scoped_to_department(client: AsyncClient) -> None:
     assert create_resp.status_code == 201, create_resp.text
     provider_id = create_resp.json()["id"]
 
-    a_list = await client.get(
-        "/api/providers", params={"department_id": department_a}, headers=_auth_header(admin_tokens)
+    a_list = await list_all(
+        client, "/api/providers", _auth_header(admin_tokens), {"department_id": department_a}
     )
-    assert a_list.status_code == 200
-    assert any(p["id"] == provider_id for p in a_list.json())
+    assert any(p["id"] == provider_id for p in a_list)
 
-    b_list = await client.get(
-        "/api/providers", params={"department_id": department_b}, headers=_auth_header(admin_tokens)
+    b_list = await list_all(
+        client, "/api/providers", _auth_header(admin_tokens), {"department_id": department_b}
     )
-    assert b_list.status_code == 200
-    assert all(p["id"] != provider_id for p in b_list.json())
+    assert all(p["id"] != provider_id for p in b_list)
 
 
 @pytest.mark.integration
@@ -304,17 +303,18 @@ async def test_deactivate_provider_hides_from_default_list(client: AsyncClient) 
     assert deactivate_resp.json()["is_active"] is False
     assert deactivate_resp.json()["deactivated_at"] is not None
 
-    default_list = await client.get(
-        "/api/providers", params={"department_id": department_id}, headers=_auth_header(admin_tokens)
+    default_list = await list_all(
+        client, "/api/providers", _auth_header(admin_tokens), {"department_id": department_id}
     )
-    assert all(p["id"] != provider_id for p in default_list.json())
+    assert all(p["id"] != provider_id for p in default_list)
 
-    inactive_list = await client.get(
+    inactive_list = await list_all(
+        client,
         "/api/providers",
-        params={"department_id": department_id, "include_inactive": "true"},
-        headers=_auth_header(admin_tokens),
+        _auth_header(admin_tokens),
+        {"department_id": department_id, "include_inactive": "true"},
     )
-    assert any(p["id"] == provider_id for p in inactive_list.json())
+    assert any(p["id"] == provider_id for p in inactive_list)
 
     get_resp = await client.get(f"/api/providers/{provider_id}", headers=_auth_header(admin_tokens))
     assert get_resp.status_code == 200
