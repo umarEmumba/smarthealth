@@ -23,9 +23,9 @@ key with another body is 422. Both are answered BEFORE any slot check, so a
 replay of a booking whose slot is now taken still replays. A different key for
 a taken slot is 409 ("slot not available"), and the same patient in an
 overlapping window is 409 too.
-A slot whose start time has passed is 422 ("slot has already started", plan
-02.1-07 S6), answered after the scope check and before the status check, with
-nothing written.
+A slot whose start time has passed is refused with 422 (plan 02.1-07 S6),
+answered after the scope check and before the status check, with nothing
+written.
 
 If Temporal is unreachable when starting, the booking is still accepted (202,
 `pending`, `workflow_started_at` NULL) and `booking.workflow_start_deferred` is
