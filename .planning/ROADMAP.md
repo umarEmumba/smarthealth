@@ -198,7 +198,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   5. Refresh tokens are single-use and logout kills them, bcrypt runs off the event loop, emails are case-insensitive, patients and providers can read their own data, and the three list endpoints are paginated (C1..C5).
   6. The PRD has quantified NFRs (throughput, latency, availability, durability, contention) with a single numeric source, and a k6 load test and seed script exist (D1, D2).
 
-**Plans:** 7/13 plans executed (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
+**Plans:** 8/13 plans executed (waves ordered by file ownership; plans in one wave touch disjoint files and databases)
 
 **Wave 1**
 
@@ -215,7 +215,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02.1-08-schedule-change-workflow-PLAN.md — poller Schedule and ScheduleChangeWorkflow withdraw stale slots, flag booked appointments, second pass for held slots (M2)
+- [x] 02.1-08-schedule-change-workflow-PLAN.md — poller Schedule and ScheduleChangeWorkflow withdraw stale slots, flag booked appointments, second pass for held slots (M2)
 - [ ] 02.1-09-visit-completion-sync-PLAN.md — patched fourth branch completes the appointment, settlement markers in visit_db (M1)
 
 **Wave 4** *(blocked on Wave 3 completion)*
@@ -252,5 +252,5 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
-| 2.1. Week 1-2 mentor review remediation | 7/13 | In Progress|  |
+| 2.1. Week 1-2 mentor review remediation | 8/13 | In Progress|  |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |
