@@ -31,6 +31,16 @@ routes above. `GET` list excludes inactive patients by default;
 `?include_inactive=true` includes them. The list is paginated (C5): `limit`
 1..200 (default 50), `offset`, a stable `(created_at, id)` order and the grand
 total in the `X-Total-Count` header.
+
+Plan 02.1-12 (C4) adds the one patient-facing read, `GET /api/patients/me`: a
+logged-in PATIENT reads their own profile. The route has no id parameter, so
+there is no way to name another patient: the account comes from the verified
+token's `sub` and the clinic from its clinic claim, and the profile is found
+through the same by-user lookup Scheduling uses. A missing clinic claim, an
+account with no linked profile, a deactivated profile and a profile in another
+clinic are all the same 404, so the route never says which of them it was. It
+is declared BEFORE `/{patient_id}` so the literal segment wins, returns the
+fields the staff read already returns, and logs the patient id only.
 """
 
 from __future__ import annotations
@@ -46,7 +56,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.audit.writer import write_audit
-from libs.auth.current_user import AuthenticatedUser
+from libs.auth.current_user import AuthenticatedUser, user_id_as_uuid
 from libs.auth.rbac import require_role
 from libs.auth.roles import Role
 from libs.db.mongo import get_mongo
@@ -270,6 +280,34 @@ async def list_patients(
     total = await patient_repo.count_patients(db, clinic_id, include_inactive=include_inactive)
     response.headers[TOTAL_COUNT_HEADER] = str(total)
     return [_to_out(p) for p in patients]
+
+
+def _own_profile_not_found() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="patient profile not found")
+
+
+# Declared BEFORE `/{patient_id}` so the literal `me` segment is matched first.
+@router.get("/me", response_model=PatientOut)
+async def get_my_profile(
+    user: AuthenticatedUser = Depends(require_role(Role.PATIENT)),
+    db: AsyncSession = Depends(get_db),
+) -> PatientOut:
+    """The caller's own patient profile (C4). Identity comes only from the token."""
+    if user.clinic_id is None:
+        raise _own_profile_not_found()
+    try:
+        clinic_id = uuid.UUID(user.clinic_id)
+        user_id = user_id_as_uuid(user)
+    except ValueError:
+        raise _own_profile_not_found() from None
+
+    patient = await patient_repo.get_patient_by_user(db, user_id, clinic_id)
+    if patient is None or not patient.is_active:
+        raise _own_profile_not_found()
+
+    # Ids only: never the name, date of birth, phone or address.
+    log.info("patient.me", patient_id=str(patient.id))
+    return _to_out(patient)
 
 
 @router.get("/{patient_id}", response_model=PatientOut)
