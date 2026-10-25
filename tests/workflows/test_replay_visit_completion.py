@@ -90,7 +90,9 @@ async def test_patched_visit_history_replays_against_the_current_workflow(name: 
 
 def test_the_p21_history_took_the_fourth_branch() -> None:
     name = "visit_completed_p21.json"
-    assert _patch_ids(name) == [VISIT_COMPLETE_APPOINTMENT_PATCH_ID]
+    # The id is durable (it lives in recorded histories): renaming it is a migration.
+    assert VISIT_COMPLETE_APPOINTMENT_PATCH_ID == "visit-complete-appointment-v1"
+    assert _patch_ids(name) == ["visit-complete-appointment-v1"]
     assert sorted(_activity_types(name)) == sorted(
         [ACT_FINALIZE_BILLING, ACT_FOLLOWUP_INTENT, ACT_ANALYTICS_INTENT, ACT_COMPLETE_APPOINTMENT]
     )
