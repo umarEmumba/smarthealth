@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
 status: executing
-stopped_at: Completed 02.1-06-PLAN.md
-last_updated: "2026-10-25T05:46:04.327Z"
+stopped_at: Completed 02.1-07-PLAN.md
+last_updated: "2026-10-25T06:15:51.535Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: f29d369d22f4df0a318fcdd32f41541fa8565773
+state_head: 22db60374902365ad36df727a3837c35c2bbb14d
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 42
-  completed_plans: 35
+  completed_plans: 36
   percent: 20
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
-Plan: 7 of 13
+Plan: 8 of 13
 Status: Ready to execute
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
@@ -87,6 +87,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 02.1 P04 | 16 min | 3 tasks | 13 files |
 | Phase 02.1 P05 | 25min | 2 tasks | 7 files |
 | Phase 02.1 P06 | 55min | 3 tasks | 6 files |
+| Phase 02.1 P07 | 45min | 3 tasks | 23 files |
 
 ## Accumulated Context
 
@@ -156,6 +157,7 @@ Recent decisions affecting current work:
 - [Phase 02.1]: 02.1-04: load test is k6 from the pinned grafana/k6:1.8.2 image (no new dependency); each profile starts at its own booking-plan offset and one seed serves one run of each; the seed defaults to 5 providers so the plan holds the 21,150 entries smoke+sustained+burst need
 - [Phase 02.1]: 02.1-05: Provider schedule changes use a pull-based outbox (schedule_change_events written in the change's own transaction, drained by Scheduling over /internal/schedule-changes with an explicit ack) instead of a push or a cursor, so no event is lost when Scheduling or Temporal is down
 - [Phase 02.1]: 02.1-06: Visit check-in calls Scheduling's internal check-in FIRST and inserts the visit second; a failure between them converges on retry (Scheduling answers already), no compensating call
+- [Phase 02.1]: 02.1-07: BookingWorkflow notify-after-confirm and failure-time waitlist re-offer are separate workflow.patched ids; S3 uses non-fatal audits (history row durable) until Phase 3 outbox; SlotInPast stays out of the NON_RETRYABLE preset
 
 ### Pending Todos
 
@@ -189,6 +191,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T05:46:04.274Z
-Stopped at: Completed 02.1-06-PLAN.md
+Last session: 2026-10-25T06:15:51.481Z
+Stopped at: Completed 02.1-07-PLAN.md
 Resume file: None
