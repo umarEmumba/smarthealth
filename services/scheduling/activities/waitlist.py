@@ -38,9 +38,12 @@ from typing import Any
 from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from temporalio import activity
+from temporalio.client import Client
 
 from libs.audit.writer import Outcome, write_audit
 from libs.observability.logging import get_logger
+from libs.temporal import start_once
+from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.domain.contracts import (
     ACT_WAITLIST_CLAIM,
     ACT_WAITLIST_RESOLVE,
@@ -51,9 +54,12 @@ from services.scheduling.domain.contracts import (
     CLAIM_SLOT_TAKEN,
     LOST_RACE_REASONS,
     OUTCOME_CONFIRMED,
+    WAITLIST_ADVANCE_WORKFLOW,
     ClaimResult,
+    WaitlistAdvanceInput,
     WaitlistClaimInput,
     WaitlistResolveInput,
+    waitlist_advance_workflow_id,
 )
 from services.scheduling.domain.enums import SlotStatus
 from services.scheduling.domain.errors import PatientOverlap, SlotTaken
@@ -83,6 +89,49 @@ def waitlist_request_hash(slot_id: uuid.UUID, patient_id: uuid.UUID, coverage_re
 
 def waitlist_idempotency_key(appointment_id: str) -> str:
     return f"waitlist-{appointment_id}"
+
+
+async def offer_slot_to_waitlist(
+    client: Client | None,
+    *,
+    slot_id: uuid.UUID | str,
+    clinic_id: uuid.UUID | str,
+    source_workflow_id: str,
+    failure_event: str,
+) -> bool:
+    """Best effort (plan 02.1-11, S5): offer a slot a maintenance run just freed
+    to the waitlist by starting `WaitlistAdvanceWorkflow` under
+    `waitlist-advance-{source_workflow_id}`.
+
+    A start for an id that is running or already closed is a no-op
+    (`start_once`), so a repeat of the run never offers twice. Skipped (False)
+    when no Temporal client is wired; a failure is logged as `failure_event`
+    with ids and the exception TYPE only and never raised: the slot is already
+    free and bookable, so the offer is a convenience, not a correctness step.
+    True when the start request was accepted (including an attach/no-op)."""
+    if client is None:
+        return False
+    try:
+        await start_once(
+            client,
+            WAITLIST_ADVANCE_WORKFLOW,
+            WaitlistAdvanceInput(
+                slot_id=str(slot_id),
+                clinic_id=str(clinic_id),
+                source_workflow_id=source_workflow_id,
+            ),
+            workflow_id=waitlist_advance_workflow_id(source_workflow_id),
+            task_queue=SCHEDULING_TASK_QUEUE,
+        )
+    except Exception as exc:  # noqa: BLE001 - best effort by design
+        log.warning(
+            failure_event,
+            slot_id=str(slot_id),
+            source=source_workflow_id,
+            error=type(exc).__name__,
+        )
+        return False
+    return True
 
 
 class WaitlistActivities:

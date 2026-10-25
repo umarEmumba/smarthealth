@@ -39,6 +39,7 @@ from services.scheduling.domain.contracts import (
     BookingResult,
     MaintenanceResult,
     booking_workflow_id,
+    waitlist_advance_workflow_id,
 )
 from services.scheduling.workflows.booking import BookingWorkflow
 from tests.conftest import harness_apps
@@ -294,6 +295,13 @@ async def test_saga_whose_hold_was_reaped_before_confirm_compensates_and_never_c
     wf = booking_workflow_id(appointment_id)
     assert await _audit_count(mongo_client, f"{wf}:confirm") == 0
     assert await _audit_count(mongo_client, f"reaper:{appointment_id}") == 1
+    # Plan 02.1-11 (S5): the reaper also offered the freed slot to the waitlist.
+    # Only this worker's BookingWorkflow runs here, so the advance is merely
+    # started (its existence is asserted, not its timing or outcome).
+    advance = temporal_env.client.get_workflow_handle(
+        waitlist_advance_workflow_id(f"reaper-{appointment_id}")
+    )
+    assert (await advance.describe()).status == WorkflowExecutionStatus.RUNNING
 
 
 # --- pending-booking starter -------------------------------------------------------

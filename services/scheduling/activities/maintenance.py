@@ -8,6 +8,12 @@ research G7 / Pattern 8, Pitfalls 4 and 5).
   written after the commit, one entry per released pair, deduplicated by
   `reaper:{appointment_id}`.
 
+  Every freed slot that had an appointment is then offered to the waitlist
+  (plan 02.1-11, S5): a best-effort `start_once` of `WaitlistAdvanceWorkflow`
+  under `waitlist-advance-reaper-{appointment_id}`, after the commit and the
+  audit; skipped when no Temporal client is wired, a failed start is logged
+  and never fails the activity.
+
   Racing a live saga is safe (Pitfall 5): the saga's `confirm` is conditional
   on `status = 'held' AND held_by_appointment_id = :a`, so a reaped hold makes
   it raise `ConfirmLostHold` and the saga compensates; the appointment stays
@@ -44,6 +50,7 @@ from libs.observability.logging import get_logger
 from libs.temporal import start_once
 from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.config import settings
+from services.scheduling.activities.waitlist import offer_slot_to_waitlist
 from services.scheduling.domain.contracts import (
     ACT_EXPIRE_HOLDS,
     ACT_START_PENDING,
@@ -116,6 +123,20 @@ class MaintenanceActivities:
                 # A hold always names its appointment; without one there is no
                 # stable key, so the (rare) entry is written plainly.
                 dedupe_key=f"reaper:{appointment_id}" if appointment_id else None,
+            )
+
+        # S5 (plan 02.1-11): every slot the reaper freed is offered to the
+        # waitlist. Best effort and after the commit: the slot is already
+        # bookable; a failed start is logged and never fails the activity.
+        for slot_id, appointment_id in released:
+            if appointment_id is None:
+                continue
+            await offer_slot_to_waitlist(
+                self._client,
+                slot_id=slot_id,
+                clinic_id=clinics.get(slot_id, ""),
+                source_workflow_id=f"reaper-{appointment_id}",
+                failure_event="reaper.waitlist_offer_failed",
             )
         log.info("maintenance.expire_holds", processed=len(released))
         return MaintenanceResult(processed=len(released))
