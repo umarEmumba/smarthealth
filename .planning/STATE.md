@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
-status: executing
-stopped_at: Completed 02.1-12-self-service-views-PLAN.md
-last_updated: "2026-10-25T08:41:08.627Z"
+status: verifying
+stopped_at: Completed 02.1-13-docs-closeout-PLAN.md
+last_updated: "2026-10-25T10:02:00.211Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: e4aad08748824f50280d3c2c2e6350b16d58a3f2
+state_head: 1e053da02935b5b5d690c8d94bc5025d6d832031
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 42
-  completed_plans: 41
+  completed_plans: 42
   percent: 20
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 
 Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
 Plan: 13 of 13
-Status: Ready to execute
+Status: Phase complete — ready for verification
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
 human visual check of the dashboard/docs.
@@ -93,6 +93,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 02.1 P10 | 20min | 3 tasks | 16 files |
 | Phase 02.1 P11 | 35min | 3 tasks | 17 files |
 | Phase 02.1 P12 | 40min | 2 tasks | 7 files |
+| Phase 02.1 P13 | 78 min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -177,6 +178,9 @@ Recent decisions affecting current work:
 - [Phase 02.1]: [02.1-11] Reconciler convergence uses no new columns: billing_void_checked history note, void-then-fail in one transaction, no-show Billing no_refund then mark_no_show; slot-then-appointment lock order matches the reaper
 - [Phase 02.1]: 02.1-12: provider appointment ownership is resolved through Provider's by-user lookup before the appointment is read, so foreign, missing and unlinked all return the identical 404; the history tie is fixed with a CASE (note after transition) rather than a column
 - [Phase 02.1]: 02.1-12: GET /api/patients/me takes identity only from the token and answers one 'patient profile not found' for every miss; provider reads are scoped by provider id, not the token's clinic claim
+- [Phase 02.1]: Docs state only what the code does; the Phase 2.1 roadmap block is not marked active while Phase 2 verification is pending
+- [Phase 02.1]: First real-stack k6 smoke runs crossed latency thresholds, so the docs say NFRs are unmeasured and the smoke result is unfavourable; DASH-04 left unticked for Phase 3
+- [Phase 02.1]: Audit dedupe index is restored by test_audit_indexes and ensured by the concurrent-finalize test, so test order no longer decides
 
 ### Pending Todos
 
@@ -210,6 +214,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T08:41:08.561Z
-Stopped at: Completed 02.1-12-self-service-views-PLAN.md
+Last session: 2026-10-25T10:01:50.435Z
+Stopped at: Completed 02.1-13-docs-closeout-PLAN.md
 Resume file: None
