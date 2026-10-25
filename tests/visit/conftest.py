@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import itertools
 import uuid
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 import httpx
+import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 from pymongo import AsyncMongoClient
@@ -260,6 +262,36 @@ class _DownTemporal:
         from temporalio.service import RPCError, RPCStatusCode  # noqa: PLC0415
 
         raise RPCError("temporal unavailable", RPCStatusCode.UNAVAILABLE, b"")
+
+
+# Plan 02.1-06 (M1): Visit's check-in now moves the appointment to checked_in in
+# Scheduling, which only accepts a check-in inside the window around the slot
+# (60 minutes before the start by default). These fixtures seed appointments far
+# in the future, so every test under tests/visit runs with the opening window
+# widened to this many minutes (about 19 years: effectively "always open").
+WIDE_CHECKIN_OPENS_BEFORE_MINUTES = 10_000_000
+
+
+@contextmanager
+def widened_checkin_window() -> Iterator[None]:
+    """Temporarily raise `checkin_opens_before_minutes` on Scheduling's settings
+    object. The harness runs the Scheduling app in this process and its handler
+    reads the setting at request time, so the patched value is what it uses.
+    Importable by other test packages that check in far-future appointments."""
+    from services.scheduling.config import settings  # noqa: PLC0415
+
+    previous = settings.checkin_opens_before_minutes
+    settings.checkin_opens_before_minutes = WIDE_CHECKIN_OPENS_BEFORE_MINUTES
+    try:
+        yield
+    finally:
+        settings.checkin_opens_before_minutes = previous
+
+
+@pytest.fixture(autouse=True)
+def _widened_checkin_window() -> Iterator[None]:
+    with widened_checkin_window():
+        yield
 
 
 @pytest_asyncio.fixture(autouse=True)

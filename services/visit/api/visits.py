@@ -12,10 +12,21 @@ Check-in (VISIT-01, D-15):
     (422 without it).
   * A visit that already exists for the appointment is returned as-is (200),
     without asking Scheduling again: check-in is idempotent.
-  * Otherwise Scheduling is asked over an aud=scheduling service token whether
-    the appointment exists in that clinic (missing / other clinic -> 404) and
-    is `confirmed` (else 409 "appointment not confirmed"). Scheduling or
-    Identity unreachable -> 503 before anything is written (fail closed).
+  * Otherwise Scheduling is asked FIRST (plan 02.1-06, M1), over an
+    aud=scheduling service token, to move the appointment `confirmed ->
+    checked_in` (its internal check-in). Scheduling enforces the check-in
+    window and is where the cancel race is arbitrated, so after a 201 the
+    appointment can no longer be cancelled or rescheduled. Missing / other
+    clinic -> the identical 404; a refusal is 409 with exactly one of
+    "appointment not confirmed", "check-in window not open" or "check-in
+    window closed" (any other upstream detail is reported as "appointment not
+    confirmed"). Scheduling or Identity unreachable -> 503 before any visit is
+    written (fail closed).
+  * Only then is the visit row inserted. If that insert (or this process)
+    fails, the appointment is `checked_in` with no visit; the repeated request
+    gets `already` from Scheduling and creates the visit, so the two services
+    converge without a compensating call. Once the visit exists the repeat is
+    answered locally (200) and Scheduling is not asked again.
   * `INSERT ... ON CONFLICT (appointment_id) DO NOTHING` arbitrates concurrent
     check-ins: one 201 (audited `visit.check_in`), the rest 200.
 
@@ -78,7 +89,11 @@ from services.visit.domain.schemas import (
     VisitOut,
 )
 from services.visit.domain.states import PREVIOUS, TransitionOutcome, VisitStatus
-from services.visit.references import get_appointment_ref, get_provider_by_user
+from services.visit.references import (
+    CheckInRefused,
+    check_in_appointment,
+    get_provider_by_user,
+)
 from services.visit.repository import visit_repo
 from services.visit.repository.models import Visit
 
@@ -91,7 +106,10 @@ VISIT_ROLES = (Role.PROVIDER, Role.FRONT_DESK, Role.ADMIN)
 ENTITY_TYPE = "visit"
 LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
-APPOINTMENT_CONFIRMED = "confirmed"
+NOT_CONFIRMED = "appointment not confirmed"
+# The only 409 details a check-in client ever sees (copied from Scheduling's
+# internal check-in); anything else upstream says is reported as NOT_CONFIRMED.
+CHECK_IN_REFUSALS = frozenset({NOT_CONFIRMED, "check-in window not open", "check-in window closed"})
 
 
 def _not_found() -> HTTPException:
@@ -189,16 +207,18 @@ async def check_in(
         return _to_out(existing)
 
     try:
-        appointment = await get_appointment_ref(
+        appointment = await check_in_appointment(
             http, tokens, appointment_id=body.appointment_id, clinic_id=clinic_id
         )
+    except CheckInRefused as exc:
+        detail = exc.detail if exc.detail in CHECK_IN_REFUSALS else NOT_CONFIRMED
+        log.info("visit.check_in_refused", reason=detail)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
     except (UpstreamServiceUnavailable, ServiceTokenUnavailable) as exc:
         log.warning("visit.check_in_refused", reason="scheduling_unavailable", error=type(exc).__name__)
         raise _unavailable("scheduling") from exc
     if appointment is None or uuid.UUID(appointment["clinic_id"]) != clinic_id:
         raise _not_found()
-    if appointment["status"] != APPOINTMENT_CONFIRMED:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="appointment not confirmed")
 
     visit, created = await visit_repo.create_visit(
         db,
