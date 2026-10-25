@@ -161,6 +161,8 @@ async def test_visit_lifecycle_finalizes_billing(gateway: httpx.AsyncClient, ew:
 
     # Downstream runs on the visit worker after the response: billing finalized.
     await billing_in(gateway, ew, appointment_id, "finalized")
+    # M1 (plan 02.1-09): the same fan-out completes the appointment in Scheduling.
+    assert (await appointment_in(gateway, ew, appointment_id, {"completed"}))["status"] == "completed"
 
     listed = await gateway.get(
         "/api/visits", params={"status": "completed"}, headers=ew.front_desk
