@@ -9,6 +9,14 @@ the write functions here (D-05).
 
 Nothing in this module touches another service's database or a concrete-slot
 table: availability is stored as weekly templates only (Phase 1 Decision 2).
+
+Schedule-change events (M2): a template edit that changes a schedule-affecting
+field, a template deactivation and a provider deactivation each add ONE
+`ScheduleChangeEvent` to the session BEFORE the function's existing commit, so the
+event and the change commit atomically (a change is never committed without its
+event, nor an event without its change). A change that alters nothing records
+nothing. Scheduling drains the events through `list_pending_changes` /
+`mark_change_delivered`, exposed on Provider's internal API.
 """
 
 from __future__ import annotations
@@ -16,12 +24,18 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time, timezone as dt_timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from services.provider.repository.models import AvailabilityTemplate, Provider, Specialty
+from services.provider.repository.models import (
+    AvailabilityTemplate,
+    Provider,
+    ScheduleChangeEvent,
+    ScheduleChangeType,
+    Specialty,
+)
 
 
 async def get_specialties_by_ids(
@@ -322,6 +336,65 @@ async def deactivate_availability_template(
     if template.is_active:
         template.is_active = False
         template.deactivated_at = datetime.now(dt_timezone.utc)
+        await record_schedule_change(
+            db,
+            provider_id=template.provider_id,
+            change_type=ScheduleChangeType.TEMPLATE_DEACTIVATED,
+            template_id=template.id,
+        )
         await db.commit()
         await db.refresh(template)
     return template
+
+
+async def record_schedule_change(
+    db: AsyncSession,
+    *,
+    provider_id: uuid.UUID,
+    change_type: str,
+    template_id: uuid.UUID | None = None,
+) -> ScheduleChangeEvent:
+    """Add one schedule-change event to the caller's transaction (M2).
+
+    Flush only, never commit: the caller's existing commit makes the event atomic
+    with the change that caused it. The row carries ids and a change type only.
+    """
+    event = ScheduleChangeEvent(
+        provider_id=provider_id, change_type=change_type, template_id=template_id
+    )
+    db.add(event)
+    await db.flush()
+    return event
+
+
+async def list_pending_changes(db: AsyncSession, *, limit: int) -> list[ScheduleChangeEvent]:
+    """Undelivered events, oldest first by `(created_at, id)` (a total order)."""
+    result = await db.execute(
+        select(ScheduleChangeEvent)
+        .where(ScheduleChangeEvent.delivered_at.is_(None))
+        .order_by(ScheduleChangeEvent.created_at, ScheduleChangeEvent.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def mark_change_delivered(db: AsyncSession, event_id: uuid.UUID) -> str:
+    """Acknowledge an event. Returns `"delivered"` when this call flipped it,
+    `"already"` when it was acknowledged earlier (idempotent) and `"not_found"`
+    for an unknown id. The flip is a conditional `UPDATE ... WHERE delivered_at IS
+    NULL`, so two concurrent acknowledgements cannot both report `"delivered"`.
+    """
+    flipped = await db.execute(
+        update(ScheduleChangeEvent)
+        .where(ScheduleChangeEvent.id == event_id, ScheduleChangeEvent.delivered_at.is_(None))
+        .values(delivered_at=func.now())
+        .returning(ScheduleChangeEvent.id)
+    )
+    if flipped.first() is not None:
+        await db.commit()
+        return "delivered"
+    exists = await db.execute(
+        select(ScheduleChangeEvent.id).where(ScheduleChangeEvent.id == event_id)
+    )
+    await db.rollback()
+    return "already" if exists.first() is not None else "not_found"

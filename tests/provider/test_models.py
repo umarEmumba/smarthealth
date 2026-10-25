@@ -28,7 +28,13 @@ def test_provider_schema_has_no_cross_service_foreign_keys_and_no_slots_table() 
     """D-01: references to other services' rows are plain UUIDs; only the
     intra-service links keep foreign keys. No concrete-slot table lives here."""
     tables = ProviderBase.metadata.tables
-    assert set(tables) == {"providers", "specialties", "provider_specialties", "availability_templates"}
+    assert set(tables) == {
+        "providers",
+        "specialties",
+        "provider_specialties",
+        "availability_templates",
+        "schedule_change_events",  # 02.1-05: Provider's own outbox, plain-UUID columns only
+    }
 
     targets = {fk.target_fullname.split(".")[0] for t in tables.values() for fk in t.foreign_keys}
     assert targets <= {"providers", "specialties"}
@@ -37,6 +43,8 @@ def test_provider_schema_has_no_cross_service_foreign_keys_and_no_slots_table() 
         ("providers", "department_id"),
         ("providers", "user_id"),
         ("availability_templates", "department_id"),
+        ("schedule_change_events", "provider_id"),
+        ("schedule_change_events", "template_id"),
     ):
         assert not tables[table].c[column].foreign_keys, f"{table}.{column} must be a plain UUID"
     assert tables["specialties"].c["name"].unique, "specialties.name UNIQUE is the creation-race backstop"

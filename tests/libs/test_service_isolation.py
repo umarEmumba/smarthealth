@@ -47,7 +47,13 @@ LIBS_DIR = REPO_ROOT / "libs"
 OWNED_TABLES: dict[str, set[str]] = {
     "identity": {"users"},
     "organization": {"clinics", "departments"},
-    "provider": {"providers", "specialties", "provider_specialties", "availability_templates"},
+    "provider": {
+        "providers",
+        "specialties",
+        "provider_specialties",
+        "availability_templates",
+        "schedule_change_events",
+    },
     "patient": {"patients"},
     "scheduling": {
         "provider_slots",

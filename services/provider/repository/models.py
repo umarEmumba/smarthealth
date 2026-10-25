@@ -1,5 +1,5 @@
-"""Provider's ORM models: providers, specialties, provider_specialties and
-availability_templates (D-01, D-04).
+"""Provider's ORM models: providers, specialties, provider_specialties,
+availability_templates and schedule_change_events (D-01, D-04, M2).
 
 The provider directory is its own bounded context, deliberately separate from
 Organization (the user's finer-bounded-context choice). `providers.department_id`
@@ -20,6 +20,14 @@ assumed UTC or server-local. Provider holds no clinic data: the clinic (and its
 timezone) is reachable through the department's Organization reference, which is
 the concern of whoever turns a template into a concrete instant (Scheduling).
 
+`schedule_change_events` is Provider's outbox for schedule-affecting changes (M2): a
+row is written in the SAME transaction as the template edit, template deactivation
+or provider deactivation that can make already-generated slots wrong, and stays
+pending (`delivered_at IS NULL`) until a consumer acknowledges it through the
+internal feed. Consumers are other services reading `/internal/schedule-changes`;
+there is no cross-service foreign key and `provider_id` / `template_id` are plain
+UUIDs (no FK even to Provider's own tables, so an event outlives any later cleanup).
+
 Each service declares its OWN `DeclarativeBase` (never a shared one): a shared
 `MetaData` would make every service's Alembic autogenerate see every other
 service's tables (RESEARCH Pitfall 2). Async-only per CLAUDE.md; no sync driver
@@ -38,6 +46,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     SmallInteger,
     String,
@@ -168,5 +177,49 @@ class AvailabilityTemplate(ProviderBase):
     __table_args__ = (
         CheckConstraint(
             "day_of_week BETWEEN 0 AND 6", name="ck_availability_templates_day_of_week"
+        ),
+    )
+
+
+class ScheduleChangeType:
+    """Allowed `schedule_change_events.change_type` values (plain str constants,
+    mirrored by the `ck_schedule_change_events_type_valid` CHECK)."""
+
+    TEMPLATE_UPDATED = "template_updated"
+    TEMPLATE_DEACTIVATED = "template_deactivated"
+    PROVIDER_DEACTIVATED = "provider_deactivated"
+
+    ALL = (TEMPLATE_UPDATED, TEMPLATE_DEACTIVATED, PROVIDER_DEACTIVATED)
+
+
+class ScheduleChangeEvent(ProviderBase):
+    """One committed change that can make already-generated slots wrong (M2).
+
+    Carries ids and a change type only (no names, no PHI). `delivered_at` is set by
+    the consumer's acknowledgement; until then the event is pending and is returned
+    by the feed, oldest first by `(created_at, id)`.
+    """
+
+    __tablename__ = "schedule_change_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    provider_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    change_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    template_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "change_type IN ('template_updated','template_deactivated','provider_deactivated')",
+            name="ck_schedule_change_events_type_valid",
+        ),
+        Index(
+            "ix_schedule_change_events_pending",
+            "created_at",
+            "id",
+            postgresql_where=text("delivered_at IS NULL"),
         ),
     )

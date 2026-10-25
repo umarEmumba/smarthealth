@@ -10,6 +10,17 @@ Plan 02-03 (research G3) adds two more lookups:
     GET /internal/providers/by-user/{user_id}        -> ProviderRef (Scheduling, Visit; D-15)
     GET /internal/providers/{provider_id}/availability -> [AvailabilityRef] (Scheduling; D-01)
 
+Plan 02.1-05 (M2) adds the schedule-change feed Scheduling drains:
+
+    GET  /internal/schedule-changes?limit=             -> [ScheduleChangeRef] (undelivered, oldest first)
+    POST /internal/schedule-changes/{event_id}/ack     -> {id, delivered: true}
+
+Events are an outbox written by Provider's repository in the same transaction as the
+change; a pending event stays in the feed until acknowledged, so nothing is lost if the
+consumer or Temporal is down when the change is made. Only a Scheduling service token
+(`aud=provider`) or an ADMIN user token is accepted; the payload carries ids, the
+change type and a timestamp only.
+
 The availability list includes INACTIVE templates (`is_active: false`); slot
 generation decides what to do with them. `by-user` is declared before
 `{provider_id}` so the literal segment is matched first.
@@ -31,9 +42,9 @@ Design rules:
 from __future__ import annotations
 
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +75,19 @@ class AvailabilityRef(BaseModel):
     effective_from: date
     effective_to: date | None = None
     is_active: bool
+
+
+class ScheduleChangeRef(BaseModel):
+    id: uuid.UUID
+    provider_id: uuid.UUID
+    change_type: str
+    template_id: uuid.UUID | None = None
+    created_at: datetime
+
+
+class ScheduleChangeAck(BaseModel):
+    id: uuid.UUID
+    delivered: bool
 
 
 def _not_found() -> HTTPException:
@@ -143,3 +167,40 @@ async def lookup_provider(
     return ProviderRef(
         id=provider.id, department_id=provider.department_id, is_active=provider.is_active
     )
+
+
+@router.get("/schedule-changes", response_model=list[ScheduleChangeRef])
+async def list_schedule_changes(
+    limit: int = Query(default=100, ge=1, le=200),
+    caller: InternalCaller = Depends(
+        require_internal_caller(Role.ADMIN, audience="provider", allowed_services=frozenset({"scheduling"}))
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> list[ScheduleChangeRef]:
+    events = await provider_repo.list_pending_changes(db, limit=limit)
+    log.info("internal.schedule_changes_feed", count=len(events), outcome="listed")
+    return [
+        ScheduleChangeRef(
+            id=e.id,
+            provider_id=e.provider_id,
+            change_type=e.change_type,
+            template_id=e.template_id,
+            created_at=e.created_at,
+        )
+        for e in events
+    ]
+
+
+@router.post("/schedule-changes/{event_id}/ack", response_model=ScheduleChangeAck)
+async def acknowledge_schedule_change(
+    event_id: uuid.UUID,
+    caller: InternalCaller = Depends(
+        require_internal_caller(Role.ADMIN, audience="provider", allowed_services=frozenset({"scheduling"}))
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> ScheduleChangeAck:
+    outcome = await provider_repo.mark_change_delivered(db, event_id)
+    log.info("internal.schedule_change_ack", event_id=str(event_id), outcome=outcome)
+    if outcome == "not_found":
+        raise _not_found()
+    return ScheduleChangeAck(id=event_id, delivered=True)
