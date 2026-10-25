@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
 status: executing
-stopped_at: Completed 02.1-02-PLAN.md
-last_updated: "2026-10-24T19:32:08.568Z"
+stopped_at: Completed 02.1-03-PLAN.md
+last_updated: "2026-10-25T04:56:38.278Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: b2733918a4167886420facab71b9c1cd798d886a
+state_head: 7fe98775d27e2864aa6a82912c7028ee030e2a93
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 42
-  completed_plans: 31
+  completed_plans: 32
   percent: 20
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 ## Current Position
 
 Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
-Plan: 3 of 13
+Plan: 4 of 13
 Status: Ready to execute
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
@@ -83,6 +83,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 01.1 P10 | 66min | 2 tasks | 7 files |
 | Phase 02.1 P01 | 19 min | 3 tasks | 10 files |
 | Phase 02.1 P02 | 20min | 3 tasks | 14 files |
+| Phase 02.1 P03 | 25 min | 3 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -147,6 +148,7 @@ Recent decisions affecting current work:
 - [Phase 02.1]: Refresh tokens are single-use via atomic Redis SET NX EX claim; logout revokes paired refresh jti through access-token rjti claim
 - [Phase 02.1]: bcrypt runs on a bounded dedicated thread pool (IDENTITY_BCRYPT_THREADS); prepared RSA signing key cached to keep the loop free
 - [Phase 02.1]: Email identity is case-insensitive via normalizer, lower(email) lookups and uq_users_email_lower; identity_0002 refuses over duplicates reporting counts only and does not rewrite rows
+- [Phase 02.1]: 02.1-03: list pagination uses one libs.pagination.page_params dependency (limit 1..200 default 50, offset >= 0, 422 outside), a plain-array body, an X-Total-Count header and a stable (created_at, id) order on patient, clinic and provider lists
 
 ### Pending Todos
 
@@ -180,6 +182,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24T19:32:08.495Z
-Stopped at: Completed 02.1-02-PLAN.md
+Last session: 2026-10-25T04:56:38.217Z
+Stopped at: Completed 02.1-03-PLAN.md
 Resume file: None
