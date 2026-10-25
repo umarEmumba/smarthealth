@@ -210,6 +210,11 @@ async def deactivate_provider(db: AsyncSession, provider_id: uuid.UUID) -> Provi
     if provider.is_active:
         provider.is_active = False
         provider.deactivated_at = datetime.now(dt_timezone.utc)
+        await record_schedule_change(
+            db,
+            provider_id=provider.id,
+            change_type=ScheduleChangeType.PROVIDER_DEACTIVATED,
+        )
         await db.commit()
         provider = await get_provider(db, provider_id)
     return provider
@@ -304,18 +309,29 @@ async def update_availability_template(
     if template is None:
         return None
 
-    if day_of_week is not None:
-        template.day_of_week = day_of_week
-    if start_time is not None:
-        template.start_time = start_time
-    if end_time is not None:
-        template.end_time = end_time
-    if slot_duration_minutes is not None:
-        template.slot_duration_minutes = slot_duration_minutes
-    if effective_from is not None:
-        template.effective_from = effective_from
-    if effective_to is not None:
-        template.effective_to = effective_to
+    supplied = {
+        "day_of_week": day_of_week,
+        "start_time": start_time,
+        "end_time": end_time,
+        "slot_duration_minutes": slot_duration_minutes,
+        "effective_from": effective_from,
+        "effective_to": effective_to,
+    }
+    # Compare BEFORE assigning: a PATCH that supplies the stored values changes
+    # nothing and must not tell Scheduling to revisit its slots (M2).
+    changed = False
+    for field, value in supplied.items():
+        if value is not None and getattr(template, field) != value:
+            setattr(template, field, value)
+            changed = True
+
+    if changed:
+        await record_schedule_change(
+            db,
+            provider_id=template.provider_id,
+            change_type=ScheduleChangeType.TEMPLATE_UPDATED,
+            template_id=template.id,
+        )
 
     await db.commit()
     await db.refresh(template)
