@@ -28,8 +28,10 @@ from tests.e2e.phase2_stack import (
     billing_in,
     billing_record,
     book,
+    book_slot_inside_checkin_window,
     day_slots,
     gateway_url,
+    get_appointment,
     poll,
     require_stack,
     seed_phase2_world,
@@ -128,7 +130,11 @@ async def test_cancel_frees_slot_and_waitlist_advances(gateway: httpx.AsyncClien
 
 
 async def test_visit_lifecycle_finalizes_billing(gateway: httpx.AsyncClient, ew: E2EWorld) -> None:
-    slot_id = await _first_slot(gateway, ew)
+    # Check-in now moves the appointment in Scheduling, which only accepts it
+    # inside the window around the slot (plan 02.1-06), so this flow books a slot
+    # that starts within minutes instead of the day-ahead slot. The slot belongs
+    # to a second provider, so the front desk (clinic-scoped) drives the visit.
+    slot_id, _window_provider_id = await book_slot_inside_checkin_window(gateway, ew)
     appointment_id = await book(gateway, ew, slot_id=slot_id, patient_id=ew.patient_ids[0])
     assert (await appointment_in(gateway, ew, appointment_id, {"confirmed", "failed"}))["status"] == "confirmed"
 
@@ -138,12 +144,18 @@ async def test_visit_lifecycle_finalizes_billing(gateway: httpx.AsyncClient, ew:
     assert checked_in.status_code == 201, checked_in.text
     visit_id = checked_in.json()["id"]
     assert checked_in.json()["status"] == "checked_in"
+    # M1: the appointment itself is now checked_in, so it can no longer be cancelled.
+    assert (await get_appointment(gateway, ew, appointment_id))["status"] == "checked_in"
+    refused = await gateway.post(
+        f"/api/appointments/{appointment_id}/cancel", json={}, headers=ew.front_desk
+    )
+    assert refused.status_code == 409, refused.text
 
-    started = await gateway.post(f"/api/visits/{visit_id}/start", headers=ew.provider)
+    started = await gateway.post(f"/api/visits/{visit_id}/start", headers=ew.front_desk)
     assert started.status_code == 200, started.text
     assert started.json()["status"] == "in_progress"
 
-    completed = await gateway.post(f"/api/visits/{visit_id}/complete", headers=ew.provider)
+    completed = await gateway.post(f"/api/visits/{visit_id}/complete", headers=ew.front_desk)
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "completed"
 
