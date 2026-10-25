@@ -288,8 +288,19 @@ def widened_checkin_window() -> Iterator[None]:
         settings.checkin_opens_before_minutes = previous
 
 
+@pytest.fixture
+def real_checkin_window() -> None:
+    """Opt-out marker fixture: a test that requests it sees Scheduling's real
+    check-in window (60 minutes before the slot starts by default). No-op by
+    itself; `_widened_checkin_window` checks whether it was requested."""
+    return None
+
+
 @pytest.fixture(autouse=True)
-def _widened_checkin_window() -> Iterator[None]:
+def _widened_checkin_window(request: pytest.FixtureRequest) -> Iterator[None]:
+    if "real_checkin_window" in request.fixturenames:
+        yield
+        return
     with widened_checkin_window():
         yield
 
