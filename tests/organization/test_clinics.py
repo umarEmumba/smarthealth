@@ -15,6 +15,7 @@ from pymongo import AsyncMongoClient
 
 from libs.config import shared_settings
 from tests.conftest import bootstrap_admin_and_login, unique_email
+from tests.pagination_helpers import list_all
 
 
 async def _register_and_login(client: AsyncClient, *, role: str) -> dict:
@@ -92,9 +93,8 @@ async def test_read_after_write(client: AsyncClient) -> None:
         "deactivated_at": None,
     }
 
-    list_resp = await client.get("/api/clinics", headers=_auth_header(tokens))
-    assert list_resp.status_code == 200
-    assert any(c["id"] == clinic_id for c in list_resp.json())
+    listed = await list_all(client, "/api/clinics", _auth_header(tokens))
+    assert any(c["id"] == clinic_id for c in listed)
 
 
 @pytest.mark.integration
@@ -215,13 +215,13 @@ async def test_deactivate_clinic_hides_from_default_list(client: AsyncClient) ->
     assert body["is_active"] is False
     assert body["deactivated_at"] is not None
 
-    default_list = await client.get("/api/clinics", headers=_auth_header(tokens))
-    assert all(c["id"] != clinic_id for c in default_list.json())
+    default_list = await list_all(client, "/api/clinics", _auth_header(tokens))
+    assert all(c["id"] != clinic_id for c in default_list)
 
-    inactive_list = await client.get(
-        "/api/clinics", params={"include_inactive": "true"}, headers=_auth_header(tokens)
+    inactive_list = await list_all(
+        client, "/api/clinics", _auth_header(tokens), {"include_inactive": "true"}
     )
-    assert any(c["id"] == clinic_id for c in inactive_list.json())
+    assert any(c["id"] == clinic_id for c in inactive_list)
 
     get_resp = await client.get(f"/api/clinics/{clinic_id}", headers=_auth_header(tokens))
     assert get_resp.status_code == 200
@@ -327,8 +327,8 @@ async def test_create_clinic_with_non_iana_timezone_is_422(client: AsyncClient, 
     )
 
     assert resp.status_code == 422, resp.text
-    listed = await client.get("/api/clinics", headers=_auth_header(tokens))
-    assert name not in {clinic["name"] for clinic in listed.json()}
+    listed = await list_all(client, "/api/clinics", _auth_header(tokens))
+    assert name not in {clinic["name"] for clinic in listed}
 
 
 @pytest.mark.integration

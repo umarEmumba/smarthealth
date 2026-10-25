@@ -13,6 +13,9 @@ delete). `GET /api/clinics` excludes inactive clinics by default; pass
 `?include_inactive=true` to include them. `GET /api/clinics/{id}` always
 returns the clinic regardless of active status, so its is_active value
 stays visible.
+
+The list is paginated (C5): `limit` 1..200 (default 50), `offset`, a stable
+`(created_at, id)` order and the grand total in the `X-Total-Count` header.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field, field_validator
 from pymongo import AsyncMongoClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +34,7 @@ from libs.auth.rbac import require_role
 from libs.auth.roles import Role
 from libs.db.mongo import get_mongo
 from libs.observability.logging import get_logger
+from libs.pagination import TOTAL_COUNT_HEADER, Page, page_params
 from services.organization.db import get_db
 from services.organization.domain.schemas import ClinicUpdate, validate_iana_timezone
 from services.organization.repository import org_repo
@@ -94,11 +98,17 @@ async def create_clinic(
 
 @router.get("", response_model=list[ClinicOut])
 async def list_clinics(
+    response: Response,
     include_inactive: bool = False,
+    page: Page = Depends(page_params),
     user: AuthenticatedUser = Depends(require_role(Role.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> list[ClinicOut]:
-    clinics = await org_repo.list_clinics(db, include_inactive=include_inactive)
+    clinics = await org_repo.list_clinics(
+        db, include_inactive=include_inactive, limit=page.limit, offset=page.offset
+    )
+    total = await org_repo.count_clinics(db, include_inactive=include_inactive)
+    response.headers[TOTAL_COUNT_HEADER] = str(total)
     return [_to_out(c) for c in clinics]
 
 

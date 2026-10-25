@@ -19,6 +19,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import bootstrap_admin_and_login, harness_apps, service_base_url
+from tests.pagination_helpers import list_all
 
 
 def _auth(tokens: dict) -> dict:
@@ -38,8 +39,11 @@ async def test_logout_through_identity_revokes_the_token_for_organization(
     client: AsyncClient,
 ) -> None:
     tokens = await bootstrap_admin_and_login(client)
+    clinic_id = await _create_clinic(client, tokens, "Logout Probe Clinic")
     before = await client.get("/api/clinics", headers=_auth(tokens))
     assert before.status_code == 200, before.text
+    # The shared database holds many clinics: find ours by paging, not by position.
+    assert clinic_id in {c["id"] for c in await list_all(client, "/api/clinics", _auth(tokens))}
 
     logout = await client.post("/api/auth/logout", headers=_auth(tokens))
     assert logout.status_code == 204, logout.text

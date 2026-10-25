@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone as dt_timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.organization.repository.models import Clinic, Department
@@ -34,12 +34,31 @@ async def get_clinic(db: AsyncSession, clinic_id: uuid.UUID) -> Clinic | None:
     return result.scalar_one_or_none()
 
 
-async def list_clinics(db: AsyncSession, *, include_inactive: bool = False) -> list[Clinic]:
-    stmt = select(Clinic).order_by(Clinic.created_at)
+def _clinic_filter(stmt, include_inactive: bool):
     if not include_inactive:
         stmt = stmt.where(Clinic.is_active.is_(True))
+    return stmt
+
+
+async def list_clinics(
+    db: AsyncSession, *, include_inactive: bool = False, limit: int, offset: int
+) -> list[Clinic]:
+    """One page of clinics in the total order `(created_at, id)` (C5)."""
+    stmt = (
+        _clinic_filter(select(Clinic), include_inactive)
+        .order_by(Clinic.created_at, Clinic.id)
+        .limit(limit)
+        .offset(offset)
+    )
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_clinics(db: AsyncSession, *, include_inactive: bool = False) -> int:
+    """Total clinics matching the same filter as `list_clinics`."""
+    subquery = _clinic_filter(select(Clinic), include_inactive).subquery()
+    result = await db.execute(select(func.count()).select_from(subquery))
+    return int(result.scalar_one())
 
 
 async def update_clinic(
