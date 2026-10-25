@@ -29,6 +29,12 @@ ACT_SWEEP = "visit.sweep_unstarted"
 # recorded before it have no marker and replay the original three branches.
 VISIT_COMPLETE_APPOINTMENT_PATCH_ID = "visit-complete-appointment-v1"
 
+# workflow.patched id (plan 02.1-10, S4): the billing branch uses the open-ended
+# BILLING_FINALIZE_ACTIVITY preset instead of the bounded COMPENSATION_ACTIVITY.
+# Histories recorded before it keep the bounded options (the options are part of
+# the scheduled-activity command, so they must replay unchanged).
+BILLING_RETRY_PATCH_ID = "visit-billing-retry-v1"
+
 OUTCOME_COMPLETED = "completed"
 BILLING_FINALIZED = "finalized"
 BILLING_NO_RECORD = "no_record"

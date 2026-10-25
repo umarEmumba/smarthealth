@@ -11,9 +11,20 @@ HTTP request has long ended, survives worker crashes, and a duplicate start
 Four INDEPENDENT branches, run concurrently with `asyncio.gather` (which is
 deterministic inside the workflow sandbox):
 
-* billing finalize (`ACT_FINALIZE_BILLING`, `COMPENSATION_ACTIVITY`): the
-  visit is already committed, so billing must catch up; it gets the long
-  retry budget;
+* billing finalize (`ACT_FINALIZE_BILLING`): the visit is already committed,
+  so billing must catch up. Plan 02.1-10 (S4) gives it
+  `BILLING_FINALIZE_ACTIVITY`: unlimited attempts, backoff capped at 5 minutes
+  and no schedule-to-close, so a Billing outage of any length is waited out
+  instead of ending `skipped:activity_failed` with the record stuck at
+  `verified`. Retries add no history events, so the open-ended retry is cheap;
+  the one early end is the terminal business answer `BillingNotFinalizable`.
+  Consequence: while Billing is down the workflow stays open (the other three
+  branches finish independently and their results wait for billing). It exists
+  only behind `workflow.patched(BILLING_RETRY_PATCH_ID)`: a history recorded
+  before the change replays with the previous bounded `COMPENSATION_ACTIVITY`
+  options, every new run records the marker and retries open-endedly. The
+  visit reconciler Schedule (`workflows/reconciler.py`) covers whatever slips
+  through anyway (a terminated workflow, a legacy `skipped` run);
 * follow-up intent and analytics intent (`NOTIFY_ACTIVITY`): best effort;
 * complete the appointment in Scheduling (`ACT_COMPLETE_APPOINTMENT`,
   `COMPENSATION_ACTIVITY`; plan 02.1-09, M1): same reasoning as billing, the
@@ -50,6 +61,7 @@ with workflow.unsafe.imports_passed_through():
         ACT_COMPLETE_APPOINTMENT,
         ACT_FINALIZE_BILLING,
         ACT_FOLLOWUP_INTENT,
+        BILLING_RETRY_PATCH_ID,
         OUTCOME_COMPLETED,
         SKIPPED_PREFIX,
         VISIT_COMPLETE_APPOINTMENT_PATCH_ID,
@@ -57,6 +69,7 @@ with workflow.unsafe.imports_passed_through():
         VisitCompletedInput,
         VisitCompletedResult,
     )
+    from services.visit.domain.policies import BILLING_FINALIZE_ACTIVITY
 
 
 def failure_reason(err: ActivityError) -> str:
@@ -81,8 +94,14 @@ async def _branch(name: str, inp: VisitCompletedInput, options: dict) -> str:
 class VisitCompletedWorkflow:
     @workflow.run
     async def run(self, inp: VisitCompletedInput) -> VisitCompletedResult:
+        # Plan 02.1-10: open-ended billing retry only for runs that carry the
+        # marker; evaluated first and once, so the marker order is stable.
+        use_open_ended_billing = workflow.patched(BILLING_RETRY_PATCH_ID)
+        billing_options = (
+            BILLING_FINALIZE_ACTIVITY if use_open_ended_billing else COMPENSATION_ACTIVITY
+        )
         branches = [
-            _branch(ACT_FINALIZE_BILLING, inp, COMPENSATION_ACTIVITY),
+            _branch(ACT_FINALIZE_BILLING, inp, billing_options),
             _branch(ACT_FOLLOWUP_INTENT, inp, NOTIFY_ACTIVITY),
             _branch(ACT_ANALYTICS_INTENT, inp, NOTIFY_ACTIVITY),
         ]

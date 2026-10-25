@@ -145,7 +145,7 @@ async def test_followup_failing_every_attempt_is_skipped_and_others_succeed(
 
 async def test_billing_retryable_failures_are_absorbed(temporal_env: WorkflowEnvironment) -> None:
     calls: list[str] = []
-    # COMPENSATION_ACTIVITY retries (up to 20 attempts) absorb transient Billing trouble.
+    # BILLING_FINALIZE_ACTIVITY retries (unlimited, plan 02.1-10) absorb transient Billing trouble.
     result = await _run(temporal_env, *_stubs(calls, billing_failures=2))
     assert result == VisitCompletedResult(
         outcome="completed",
@@ -198,20 +198,23 @@ async def test_appointment_retryable_failures_are_absorbed(
     assert COMPENSATION_ACTIVITY["retry_policy"].maximum_attempts >= 4
 
 
-async def test_billing_failing_every_attempt_never_starves_the_appointment_branch(
+async def test_billing_retrying_beyond_the_old_budget_never_starves_the_appointment_branch(
     temporal_env: WorkflowEnvironment,
 ) -> None:
+    """Plan 02.1-10: billing no longer gives up after the compensation budget,
+    so it keeps retrying (here past that budget) and still finalizes, while the
+    appointment branch ran exactly once, independently."""
     calls: list[str] = []
-    error = ApplicationError("billing unavailable", type="BillingUnavailable")
-    result = await _run(temporal_env, *_stubs(calls, billing_error=error))
+    failures = COMPENSATION_ACTIVITY["retry_policy"].maximum_attempts + 5
+    result = await _run(temporal_env, *_stubs(calls, billing_failures=failures))
     assert result == VisitCompletedResult(
         outcome="completed",
-        billing="skipped:BillingUnavailable",
+        billing="finalized",
         followup="recorded",
         analytics="recorded",
         appointment="completed",
     )
-    assert calls.count("billing") == COMPENSATION_ACTIVITY["retry_policy"].maximum_attempts
+    assert calls.count("billing") == failures + 1
     assert calls.count("appointment") == 1
 
 
