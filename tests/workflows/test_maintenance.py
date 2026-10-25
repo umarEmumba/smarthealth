@@ -34,7 +34,8 @@ from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.activities.maintenance import MaintenanceActivities
 from services.scheduling.config import settings
 from services.scheduling.domain.contracts import (
-    ACT_NOTIFY,
+    ACT_BILLING,
+    BookingInput,
     BookingResult,
     MaintenanceResult,
     booking_workflow_id,
@@ -229,8 +230,10 @@ async def test_saga_whose_hold_was_reaped_before_confirm_compensates_and_never_c
     committed_scheduling_engine: AsyncEngine,
 ) -> None:
     """Research Pitfall 5: the reaper wins the race against a live saga. The
-    notification step (between billing and confirm) is replaced by a stub that
-    expires the hold and runs the real reaper, so `confirm` finds its hold gone."""
+    billing pre-check (the last step before confirm since plan 02.1-07 moved the
+    notification after it) is wrapped by a stub that runs the real pre-check,
+    then expires the hold and runs the real reaper, so `confirm` finds its hold
+    gone."""
     from libs.auth.service_tokens import ServiceTokenProvider, load_client_secret  # noqa: PLC0415
     from services.scheduling.activities.booking import SchedulingActivities  # noqa: PLC0415
 
@@ -238,8 +241,12 @@ async def test_saga_whose_hold_was_reaped_before_confirm_compensates_and_never_c
     engine = committed_scheduling_engine
     maintenance = _maintenance(temporal_env.client, mongo_client)
 
-    @activity.defn(name=ACT_NOTIFY)
-    async def reap_instead_of_notify(inp: Any) -> None:
+    booking = None  # bound below, once the real activities exist
+
+    @activity.defn(name=ACT_BILLING)
+    async def precheck_then_reap(inp: Any) -> None:
+        assert booking is not None
+        await booking.billing_precheck(BookingInput(**inp))
         async with engine.begin() as conn:
             await conn.execute(
                 text("UPDATE provider_slots SET held_until = now() - interval '1 minute' WHERE id = :s"),
@@ -251,8 +258,8 @@ async def test_saga_whose_hold_was_reaped_before_confirm_compensates_and_never_c
         "scheduling", load_client_secret(settings.client_secret_path), settings.identity_service_url, http=mesh
     )
     booking = SchedulingActivities(get_session_factory(settings.database_url), mesh, tokens, mongo_client)
-    activities = [a for a in booking.all() if a != booking.schedule_notification]
-    activities.append(reap_instead_of_notify)
+    activities = [a for a in booking.all() if a != booking.billing_precheck]
+    activities.append(precheck_then_reap)
 
     app = harness_apps()["scheduling"]
     previous = app.state.temporal_client

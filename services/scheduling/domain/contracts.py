@@ -25,8 +25,9 @@ from typing import Optional
 # Workflow type name (also the class's @workflow.defn name).
 BOOKING_WORKFLOW = "BookingWorkflow"
 
-# Activity names (D-09 order: validate -> reserve -> billing -> notify -> confirm;
-# compensations: release, void; terminal failure write: mark_failed).
+# Activity names (D-09 order, as changed by 02.1-07 S7: validate -> reserve ->
+# billing -> confirm -> notify; compensations: release, void; terminal failure
+# write: mark_failed).
 ACT_VALIDATE = "booking.validate"
 ACT_RESERVE = "booking.reserve_slot"
 ACT_BILLING = "booking.billing_precheck"
@@ -85,6 +86,16 @@ ACT_WAITLIST_RESOLVE = "waitlist.resolve_entry"
 WAITLIST_PATCH_ID = "waitlist-advance-v1"
 # Attempt cap per freed slot (D-12: no unbounded retry).
 WAITLIST_MAX_ATTEMPTS = 5
+
+# BookingWorkflow command-sequence changes (plan 02.1-07). Each alters what a
+# running booking does next, so each is guarded by `workflow.patched` (D-19):
+# histories recorded before the change carry no marker and replay the old
+# sequence.
+# S7: the "booking confirmed" notification intent moves AFTER confirm.
+NOTIFY_AFTER_CONFIRM_PATCH_ID = "booking-notify-after-confirm-v1"
+# S5: a top-level booking that fails after holding the slot re-offers the freed
+# slot to the waitlist (a WaitlistAdvanceWorkflow child).
+BOOKING_FAILURE_WAITLIST_PATCH_ID = "booking-failure-waitlist-v1"
 
 # Booking failure reasons that mean "the slot was lost to someone else": the
 # entry goes back to `waiting` and the advance stops for this slot.
