@@ -224,12 +224,14 @@ scheduling-worker (scheduling-tq):
      1 validate        patient / provider / clinic active, via /internal + service token
      2 reserve         slot available ──▶ held (held_until = now + 10 min)
      3 billing         pre-check: pending ──▶ verified | failed
-     4 notification    intent only, best-effort — never fails the booking
-     5 confirm         slot held ──▶ booked · appointment pending ──▶ confirmed
+     4 confirm         slot held ──▶ booked · appointment pending ──▶ confirmed
+     5 notification    intent only, best-effort, requested after confirm — never fails the booking
      on failure, reverse order, forward transitions only (no deletes), one audit entry per step:
         void billing (failed ──▶ voided) ──▶ release hold (held ──▶ available) ──▶ appointment failed (reason)
-Order note: billing pre-check runs before notification (SCHED-02 lists notification first) so no
-notification goes out for a booking that is later compensated.</div>
+        ──▶ (top-level booking that held the slot, not a lost race) start waitlist-advance for the freed slot
+Order note: the notification is requested after confirm (SCHED-02 lists notification earlier; the
+implementation differs on purpose), so a booking that fails at confirm sends no notification.
+Both changes are workflow.patched; a slot that already started is 422 "slot has already started".</div>
 
     <div class="seq-title">6 · Cancel, reschedule, waitlist advance</div>
     <div class="seq">Cancel      : cancel + release slot ──▶ billing refund_pending ──▶ refunded (&gt; 24 h ahead) | no_refund (staff may waive)

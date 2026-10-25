@@ -268,22 +268,34 @@ sequenceDiagram
     W->>W: validate (patient, provider, clinic active, via /internal + service token)
     W->>PG: reserve: slot available -> held (held_until = now + 10 min)
     W->>BIL: billing pre-check (pending -> verified | failed)
-    W->>W: schedule notification intent (best-effort stub, never fails the booking)
     W->>PG: confirm: slot held -> booked, appointment pending -> confirmed
+    W->>W: schedule notification intent after confirm (best-effort stub, never fails the booking)
     alt any forward step fails (e.g. BillingRejected)
         W->>BIL: compensate 1: void billing (failed -> voided)
         W->>PG: compensate 2: release hold (held -> available)
         W->>PG: mark appointment failed (machine-readable reason)
+        W->>T: top-level booking that held the slot (not a lost race): start waitlist advance for the freed slot
     end
     U->>SCH: GET /api/appointments/{id} (poll)
 ```
 
 Compensation runs **in reverse order as forward state transitions** (nothing is deleted), and every
 step writes one audit entry with `dedupe_key = <workflow id>:<step>`, so a retried activity never
-double-audits. Order note: the implemented order runs the **billing pre-check before the
-notification** although SCHED-02 lists notification first — the notification is best-effort and
-should only go out once the last fallible step has passed; SCHED-02's "prevent conflicts" is the
-reserve step's database constraints.
+double-audits. Order note: the implemented order is validate, hold, **billing pre-check,
+confirm, then a best-effort notification intent** (plan 02.1-07, S7). SCHED-02 lists the
+notification earlier and the implementation deliberately differs: the notification intent is
+requested **after confirm** succeeds, so a booking that fails at confirm (`ConfirmLostHold`)
+sends none, and a patient is never told about a booking that is then compensated. SCHED-02's
+"prevent conflicts" is the reserve step's database constraints. The order change and the
+failure-path waitlist re-offer are `workflow.patched` (`booking-notify-after-confirm-v1`,
+`booking-failure-waitlist-v1`), so histories recorded earlier still replay.
+
+Post-commit safety (S3): `void_billing` and `release_slot` read the appointment's status and do
+nothing once it is `confirmed`, `checked_in`, `completed` or `no_show`; the audit write after a
+committed confirm, cancel, swap, check-in or complete is best effort (a failure is logged as
+`audit.write_failed`, the transition stays durable in `appointment_status_history`). Booking a
+slot that already started is `422 slot has already started` at the API and `SlotInPast` in the
+validate step (S6).
 
 Cancel and reschedule:
 

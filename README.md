@@ -358,9 +358,23 @@ Phase 2 (scheduling, visits, billing):
   entry's `coverage_ref` is reused as stored.
 - Audit writes go to Mongo after the Postgres commit and are **not atomic** with it (WR-04): a
   crash between the two can lose an audit entry (workflow steps re-audit idempotently on retry).
-- The booking saga runs billing pre-check **before** scheduling the notification (SCHED-02
-  lists notification first): the notification is best-effort and fires only after the last
-  fallible step, so no notification goes out for a booking that is then compensated.
+- The booking saga order is validate, hold, billing pre-check, confirm, and then a
+  best-effort notification intent requested only after confirm (plan 02.1-07, S7). SCHED-02
+  lists the notification earlier and the implementation deliberately differs: a booking that
+  fails at confirm (for example a lost hold) sends no notification. Histories recorded before the
+  change still replay (`workflow.patched`, proven by `tests/workflows/test_replay_booking_patches.py`).
+- A freed slot is offered to the waitlist again when a direct (top-level) booking fails after
+  it held the slot, for any reason except losing the race for it; a waitlist-started booking is
+  decided by its parent loop (S5).
+- Booking a slot whose start time has passed is rejected: `422 slot has already started` at
+  the API (nothing written) and `SlotInPast` in the saga's validate step if the slot starts
+  while the booking is pending (S6).
+- Compensations never undo a committed booking (S3): `void_billing` and `release_slot` do
+  nothing for a confirmed, checked_in, completed or no_show appointment, and an audit write
+  that fails after a committed confirm, cancel, swap, check-in or complete is logged
+  (`audit.write_failed`) instead of changing the outcome. The transition stays durable in
+  `appointment_status_history`; the lost audit entry is the known gap until Phase 3's
+  transactional outbox.
 - No load test beyond the concurrency suites and the demo.
 
 Carried from Phase 1.1 (details in
