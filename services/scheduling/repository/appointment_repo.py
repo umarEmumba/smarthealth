@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -386,11 +386,19 @@ async def list_appointments(
 
 
 async def get_history(db: AsyncSession, appointment_id: uuid.UUID) -> list[AppointmentStatusHistory]:
-    """The appointment's transitions, oldest first."""
+    """The appointment's transitions, oldest first.
+
+    Rows written in one transaction share `created_at` (`now()` is the
+    transaction start), so a note (`from_status == to_status`, e.g.
+    `billing_void_checked`) is ordered AFTER the real transition written with it
+    (plan 02.1-12); `id` only breaks the remaining ties."""
+    is_note = case(
+        (AppointmentStatusHistory.from_status == AppointmentStatusHistory.to_status, 1), else_=0
+    )
     query = (
         select(AppointmentStatusHistory)
         .where(AppointmentStatusHistory.appointment_id == appointment_id)
-        .order_by(AppointmentStatusHistory.created_at, AppointmentStatusHistory.id)
+        .order_by(AppointmentStatusHistory.created_at, is_note, AppointmentStatusHistory.id)
     )
     return list((await db.scalars(query)).all())
 

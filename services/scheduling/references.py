@@ -38,6 +38,7 @@ __all__ = [
     "get_patient_by_user",
     "get_patient_ref",
     "get_provider_availability",
+    "get_provider_by_user",
     "get_provider_ref",
     "list_schedule_changes",
 ]
@@ -71,6 +72,21 @@ async def get_provider_ref(
         service="provider",
         base_url=settings.provider_service_url,
         path=f"/internal/providers/{provider_id}",
+    )
+
+
+async def get_provider_by_user(
+    http: httpx.AsyncClient, tokens: ServiceTokenProvider, user_id: uuid.UUID
+) -> dict[str, Any] | None:
+    """Provider's `{id, department_id, is_active}` for the provider profile linked
+    to login account `user_id`, or None (plan 02.1-12). The same lookup Visit uses
+    to decide provider ownership; the request carries the account id only."""
+    return await _get(
+        http,
+        tokens,
+        service="provider",
+        base_url=settings.provider_service_url,
+        path=f"/internal/providers/by-user/{user_id}",
     )
 
 

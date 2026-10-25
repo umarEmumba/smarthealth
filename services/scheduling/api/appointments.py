@@ -1,7 +1,7 @@
 """Booking routes (plan 02-06; SCHED-01, SCHED-02, SCHED-04; D-07, D-08, D-18).
 
     POST /api/appointments                   PATIENT, FRONT_DESK, ADMIN   202 Accepted
-    GET  /api/appointments/{appointment_id}  PATIENT (own), FRONT_DESK (own clinic), ADMIN
+    GET  /api/appointments/{appointment_id}  PATIENT (own), PROVIDER (own), FRONT_DESK (own clinic), ADMIN
     GET  /api/appointments                   same scope rules, with filters
                                              (`?flagged=true`: schedule-change flagged, M2)
     POST /api/appointments/{id}/cancel       same scope rules   202 / 200 no-op  (plan 02-08)
@@ -38,6 +38,15 @@ Scope (D-18, T-02-28): a PATIENT books only for the patient profile linked to
 their own login in their clinic (resolved through Patient's by-user lookup;
 any other `patient_id` is 403). FRONT_DESK acts only in their clinic: a slot or
 appointment elsewhere gets the same 404 as a missing one. ADMIN acts anywhere.
+
+Provider self-service (plan 02.1-12, C4): a PROVIDER can READ (never write) their
+own appointments through the two GET routes. Ownership is the provider profile
+linked to their login, resolved through Provider's by-user lookup (the rule Visit
+uses), never a client-supplied id: another provider's appointment is the same 404
+as a missing one, and the list is forced to the caller's own provider id (a
+`provider_id` filter naming someone else returns `[]`). Provider reads are scoped
+by that provider id, not by the token's clinic claim, so a provider login without
+a clinic claim still works. POST, cancel and reschedule stay on `BOOKING_ROLES`.
 
 PHI: `coverage_ref` is stored for the billing activity only; it is never
 logged, audited, returned or put in workflow input. Audit records field names.
@@ -105,6 +114,9 @@ router = APIRouter(prefix="/api/appointments", tags=["appointments"])
 log = get_logger(__name__)
 
 BOOKING_ROLES = (Role.PATIENT, Role.FRONT_DESK, Role.ADMIN)
+# C4 (plan 02.1-12): the two GET routes also admit a PROVIDER (own appointments
+# only). Writes keep BOOKING_ROLES.
+VIEW_ROLES = (Role.PATIENT, Role.PROVIDER, Role.FRONT_DESK, Role.ADMIN)
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 CREATE_FIELDS = ["slot_id", "patient_id", "provider_id", "status", "coverage_ref"]
 # Upper bound on starting the saga inside the request (the gateway's upstream
@@ -165,6 +177,26 @@ async def _own_patient_id(
     if patient is None or not patient.get("is_active", False):
         return None
     return uuid.UUID(str(patient["id"]))
+
+
+async def _own_provider_id(
+    http: httpx.AsyncClient, tokens: ServiceTokenProvider, user: AuthenticatedUser
+) -> uuid.UUID | None:
+    """The provider profile linked to a PROVIDER's login (plan 02.1-12), or None
+    when the subject is not a UUID or the login has no provider profile."""
+    try:
+        user_id = uuid.UUID(user.sub)
+    except ValueError:
+        return None
+    try:
+        provider = await references.get_provider_by_user(http, tokens, user_id)
+    except UpstreamServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"{exc.service} service unavailable") from exc
+    except ServiceTokenUnavailable as exc:
+        raise HTTPException(status_code=503, detail="identity service unavailable") from exc
+    if provider is None:
+        return None
+    return uuid.UUID(str(provider["id"]))
 
 
 def _accepted(response: Response, appointment_id: uuid.UUID, current_status: str) -> AppointmentAccepted:
@@ -393,11 +425,20 @@ def _to_out(appointment: Appointment, history: list | None = None) -> Appointmen
 @router.get("/{appointment_id}", response_model=AppointmentOut)
 async def get_appointment(
     appointment_id: uuid.UUID,
-    user: AuthenticatedUser = Depends(require_role(*BOOKING_ROLES)),
+    user: AuthenticatedUser = Depends(require_role(*VIEW_ROLES)),
     db: AsyncSession = Depends(get_db),
     http: httpx.AsyncClient = Depends(get_internal_http_client),
     tokens: ServiceTokenProvider = Depends(get_service_tokens),
 ) -> AppointmentOut:
+    if user.role == Role.PROVIDER:
+        # Resolved BEFORE the appointment is read, so the answer never depends on
+        # whether the appointment exists or whose it is: own, or the same 404.
+        own_provider = await _own_provider_id(http, tokens, user)
+        appointment = await appointment_repo.get_appointment(db, appointment_id)
+        if own_provider is None or appointment is None or appointment.provider_id != own_provider:
+            raise _not_found()
+        history = await appointment_repo.get_history(db, appointment_id)
+        return _to_out(appointment, history)
     appointment = await appointment_repo.get_appointment(db, appointment_id)
     if appointment is None or not _in_scope(user, appointment.clinic_id):
         raise _not_found()
@@ -420,7 +461,7 @@ async def list_appointments(
     # M2 (plan 02.1-08): true = only appointments a schedule change flagged.
     flagged: bool | None = None,
     limit: int = Query(default=100, ge=1, le=LIST_LIMIT_MAX),
-    user: AuthenticatedUser = Depends(require_role(*BOOKING_ROLES)),
+    user: AuthenticatedUser = Depends(require_role(*VIEW_ROLES)),
     db: AsyncSession = Depends(get_db),
     http: httpx.AsyncClient = Depends(get_internal_http_client),
     tokens: ServiceTokenProvider = Depends(get_service_tokens),
@@ -431,7 +472,13 @@ async def list_appointments(
         if bound is not None and bound.tzinfo is None:
             raise HTTPException(status_code=422, detail="start and end must include a UTC offset")
 
-    if user.role != Role.ADMIN:
+    if user.role == Role.PROVIDER:
+        # C4: scoped by the caller's own provider profile, not by the clinic claim.
+        own_provider = await _own_provider_id(http, tokens, user)
+        if own_provider is None or (provider_id is not None and provider_id != own_provider):
+            return []
+        provider_id = own_provider
+    elif user.role != Role.ADMIN:
         own_clinic = _user_clinic(user)
         if own_clinic is None:
             return []

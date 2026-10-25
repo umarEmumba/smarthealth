@@ -462,7 +462,12 @@ async def test_appointment_reads_are_scoped(client: AsyncClient, booking_world: 
     assert (await client.get(f"/api/appointments/{appointment_id}", headers=auth(world.admin))).status_code == 200
     hidden = await client.get(f"/api/appointments/{appointment_id}", headers=auth(other_front_desk))
     assert hidden.status_code == 404
-    assert (await client.get(f"/api/appointments/{appointment_id}", headers=auth(world.provider))).status_code == 403
+    # C4 (plan 02.1-12): the provider who owns the appointment may now READ it
+    # (it was 403 before); booking stays refused for the role. The provider
+    # isolation proofs live in tests/scheduling/test_provider_appointments.py.
+    assert (await client.get(f"/api/appointments/{appointment_id}", headers=auth(world.provider))).status_code == 200
+    refused = await book(client, world.provider, slot_id=slot["id"], patient_id=str(world.patient_id), key=new_key())
+    assert refused.status_code == 403
     listed = await client.get("/api/appointments", headers=auth(other_front_desk))
     assert listed.status_code == 200
     assert appointment_id not in [a["id"] for a in listed.json()]
