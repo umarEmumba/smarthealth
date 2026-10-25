@@ -377,10 +377,10 @@
   <div class="wrap">
     <p class="eyebrow">SmartHealth · Part A · MediNova</p>
     <h1>Architecture &amp; Decision Dashboard</h1>
-    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; this version adds Phase 2: scheduling, visits and billing on Temporal.</p>
+    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; v3 added Phase 2 (scheduling, visits and billing on Temporal) and v3.1 adds Phase 2.1, the remediation of the Week 1-2 mentor review: an appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, single-use refresh tokens, and quantified NFR targets with a runnable load test.</p>
     <div class="meta-row">
       <span>Milestone <b>Part A — Core Platform</b></span>
-      <span>Dashboard <b>v3 · Phase 2</b></span>
+      <span>Dashboard <b>v3.1 · Phase 2.1</b></span>
       <span>Core value <b>reliable scheduling, no corrupted state</b></span>
     </div>
   </div>
@@ -446,10 +446,10 @@
         <div class="nodes">
           <div class="node accent"><div class="n-name">Identity</div><div class="n-tech">FastAPI &middot; RS256 signer</div><div class="n-role">Accounts (credentials, role, clinic_id), register/login/refresh/logout, token issuance, the JWKS endpoint, the Redis denylist writer, 60 s service tokens, <code>/internal/users</code>. The only holder of the private key.</div></div>
           <div class="node accent"><div class="n-name">Organization</div><div class="n-tech">FastAPI</div><div class="n-role">Clinics and departments (soft-delete, clinic-scoped), <code>/internal/clinics</code> and <code>/internal/departments</code> lookups.</div></div>
-          <div class="node accent"><div class="n-name">Provider</div><div class="n-tech">FastAPI</div><div class="n-role">Providers, specialties, weekly availability templates, <code>/internal/providers</code>. Holds no clinic data.</div></div>
+          <div class="node accent"><div class="n-name">Provider</div><div class="n-tech">FastAPI</div><div class="n-role">Providers, specialties, weekly availability templates, <code>/internal/providers</code>, and (Phase 2.1) the <code>schedule_change_events</code> outbox served over <code>/internal/schedule-changes</code> to Scheduling. Holds no clinic data.</div></div>
           <div class="node accent"><div class="n-name">Patient</div><div class="n-tech">FastAPI</div><div class="n-role">Patient profiles &mdash; the <strong>only</strong> service and database that hold patient PHI.</div></div>
-          <div class="node accent"><div class="n-name">Scheduling</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Slots generated on demand from Provider templates, appointments (202 + <code>Idempotency-Key</code>), cancel, reschedule, waitlist. Starts the booking, cancel and reschedule workflows; <code>/internal/appointments</code> for Visit.</div></div>
-          <div class="node accent"><div class="n-name">Visit</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Check-in &rarr; in progress &rarr; completed; a clinic-scoped status list for ops. Completion commits first, then starts the downstream workflow.</div></div>
+          <div class="node accent"><div class="n-name">Scheduling</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Slots generated on demand from Provider templates, appointments (202 + <code>Idempotency-Key</code>) through seven states (<code>pending</code>, <code>confirmed</code>, <code>checked_in</code>, <code>completed</code>, <code>no_show</code>, <code>cancelled</code>, <code>failed</code>), cancel, reschedule, waitlist. Starts the booking, cancel, reschedule and schedule-change workflows; <code>/internal/appointments</code> (lookup, check-in, complete) for Visit.</div></div>
+          <div class="node accent"><div class="n-name">Visit</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Check-in (moves the appointment to <code>checked_in</code> first) &rarr; in progress &rarr; completed; a clinic-scoped status list for ops. Completion commits first, then starts the downstream workflow, which also completes the appointment; settlement markers feed a reconciler.</div></div>
           <div class="node accent"><div class="n-name">Billing</div><div class="n-tech">FastAPI &middot; Phase 2</div><div class="n-role">Deterministic simulated pre-check and the billing record state machine. Answers only Scheduling and Visit (<code>/internal/billing/*</code>); read-only <code>/api/billing</code>. Calls no one.</div></div>
         </div>
       </div>
@@ -468,7 +468,7 @@
         <div class="nodes">
           <div class="node accent"><div class="n-name">identity_db</div><div class="n-tech">PostgreSQL &middot; role identity_svc</div><div class="n-role"><code>users</code></div></div>
           <div class="node accent"><div class="n-name">organization_db</div><div class="n-tech">PostgreSQL &middot; role organization_svc</div><div class="n-role"><code>clinics</code>, <code>departments</code></div></div>
-          <div class="node accent"><div class="n-name">provider_db</div><div class="n-tech">PostgreSQL &middot; role provider_svc</div><div class="n-role"><code>providers</code>, <code>specialties</code>, <code>provider_specialties</code>, <code>availability_templates</code></div></div>
+          <div class="node accent"><div class="n-name">provider_db</div><div class="n-tech">PostgreSQL &middot; role provider_svc</div><div class="n-role"><code>providers</code>, <code>specialties</code>, <code>provider_specialties</code>, <code>availability_templates</code>, <code>schedule_change_events</code></div></div>
           <div class="node accent"><div class="n-name">patient_db</div><div class="n-tech">PostgreSQL &middot; role patient_svc</div><div class="n-role"><code>patients</code> (PHI columns live only here)</div></div>
           <div class="node accent"><div class="n-name">scheduling_db</div><div class="n-tech">PostgreSQL &middot; role scheduling_svc</div><div class="n-role"><code>provider_slots</code>, <code>appointments</code> (<code>uq_appointments_active_slot</code>), <code>idempotency_keys</code>, <code>appointment_status_history</code>, <code>waitlist_entries</code></div></div>
           <div class="node accent"><div class="n-name">visit_db</div><div class="n-tech">PostgreSQL &middot; role visit_svc</div><div class="n-role"><code>visits</code> (one per appointment), <code>visit_state_history</code></div></div>
@@ -485,9 +485,9 @@
       <div class="layer">
         <div class="layer-label">Orchestration &mdash; wired, Phase 2</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>, SDK 1.34.0)</div><div class="n-role">Task queues <code>scheduling-tq</code> and <code>visit-tq</code>. Schedules replace cron: hold reaper, pending-booking starter, visit downstream sweeper. <code>auto-setup</code> is a local-dev image, not the production topology.</div></div>
-          <div class="node accent"><div class="n-name">scheduling-worker</div><div class="n-tech">same image as Scheduling &middot; own container</div><div class="n-role">Booking, Cancel, Reschedule, WaitlistAdvance and the maintenance workflows. Never runs migrations; starts after its API is healthy; heartbeat-file healthcheck.</div></div>
-          <div class="node accent"><div class="n-name">visit-worker</div><div class="n-tech">same image as Visit &middot; own container</div><div class="n-role">VisitCompleted (billing finalize, follow-up and analytics intents) and the sweeper.</div></div>
+          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>, SDK 1.34.0)</div><div class="n-role">Task queues <code>scheduling-tq</code> and <code>visit-tq</code>. Schedules replace cron: hold reaper, pending-booking starter, schedule-change poller, Scheduling reconciler, visit downstream sweeper, visit reconciler. <code>auto-setup</code> is a local-dev image, not the production topology.</div></div>
+          <div class="node accent"><div class="n-name">scheduling-worker</div><div class="n-tech">same image as Scheduling &middot; own container</div><div class="n-role">Booking, Cancel, Reschedule, WaitlistAdvance, ScheduleChange and the maintenance and reconciler workflows. Never runs migrations; starts after its API is healthy; heartbeat-file healthcheck.</div></div>
+          <div class="node accent"><div class="n-name">visit-worker</div><div class="n-tech">same image as Visit &middot; own container</div><div class="n-role">VisitCompleted (billing finalize, appointment completion, follow-up and analytics intents), the sweeper and the reconciler.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
@@ -514,6 +514,7 @@
     <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL &mdash; now in the database of the service that owns it; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
     <div class="callout"><b>Modeling assumption &mdash; accounts vs. profiles (D-04):</b> login accounts live in <strong>Identity</strong> (<code>users</code>: email, password hash, role, clinic_id); operational profiles live in <strong>Patient</strong> and <strong>Provider</strong>. A profile stores <code>user_id</code> as a plain nullable UUID (no foreign key), validated against Identity at write time. This lets front-desk/admin create a patient with no login (walk-in, phone-booked) while self-registering patient accounts (IAM-01) still work, and it keeps PHI out of Identity and credentials out of Patient and Provider. Creating a profile never creates the account.</div>
     <div class="callout warn"><b>Interim mechanisms &mdash; Phase 3 replaces them.</b> Phase 2 ships deliberate stand-ins, each labelled: <strong>(1)</strong> the <strong>pending-booking starter</strong> and the <strong>visit downstream sweeper</strong> recover a workflow start lost between a database commit and <code>start_workflow</code> &mdash; <em>Phase 3 replaces</em> them with a transactional <strong>outbox</strong>; <strong>(2)</strong> notification, follow-up and analytics steps are <strong>stubs</strong> (a PHI-free log line plus an audit entry) &mdash; <em>Phase 3 replaces</em> them with Celery jobs and Kafka events; <strong>(3)</strong> clients <strong>poll</strong> status URLs &mdash; <em>Phase 3 replaces</em> polling with events; <strong>(4)</strong> Temporal runs from the <code>auto-setup</code> image &mdash; the <em>production topology</em> is <code>temporalio/server</code> with a separate schema job. Also open: workers expose no metrics; Mongo audit is written after the Postgres commit and is not atomic with it (WR-04); the waitlist tries at most 5 entries per freed slot and has no priority.</div>
+    <div class="callout warn"><b>Phase 2.1 &mdash; what is only a target, what is interim, what is open.</b> <strong>Targets, not results:</strong> NFR-01..08 and a runnable k6 load test exist, but they are <em>not yet measured</em> &mdash; the full profiles have never run against the real stack and the local single-instance stack is not claimed to meet NFR-01 or NFR-02 (Phase 3 measures). <strong>Interim:</strong> audit writes after a committed step are non-fatal (an entry can be lost if Mongo is down at that instant; the transition is durable in <code>appointment_status_history</code>) until the Phase 3 outbox; schedule changes (15 s) and reconcilers (60 s) are polled, not event-driven. <strong>Open risks:</strong> cancel and reschedule billing is still bounded (<code>*_incomplete:billing_pending</code>, for an operator) &mdash; only visit billing retries open-endedly; a slot still held at the schedule-change second pass gets no third pass; reconcilers are oldest-first with a batch cap and no per-row backoff; waitlist entries of a deactivated provider are untouched; delivered change events are never purged; <code>no_show</code> is automated only and pre-2.1 visits settle as <code>not_checked_in</code> with no backfill; refresh tokens are single-use, so clients must store the rotated token; the load test has never run against the real stack.</div>
     <div class="callout"><b>Open deferrals and recorded risks carried from Phase 1.1</b> (none of these is hidden; all are in <code>deferred-items.md</code> and the Phase 1.1 summaries): <strong>(1)</strong> the gateway buffers whole request bodies with no size cap &mdash; the rate limiter bounds request count, not size; <strong>(2)</strong> one shared Redis holds both the denylist and rate-limit counters &mdash; a Redis outage fails the limiter open and token verification closed (503), and a flush would drop revocations; <strong>(3)</strong> service tokens carried no <code>aud</code> claim &mdash; <em>closed in Phase 2</em>: tokens are now audience-scoped and every internal route names its allowed callers; <strong>(4)</strong> application containers run as root; <strong>(5)</strong> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a human look at the Jaeger UI, and the bootstrap_admin.py admin-creation branch (only its no-op path is tested) have not been verified; <strong>(6)</strong> three flagged assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain holds only through write-time validation (ORG-03), overlapping availability templates remain allowed (PPL-03), and a client combining services may briefly see stale cross-service state (PPL-04). Nothing here is claimed as production-hardened.</div>
   </section>
 
@@ -544,6 +545,54 @@
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Redis idempotency cache only &middot; rely on Temporal workflow-id dedup alone &middot; client-side retry discipline</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v"><strong>1. Database arbiters:</strong> the partial unique index <code>uq_appointments_active_slot</code> (one active appointment per slot), the <code>idempotency_keys</code> row keyed by (caller, key) with a SHA-256 of the body (a replay returns the original appointment; a different body is 422), conditional updates (<code>UPDATE &hellip; WHERE status = expected</code>) for every transition, and history uniques (<code>uq_visit_history_visit_to</code>, <code>uq_billing_history_record_key</code>). <strong>2. Workflow id:</strong> deterministic ids (<code>booking-&lt;id&gt;</code>, <code>visit-completed-&lt;id&gt;</code>, &hellip;) started with use-existing / reject-duplicate, so a second start is a no-op. <strong>3. Activities:</strong> every Billing call carries an <code>Idempotency-Key</code>, and every audit write a <code>dedupe_key</code>, so Temporal&rsquo;s at-least-once retries are safe.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Keys live in Postgres, not Redis, so they survive a cache flush, at the cost of a write per booking. Workflow-id dedup is bounded by the 24 h namespace retention; beyond that only the database rules hold &mdash; which is why they come first.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Audit after commit: non-fatal now, outbox later</h3><span class="chip med">Phase 2.1 &middot; S3</span></div>
+        <div class="chosen">A failed audit write after a committed step is logged, never fatal</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Fail the request or workflow when the audit write fails &middot; a local outbox table in each service &middot; the Phase 3 transactional outbox to Kafka only</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The transition is already durable in <code>appointment_status_history</code> in the same transaction as the state change. Failing the request or the workflow <em>after</em> the commit would tell the caller a lie (a 500 for a booking that confirmed) or end a workflow before its second pass. Compensations also read the appointment&rsquo;s state and do nothing for a committed booking, so a late failure can never undo a confirm. A local outbox would be a second mechanism that Phase 3 replaces anyway.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">If Mongo is down at that instant the audit entry can be lost for good (<code>audit.write_failed</code> is logged with ids and exception type); nothing backfills it. The transactional outbox in Phase 3 is the general fix.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Schedule-change delivery: poll an outbox, do not push</h3><span class="chip high">Phase 2.1 &middot; M2</span></div>
+        <div class="chosen">Provider writes <code>schedule_change_events</code> atomically; Scheduling polls and acknowledges</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Provider calls Scheduling directly after the change &middot; Provider starts a Temporal workflow &middot; wait for the Phase 3 Kafka event</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">A push is lost if Scheduling or Temporal is down at the moment of the change, and Provider must not call another service&rsquo;s write path. The row commits with the change, stays pending until acknowledged, and a crash between &ldquo;start the workflow&rdquo; and &ldquo;acknowledge&rdquo; simply re-delivers (the start is idempotent). No cursor, because rows can commit out of order. Phase 3 can publish the same rows to Kafka.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Up to one poll interval (15 s) of delay; delivered rows are never purged; a polling Schedule to run and keep paused during feed tests.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Which slots are stale: set difference</h3><span class="chip high">Phase 2.1 &middot; M2</span></div>
+        <div class="chosen">Re-expand the current templates; any future slot not in that set is stale</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Record which template produced each slot &middot; invalidate slots by template id and date range &middot; regenerate everything</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">It is idempotent, needs no slot-to-template link, and reuses the tested, DST-safe generator, so the candidate set cannot drift from what generation would produce. Available stale slots are withdrawn; a stale booked slot flags its appointment instead of cancelling it (staff decide); held slots wait for a second pass after the hold TTL. Ambiguity withdraws nothing.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A slot that cannot be derived from the templates is stale by definition (the application has no other path to create one); a slot still held at pass 2 gets no third pass.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Reconciler mechanism: one Schedule per service</h3><span class="chip high">Phase 2.1 &middot; S4</span></div>
+        <div class="chosen">Temporal Schedule (overlap SKIP) running one idempotent reconciler workflow</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">A cron or sweeper loop inside the API &middot; one more bespoke poller per stuck state &middot; waiting for Phase 3 events</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Same pattern as the hold reaper and the pending starter, visible in the Temporal UI. It re-derives outcomes from the database (a pending booking whose workflow is gone, a waitlist entry stuck matched, billing never voided, a no-show, a visit with an unsettled marker) with conditional updates, asks Temporal before touching a pending row, and re-reads before any Billing call, so a live booking is never failed and a committed one never voided.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Polling (60 s); lists are oldest first with a cap (50 / 100) and no per-row backoff, so a persistent failure beyond the cap could starve newer rows; cancel and reschedule billing is not covered.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Single-use refresh tokens</h3><span class="chip high">Phase 2.1 &middot; C1</span></div>
+        <div class="chosen">Rotating refresh with an atomic Redis claim and an <code>rjti</code> claim on the access token</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Reusable refresh tokens with a denylist check only &middot; a refresh-token family table in Postgres &middot; shorter-lived refresh tokens</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">One <code>SET NX EX</code> both checks and consumes the refresh jti, so concurrent reuse yields exactly one winner, and it runs after the token and user validate so a bad token burns nothing. The access token names its paired refresh token, so logout revokes both without client cooperation. A used and a revoked token are deliberately indistinguishable (401). Redis down is 503 and the token is not consumed (fail closed, like the access path).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Clients must store the rotated token; access tokens issued before the change have no <code>rjti</code> and revoke only themselves; a Redis outage blocks refresh. Alongside it: bcrypt on a bounded thread pool, and case-insensitive email through a <code>lower(email)</code> unique index without rewriting existing rows.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Load test and NFRs: k6, one source of numbers</h3><span class="chip med">Phase 2.1 &middot; D1, D2</span></div>
+        <div class="chosen">k6 from a pinned Docker image; targets in <code>loadtest/nfr.json</code></div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Locust or a hand-written asyncio script (adds a dependency) &middot; numbers copied into the PRD, docs and thresholds separately</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">No package is added to the project (only Docker), and a test fails if the PRD table, <code>docs/nfr.md</code> or the k6 thresholds drift from the JSON. The numbers come from a stated demand model (50,000 requests a day, 60 percent in a 2-hour peak, a 5x peak minute rounded up to 25 per second, a 100 per second opening burst).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted"><strong>The targets are not yet measured</strong>: the profiles have never run against the real stack, and the local single-instance stack is not claimed to meet NFR-01 or NFR-02. Phase 3 observability measures them.</span></p>
       </div>
 
       <div class="card">
@@ -594,14 +643,14 @@
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains only · hand-rolled DB state machine · AWS Step Functions</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v">Booking is a multi-step transaction (validate &rarr; reserve hold &rarr; billing pre-check &rarr; confirm &rarr; notification intent). Temporal makes it durable and resumable, and models failure recovery as first-class compensation — directly satisfying "partial failures never corrupt scheduling state." See <em>Why Temporal, not Celery</em> above for the Phase 2 rationale as built.</span></p>
         <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Another infra component + a determinism discipline (no wall-clock/random in workflow code). Worth it for the graded reliability core.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Phase 2 status</span><span class="v muted">Wired: five Scheduling workflows and two Visit workflows run on two worker containers. Still the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; it is kept for local dev because its schema auto-provisioning saves set-up time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 2 status</span><span class="v muted">Wired: Scheduling&rsquo;s booking, cancel, reschedule, waitlist, schedule-change and reconciler workflows and Visit&rsquo;s completion, sweeper and reconciler workflows run on two worker containers. Still the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; it is kept for local dev because its schema auto-provisioning saves set-up time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Auth &amp; session model</h3><span class="chip high">high</span></div>
         <div class="chosen">RS256 access + refresh JWT, JWKS verification in every service, Redis jti-denylist</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">A shared symmetric secret distributed to every service &middot; per-request token introspection at Identity &middot; opaque tokens &middot; access-only JWT with no refresh or revocation list</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Identity alone holds the RSA private key and signs tokens with <code>kid</code> <code>smarthealth-identity-1</code>; the public key is published at <code>/.well-known/jwks.json</code>. Every service verifies signatures locally against a cached JWKS (300 s TTL, 30 s backoff after an unknown <code>kid</code>), so there is no per-request call to Identity and a compromised non-Identity service cannot forge tokens &mdash; which a shared symmetric secret would allow for any holder. The access token (~15 min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>type=access</code>) is validated on every protected request; the refresh token (~7 days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only) re-derives role and clinic from the current account row, so a role change takes effect on next refresh. Logout writes the <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life) that every service checks, failing closed with 503 if Redis is unreachable. Calls with no user context use 60 s service tokens minted only by Identity. The private key is generated by <code>scripts/generate_jwt_keypair.py</code>, gitignored, and delivered only to the Identity container as a Compose secret; Identity refuses to start without it.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Identity alone holds the RSA private key and signs tokens with <code>kid</code> <code>smarthealth-identity-1</code>; the public key is published at <code>/.well-known/jwks.json</code>. Every service verifies signatures locally against a cached JWKS (300 s TTL, 30 s backoff after an unknown <code>kid</code>), so there is no per-request call to Identity and a compromised non-Identity service cannot forge tokens &mdash; which a shared symmetric secret would allow for any holder. The access token (~15 min: <code>sub</code>/<code>role</code>/<code>clinic_id</code>/<code>jti</code>/<code>rjti</code>/<code>type=access</code>) is validated on every protected request; the refresh token (~7 days: <code>sub</code>/<code>jti</code>/<code>type=refresh</code> only) re-derives role and clinic from the current account row, so a role change takes effect on next refresh, and is single-use (see <em>Single-use refresh tokens</em>). Logout writes the <code>jti</code> to a Redis <b>denylist</b> (<code>revoked:{jti}</code>, TTL = remaining token life) that every service checks, failing closed with 503 if Redis is unreachable. Calls with no user context use 60 s service tokens minted only by Identity. The private key is generated by <code>scripts/generate_jwt_keypair.py</code>, gitignored, and delivered only to the Identity container as a Compose secret; Identity refuses to start without it.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Key-file management: the key must be generated before the first <code>docker compose up</code> and never committed. Rotation is mechanically supported by <code>kid</code> but has <strong>not been exercised</strong>. A service may use a stale JWKS for up to the cache TTL. One Redis round-trip per authenticated request in every service. Service tokens carried no <code>aud</code> claim in Phase 1.1; Phase 2 (plan 02-01) made them audience-scoped, with a per-service client secret delivered as a Compose secret and an explicit allowed-caller set on every internal route.</span></p>
       </div>
 
@@ -697,7 +746,7 @@
   <!-- FLOWS -->
   <section id="flows">
     <div class="sec-head"><span class="sec-num">05</span><h2>Core flows</h2></div>
-    <p class="sec-sub">As built in Phase 2. Every multi-step change is a Temporal workflow in the service that owns the aggregate (<code>scheduling-tq</code> for appointments and the waitlist, <code>visit-tq</code> for visits), executed by its own worker container. Each step is an idempotent activity that writes one audit entry; failures compensate with forward state transitions and nothing is ever deleted. Clients poll a status URL.</p>
+    <p class="sec-sub">As built in Phase 2. Every multi-step change is a Temporal workflow in the service that owns the aggregate (<code>scheduling-tq</code> for appointments and the waitlist, <code>visit-tq</code> for visits), executed by its own worker container. Each step is an idempotent activity that writes one audit entry; failures compensate with forward state transitions and nothing is ever deleted. Clients poll a status URL. Phase 2.1 adds three flows below the visit lifecycle: the check-in window, the provider schedule change and the reconcilers.</p>
 
     <div class="flow">
       <h3>Appointment booking saga</h3>
@@ -751,11 +800,45 @@
         <h3>Visit lifecycle</h3>
         <p class="flow-sub">Visit service &middot; commit first, downstream after.</p>
         <ol class="steps">
-          <li><div class="s-title">Check in</div><div class="s-desc">Front-desk/admin, only for a <code>confirmed</code> appointment (asked of Scheduling). One visit per appointment; a repeat returns the existing visit.</div></li>
+          <li><div class="s-title">Check in</div><div class="s-desc">Front-desk/admin, only for a <code>confirmed</code> appointment inside the check-in window: Visit asks Scheduling to move it to <code>checked_in</code> first, then inserts the visit. One visit per appointment; a repeat returns the existing visit.</div></li>
           <li><div class="s-title">Start</div><div class="s-desc">The visit&rsquo;s own provider (or staff); conditional update, repeats are no-ops, skipping a state is 409.</div></li>
-          <li><div class="s-title">Complete, then fan out</div><div class="s-desc">The transition commits with <code>downstream_started_at</code> NULL; then <code>visit-completed-&lt;id&gt;</code> starts and the marker is set. Billing finalize, follow-up intent and analytics intent run as independent branches on <code>visit-worker</code>. A lost start is picked up by the <strong>sweeper</strong> Schedule (every 60 s). The 200 never waits on any of it.</div></li>
+          <li><div class="s-title">Complete, then fan out</div><div class="s-desc">The transition commits with <code>downstream_started_at</code> NULL; then <code>visit-completed-&lt;id&gt;</code> starts and the marker is set. Billing finalize (open-ended retry), completing the appointment, the follow-up intent and the analytics intent run as independent branches on <code>visit-worker</code>. A lost start is picked up by the <strong>sweeper</strong> Schedule (every 60 s) and an unsettled step by the visit <strong>reconciler</strong>. The 200 never waits on any of it.</div></li>
         </ol>
       </div>
+    </div>
+
+    <div class="two-col">
+      <div class="flow">
+        <h3>Check-in window and appointment states (Phase 2.1)</h3>
+        <p class="flow-sub">Mentor item M1 &middot; Scheduling decides, Visit asks.</p>
+        <ol class="steps">
+          <li><div class="s-title">Window by the database clock</div><div class="s-desc">Check-in opens 60 minutes before the slot starts and closes when it ends (both configurable). The decision is made in the same locking <code>SELECT</code> that reads the row, with the database&rsquo;s <code>now()</code>, so there is no clock skew between services.</div></li>
+          <li><div class="s-title">Scheduling first, visit second</div><div class="s-desc">Visit calls Scheduling&rsquo;s internal check-in (<code>confirmed &rarr; checked_in</code>, one history row), then inserts the visit. Refusals reach the client as three 409 strings: <code>appointment not confirmed</code>, <code>check-in window not open</code>, <code>check-in window closed</code>. A crash between the two converges on the next request (Scheduling answers 200 &ldquo;already&rdquo;).</div></li>
+          <li><div class="s-title">Refuse what it would corrupt</div><div class="s-desc">Cancel and reschedule are 409 from <code>checked_in</code> onward, so a patient who is in the building can no longer be refunded or rebooked. <code>checked_in</code>, <code>completed</code> and <code>no_show</code> still hold their slot: the unique index and the patient-overlap exclusion cover them (<code>scheduling_0004</code>).</div></li>
+          <li><div class="s-title">Complete, or no-show</div><div class="s-desc">Visit completion completes the appointment (a fourth workflow branch). A confirmed appointment whose slot ended more than 30 minutes ago becomes <code>no_show</code> through the reconciler sweep; there is no manual staff action.</div></li>
+        </ol>
+      </div>
+      <div class="flow">
+        <h3>Provider schedule change (Phase 2.1)</h3>
+        <p class="flow-sub">Mentor item M2 &middot; Provider writes the fact, Scheduling pulls it.</p>
+        <ol class="steps">
+          <li><div class="s-title">Outbox row with the change</div><div class="s-desc">Editing or deactivating a template, or deactivating a provider, writes a <code>schedule_change_events</code> row in the same transaction (ids and a change type only; a change that alters nothing writes none).</div></li>
+          <li><div class="s-title">Poll, start, acknowledge</div><div class="s-desc">A Schedule (every 15 s) reads the pending events over Provider&rsquo;s internal feed with Scheduling&rsquo;s service token, starts <code>schedule-change-&lt;event id&gt;</code> for each, and only then acknowledges, so a crash re-delivers.</div></li>
+          <li><div class="s-title">Apply: set difference</div><div class="s-desc">The provider&rsquo;s current templates are re-expanded; every future slot not in that set is stale. Available stale slots are withdrawn; stale booked slots flag their appointment (it stays <code>confirmed</code>, staff cancel or reschedule); missing future slots are inserted for an active provider.</div></li>
+          <li><div class="s-title">Second pass after the hold TTL</div><div class="s-desc">A durable timer (hold TTL plus one minute), then the same apply again, so a booking that confirmed just after pass 1 is flagged rather than missed. A slot still held at pass 2 gets no third pass (open risk). Staff worklist: <code>GET /api/appointments?flagged=true&amp;status=confirmed</code>.</div></li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="flow">
+      <h3>Reconcilers (Phase 2.1)</h3>
+      <p class="flow-sub">Mentor item S4 &middot; one Temporal Schedule per service, overlap SKIP, idempotent, batch-capped, oldest first. They re-derive outcomes from the database and never guess.</p>
+      <ol class="steps">
+        <li><div class="s-title">Stuck <code>pending</code> bookings (Scheduling, every 60 s)</div><div class="s-desc">A pending appointment older than 10 minutes blocks its slot forever. If Temporal says <code>booking-&lt;id&gt;</code> is gone, the appointment is re-read, billing voided, the hold released and the appointment failed with <code>workflow_lost</code>, then the slot is offered to the waitlist. If Temporal cannot answer, nothing is touched.</div></li>
+        <li><div class="s-title">Billing lookback, stuck waitlist entries, no-shows</div><div class="s-desc">Bookings failed by the reaper or the reconciler in the last 24 hours get their billing voided if it was not; a waitlist entry stuck <code>matched</code> for 15 minutes is resolved from its appointment; a confirmed appointment past slot end plus grace gets Billing <code>no_refund</code> and then <code>no_show</code>.</div></li>
+        <li><div class="s-title">Visit reconciler (every 60 s)</div><div class="s-desc">A completed visit whose billing or appointment settlement marker is still empty after 10 minutes is settled by the same step bodies and idempotency keys as the workflow, so the two can race without a double effect. Billing finalize now retries without a time limit instead of skipping.</div></li>
+      </ol>
+      <div class="callout warn"><b>Still open:</b> cancel and reschedule billing steps that exhaust their bounded budget are recorded as <code>*_incomplete:billing_pending</code> for an operator; only a failed booking&rsquo;s billing, the no-show refund state and visit billing are reconciled.</div>
     </div>
 
     <h3 style="margin:26px 0 6px;font-size:18px;font-weight:650">State machines</h3>
@@ -765,23 +848,36 @@
       <figure class="sd">
         <figcaption>Appointment &middot; <code>scheduling_db.appointments</code></figcaption>
         <div class="sd-scroll">
-        <svg viewBox="0 0 560 175" role="img" aria-labelledby="sd-appt-t sd-appt-d">
+        <svg viewBox="0 0 720 250" role="img" aria-labelledby="sd-appt-t sd-appt-d">
           <title id="sd-appt-t">Appointment state machine</title>
-          <desc id="sd-appt-d">pending goes to confirmed when the booking saga confirms, or to failed when it is rejected or compensated. confirmed goes to cancelled through the cancel workflow. A reschedule keeps the appointment confirmed and moves it to a new slot.</desc>
+          <desc id="sd-appt-d">pending goes to confirmed when the booking saga confirms, or to failed when it is rejected, compensated, expired by the hold reaper or found abandoned by the reconciler. confirmed goes to checked_in when Visit checks the patient in inside the check-in window, to cancelled through the cancel workflow (from confirmed only), or to no_show when the reconciler sweep finds the slot ended more than the grace ago. checked_in goes to completed when the visit completes. A reschedule keeps the appointment confirmed and moves it to a new slot. Cancel and reschedule are refused once the appointment is checked_in, completed or no_show.</desc>
           <defs><marker id="ah-appt" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
-          <rect class="sd-st" x="10" y="80" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="103">pending</text>
-          <rect class="sd-st" x="230" y="35" width="120" height="36" rx="8"/><text class="sd-tx" x="290" y="58">confirmed</text>
-          <rect class="sd-term" x="230" y="125" width="120" height="36" rx="8"/><text class="sd-tx" x="290" y="148">failed</text>
-          <rect class="sd-term" x="430" y="35" width="120" height="36" rx="8"/><text class="sd-tx" x="490" y="58">cancelled</text>
-          <line class="sd-ln" x1="130" y1="92" x2="230" y2="56" marker-end="url(#ah-appt)"/>
-          <line class="sd-ln sd-comp" x1="130" y1="106" x2="230" y2="140" marker-end="url(#ah-appt)"/>
-          <line class="sd-ln" x1="350" y1="53" x2="430" y2="53" marker-end="url(#ah-appt)"/>
-          <path class="sd-ln" d="M268 35 C 268 4, 312 4, 312 35" marker-end="url(#ah-appt)"/>
-          <text class="sd-lb" x="160" y="62">confirm</text>
-          <text class="sd-lb" x="150" y="146">rejected /</text>
-          <text class="sd-lb" x="150" y="159">compensated</text>
-          <text class="sd-lb" x="368" y="45">cancel</text>
-          <text class="sd-lb" x="322" y="14">reschedule (new slot)</text>
+          <rect class="sd-st" x="10" y="100" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="123">pending</text>
+          <rect class="sd-st" x="200" y="100" width="120" height="36" rx="8"/><text class="sd-tx" x="260" y="123">confirmed</text>
+          <rect class="sd-st" x="400" y="100" width="120" height="36" rx="8"/><text class="sd-tx" x="460" y="123">checked_in</text>
+          <rect class="sd-term" x="580" y="100" width="120" height="36" rx="8"/><text class="sd-tx" x="640" y="123">completed</text>
+          <rect class="sd-term" x="200" y="10" width="120" height="36" rx="8"/><text class="sd-tx" x="260" y="33">no_show</text>
+          <rect class="sd-term" x="10" y="200" width="120" height="36" rx="8"/><text class="sd-tx" x="70" y="223">failed</text>
+          <rect class="sd-term" x="200" y="200" width="120" height="36" rx="8"/><text class="sd-tx" x="260" y="223">cancelled</text>
+          <line class="sd-ln" x1="130" y1="118" x2="200" y2="118" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln" x1="320" y1="118" x2="400" y2="118" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln" x1="520" y1="118" x2="580" y2="118" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln sd-comp" x1="260" y1="100" x2="260" y2="46" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln sd-comp" x1="70" y1="136" x2="70" y2="200" marker-end="url(#ah-appt)"/>
+          <line class="sd-ln" x1="260" y1="136" x2="260" y2="200" marker-end="url(#ah-appt)"/>
+          <path class="sd-ln" d="M290 136 C 290 176, 345 176, 345 136" marker-end="url(#ah-appt)"/>
+          <text class="sd-lb" x="140" y="112">confirm</text>
+          <text class="sd-lb" x="327" y="112">check-in</text>
+          <text class="sd-lb" x="524" y="112">complete</text>
+          <text class="sd-lb" x="268" y="80">sweep: slot end + grace</text>
+          <text class="sd-lb" x="78" y="162">rejected, compensated,</text>
+          <text class="sd-lb" x="78" y="176">reaper, reconciler</text>
+          <text class="sd-lb" x="252" y="172" text-anchor="end">cancel</text>
+          <text class="sd-lb" x="352" y="168">reschedule (new slot)</text>
+          <rect class="sd-note" x="400" y="170" width="300" height="66" rx="6"/>
+          <text class="sd-lb" x="410" y="190">check-in is accepted inside a window around the</text>
+          <text class="sd-lb" x="410" y="205">slot (database clock). cancel and reschedule are</text>
+          <text class="sd-lb" x="410" y="220">refused with 409 from checked_in onward.</text>
         </svg>
         </div>
       </figure>
@@ -791,7 +887,7 @@
         <div class="sd-scroll">
         <svg viewBox="0 0 600 120" role="img" aria-labelledby="sd-visit-t sd-visit-d">
           <title id="sd-visit-t">Visit state machine</title>
-          <desc id="sd-visit-d">checked_in goes to in_progress when the provider starts the visit, then to completed. Completion starts the VisitCompletedWorkflow, which finalizes billing and records follow-up and analytics intents.</desc>
+          <desc id="sd-visit-d">checked_in goes to in_progress when the provider starts the visit, then to completed. Completion starts the VisitCompletedWorkflow, which finalizes billing, completes the appointment and records follow-up and analytics intents.</desc>
           <defs><marker id="ah-visit" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
           <rect class="sd-st" x="10" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="75" y="37">checked_in</text>
           <rect class="sd-st" x="225" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="290" y="37">in_progress</text>
@@ -801,7 +897,7 @@
           <text class="sd-lb" x="160" y="24">start</text>
           <text class="sd-lb" x="368" y="24">complete</text>
           <rect class="sd-note" x="200" y="78" width="390" height="32" rx="6"/>
-          <text class="sd-lb" x="395" y="98" text-anchor="middle">visit-completed: billing finalize &#183; follow-up &#183; analytics</text>
+          <text class="sd-lb" x="395" y="98" text-anchor="middle">visit-completed: billing &#183; appointment &#183; follow-up &#183; analytics</text>
           <line class="sd-ln sd-comp" x1="505" y1="50" x2="505" y2="78" marker-end="url(#ah-visit)"/>
         </svg>
         </div>
@@ -970,9 +1066,55 @@
     </details>
 
     <details class="qa">
-      <summary>What is not yet verified after Phase 2?</summary>
+      <summary>What stops a patient who has checked in from cancelling and being refunded?</summary>
       <div class="answer">
-        <p>Phase 2: the interim mechanisms are labelled, not hidden (starter and sweeper until the Phase 3 outbox; notification/follow-up/analytics stubs; polling; <code>auto-setup</code> Temporal). There is <strong>no load test beyond the concurrency suites</strong> and the live demo. The 02-06 workflow trace is connected through the Temporal tracing interceptor in tests, but a person has not yet followed a booking end to end in the Jaeger UI. Workers expose no metrics, and Mongo audit writes are not atomic with the Postgres commit (WR-04). This is a local/dev system with synthetic data only: logout, PHI log-safety and database isolation are implemented and tested but <strong>not fully hardened</strong>.</p>
+        <p>The appointment state machine (Phase 2.1, M1). An appointment now moves <code>pending</code> &rarr; <code>confirmed</code> &rarr; <code>checked_in</code> &rarr; <code>completed</code>, with <code>no_show</code>, <code>cancelled</code> and <code>failed</code> on the side. Visit moves it to <code>checked_in</code> through Scheduling&rsquo;s internal check-in route, only inside a window around the slot judged by the database clock, and cancel and reschedule are 409 from <code>checked_in</code> onward at the API, the repository and the workflow activities. The three new states still hold their slot, because the unique index and the patient-overlap exclusion were widened to cover them, so the guarantee is in the database, not only in code.</p>
+        <p>A <code>no_show</code> is set only by the reconciler sweep, after the slot ended plus a 30-minute grace; there is no manual staff action yet, and visits created before Phase 2.1 have no checked-in appointment (they settle as <code>not_checked_in</code>, with no backfill).</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What happens to slots and bookings when a provider changes their schedule?</summary>
+      <div class="answer">
+        <p>The change writes an outbox row in Provider in the same transaction; Scheduling polls it (every 15 s), starts one <code>ScheduleChangeWorkflow</code> per event and acknowledges after the start. The workflow re-expands the provider&rsquo;s current templates and treats every future slot not in that set as stale: available ones are withdrawn, booked ones flag their appointment (it stays confirmed, staff cancel or reschedule it, and cancelling withdraws the stale slot instead of freeing it), and slots held by an in-flight booking are re-checked in a second pass after the hold TTL.</p>
+        <p>Honest gaps: it is polled, not event-driven; a slot still held at the second pass gets no third pass; delivered events are never purged; waitlist entries of a deactivated provider are untouched.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What if something fails after the database commit?</summary>
+      <div class="answer">
+        <p>Compensations read the appointment&rsquo;s current state and do nothing for a committed booking, so a late failure can never void billing or release a slot of a confirmed appointment. The audit write after a committed confirm, cancel, swap, check-in, complete or schedule-change apply is non-fatal: it is logged as <code>audit.write_failed</code> and the outcome stands, because the transition is already durable in <code>appointment_status_history</code>.</p>
+        <p>The cost is stated plainly: if Mongo is down at that instant the audit entry can be lost and nothing backfills it. The general fix is Phase 3&rsquo;s transactional outbox; a local outbox now would be a second mechanism that Phase 3 replaces.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>How are stuck states recovered?</summary>
+      <div class="answer">
+        <p>Two reconciler Schedules. Scheduling&rsquo;s fails <code>pending</code> bookings whose workflow is gone (they would block the slot forever), voids orphaned billing, resolves waitlist entries stuck <code>matched</code>, and sweeps no-shows. Visit&rsquo;s settles completed visits whose billing or appointment marker is still empty, and visit billing finalize now retries without a time limit instead of skipping. Both use conditional updates, ask Temporal before touching a pending row (an unreachable Temporal skips the step), reuse the workflows&rsquo; own idempotency keys, and are capped per run, oldest first.</p>
+        <p>Not covered: cancel and reschedule billing steps that exhaust their bounded budget are still recorded for an operator (<code>*_incomplete:billing_pending</code>), and there is no per-row backoff, so a persistent failure beyond the batch cap could starve newer rows.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>Does it meet its load and availability targets?</summary>
+      <div class="answer">
+        <p>Unknown, and the dashboard does not claim otherwise. Phase 2.1 defined NFR-01..08 from a stated demand model (50,000 booking requests a day, 25 per second sustained for 10 minutes, a 100 per second burst, p95 accept latency 300 ms, 99.9 percent availability) in one file that the PRD, <code>docs/nfr.md</code> and the k6 thresholds all derive from, and added a runnable k6 load test with a seed script. The targets are <strong>not yet measured</strong>: the profiles have never run against the real stack, and the local single-instance stack is not claimed to meet NFR-01 or NFR-02. Phase 3 observability measures them and sizes replicas; what is verified today is the correctness under contention (the concurrency suites and the 50-way live demo).</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What changed for clients in authentication?</summary>
+      <div class="answer">
+        <p>Refresh tokens are single-use and rotated: <code>/refresh</code> returns a new pair and reusing the old refresh token is 401, so a client must store the new one (a Redis outage is 503 and the token is not consumed). Access tokens carry an <code>rjti</code> claim naming their refresh token, so logout revokes both. bcrypt runs on a bounded thread pool so a login burst cannot stall the event loop, and email is case-insensitive through a <code>lower(email)</code> unique index (existing rows are not rewritten). Lists of patients, providers and clinics are paginated (<code>limit</code> 1..200, <code>X-Total-Count</code>), and <code>GET /api/patients/me</code> plus provider reads of their own appointments exist.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>What is not yet verified after Phase 2.1?</summary>
+      <div class="answer">
+        <p>Phase 2: the interim mechanisms are labelled, not hidden (starter and sweeper until the Phase 3 outbox; notification/follow-up/analytics stubs; polling; <code>auto-setup</code> Temporal). Phase 2.1 delivered quantified NFR targets (NFR-01..08, <code>docs/nfr.md</code>) and a runnable k6 load test, but the targets are <strong>not yet measured</strong>: the full profiles have never run against the real stack, the local single-instance stack is not claimed to meet NFR-01 or NFR-02, and the concurrency suites and the live demo remain the only load evidence until Phase 3 observability measures them. The 02-06 workflow trace is connected through the Temporal tracing interceptor in tests, but a person has not yet followed a booking end to end in the Jaeger UI. Workers expose no metrics, and Mongo audit writes are not atomic with the Postgres commit (WR-04). This is a local/dev system with synthetic data only: logout, PHI log-safety and database isolation are implemented and tested but <strong>not fully hardened</strong>.</p>
         <p>Carried from Phase 1.1: no request-body size cap at the gateway; one shared Redis for the denylist and rate limits; containers running as root. Not yet verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the connected trace in the Jaeger UI, and the <code>bootstrap_admin.py</code> admin-creation branch (only its no-op path is tested). Three assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain relies on write-time validation (ORG-03), overlapping availability templates are still allowed (PPL-03), and clients combining services may briefly see stale state (PPL-04).</p>
       </div>
     </details>
@@ -988,7 +1130,7 @@
   <!-- ROADMAP -->
   <section id="roadmap">
     <div class="sec-head"><span class="sec-num">07</span><h2>Roadmap &amp; how this dashboard grows</h2></div>
-    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v3: Phase 2 (the active phase) added the implemented workflows, the state diagrams, the Temporal rationale and the interim mechanisms; Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
+    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v3.1: Phase 2 (the active phase) added the implemented workflows, the state diagrams, the Temporal rationale and the interim mechanisms; Phase 2.1 (inserted after the Week 1-2 review) adds the appointment state machine, the schedule-change and reconciler flows, the new decisions and the NFR targets; Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
     <div class="phases">
       <div class="phase">
         <div class="p-num">Phase 1 · Week 1 · complete</div>
@@ -1009,6 +1151,12 @@
         <div class="reqs">SCHED-01..08 · VISIT-01..05 · BILL-01..02</div>
       </div>
       <div class="phase">
+        <div class="p-num">Phase 2.1 · inserted after the Week 1-2 review · plans executed, verification pending</div>
+        <h3>Phase 2.1 &mdash; Week 1-2 mentor review remediation</h3>
+        <p>Appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, post-commit safety, single-use refresh tokens, case-insensitive email, pagination, self-service reads, NFR targets and a runnable k6 load test. The NFR targets are not yet measured (Phase 3).</p>
+        <div class="reqs">M1 · M2 · S3..S7 · C1..C5 · D1 · D2 · NFR-01..08</div>
+      </div>
+      <div class="phase">
         <div class="p-num">Phase 3 · Week 3</div>
         <h3>Event-Driven System + Observability</h3>
         <p>Kafka outbox backbone, Celery/RabbitMQ workers + DLQ, event-derived analytics, full observability, dashboard closeout.</p>
@@ -1021,7 +1169,7 @@
 
 <footer>
   <div class="wrap">
-    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v3 · Phase 2</code></span>
+    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v3.1 · Phase 2.1</code></span>
     <span>Source of truth: <code>docs/architecture-dashboard.html</code> · updated per phase</span>
   </div>
 </footer>
