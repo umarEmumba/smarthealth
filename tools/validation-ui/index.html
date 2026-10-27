@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartHealth Phase 2.1 validation UI</title>
+  <script src="/lib.js" defer></script>
+  <script src="/core.js" defer></script>
+</head>
+<body>
+  <header id="app-header">
+    <h1>SmartHealth Phase 2.1 validation UI</h1>
+    <div class="header-line">
+      <span>Gateway: <code id="gateway-url">...</code></span>
+      <label>Act as
+        <select id="act-as"></select>
+      </label>
+      <strong id="acting-identity">not logged in</strong>
+    </div>
+    <p class="notice">Tokens are shown in full in this tab only. Nothing leaves the browser except the proxied calls to the gateway. Session data lives in sessionStorage and goes away with the tab.</p>
+  </header>
+
+  <section id="context">
+    <h2>Context</h2>
+    <p class="hint">Ids shared between panels. Paste the seeder's CONTEXT_JSON line to fill them in.</p>
+    <div id="context-fields"></div>
+    <textarea id="context-json" rows="2" cols="80" placeholder="CONTEXT_JSON: {...}"></textarea>
+    <div>
+      <button type="button" id="context-load">Load context JSON</button>
+      <button type="button" id="clear-session">Clear session data</button>
+    </div>
+  </section>
+
+  <main id="layout">
+    <div id="panels">
+      <section class="panel" id="panel-auth">
+        <h2>1. Auth</h2>
+        <p class="hint">Log in as each role (patient, provider, front_desk, admin). Expected: login 200 with decoded claims (jti, rjti, role, exp); Refresh stores a NEW refresh token and the old one replays as 401; Logout then the logged-out refresh and access tokens are 401; the upper-case email login is 200.</p>
+        <div data-panel="auth"></div>
+      </section>
+    </div>
+    <aside id="log-pane">
+      <h2>Log</h2>
+      <div class="log-tools">
+        <span><span id="log-count">0</span> entries, newest first</span>
+        <button type="button" id="log-clear">Clear</button>
+      </div>
+      <div id="log-entries"></div>
+    </aside>
+  </main>
+</body>
+</html>
