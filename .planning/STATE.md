@@ -4,10 +4,10 @@ current_phase: "02.1"
 current_phase_name: Week 1-2 mentor review remediation
 status: verifying
 stopped_at: Completed 02.1-13-docs-closeout-PLAN.md
-last_updated: "2026-10-25T10:02:00.211Z"
+last_updated: "2026-10-27T05:08:46.310Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 1e053da02935b5b5d690c8d94bc5025d6d832031
+state_head: 2fb042f73c09d04de395966a7e6b7070b9ff3dc8
 progress:
   total_phases: 5
   completed_phases: 1
@@ -197,6 +197,12 @@ Recent decisions affecting current work:
 - Phase 3 planning: Outbox relay mechanism (Debezium CDC vs. custom polling publisher) is an open architectural tradeoff per research — decide explicitly and document in the Architecture & Decision dashboard, not a default assumption.
 - Phase 1 planning: Decide auto-setup vs. production-shaped Temporal deployment (temporalio/auto-setup vs. temporalio/server + schema-setup) even though Temporal isn't wired until Phase 2 — affects the Phase 1 Docker Compose skeleton.
 - Deferred from 01.1-04: gateway request-body size cap (proxy.forward buffers whole body) and unauthenticated /metrics on public ingress (plan 01.1-09)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 261027-bfy | Phase 2.1 validation UI (tools/validation-ui: stdlib loopback proxy, 7-panel static page, demo seeder; live walkthrough partial, no admin creds) | 2026-10-27 | 2fb042f | Needs Review | [261027-bfy-phase-2-1-validation-ui-static-html-js-s](./quick/261027-bfy-phase-2-1-validation-ui-static-html-js-s/) |
 
 ### Roadmap Evolution
 
