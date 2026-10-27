@@ -581,3 +581,204 @@ def test_ui_scripts_run_in_a_fake_dom() -> None:
     result = subprocess.run([str(NODE), str(smoke), str(UI_DIR)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "smoke ok" in result.stdout
+
+
+# ------------------------------------------------------------------- README
+
+
+def test_readme_documents_run_prereqs_and_caveats() -> None:
+    readme = (UI_DIR / "README.md").read_text(encoding="utf-8")
+    for needle in (
+        "tools/validation-ui/serve.py",
+        "GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE",
+        "GATEWAY_RATE_LIMIT_DEFAULT_PER_MINUTE",
+        "seed_demo_users.py",
+        "bootstrap_admin.py",
+        "scheduling-schedule-change-poller",
+        "CONTEXT_JSON",
+        "127.0.0.1:8099",
+    ):
+        assert needle in readme, needle
+
+
+# ------------------------------------------------------------------- seeder
+
+import io
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+
+seed = _load("validation_ui_seed", "seed_demo_users.py")
+
+FAKE_ADMIN_EMAIL = "admin@example.com"
+FAKE_ADMIN_PASSWORD = "fake-admin-" + uuid.uuid4().hex
+
+
+class FakeGateway:
+    """Records every request; fresh ids for POSTs, a token pair for login, one slot for GET /api/slots."""
+
+    def __init__(self) -> None:
+        self.requests: list[Recorded] = []
+        gateway = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: object) -> None:
+                return None
+
+            def _reply(self, status: int, payload: Any) -> None:
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                gateway.requests.append(
+                    Recorded("POST", self.path, {k.lower(): v for k, v in self.headers.items()}, raw)
+                )
+                if self.path == "/api/auth/login":
+                    self._reply(200, {"access_token": "fake-admin-access", "refresh_token": "x", "token_type": "bearer"})
+                elif self.path == "/api/slots/generate":
+                    self._reply(200, {"created": 1, "considered": 1})
+                else:
+                    self._reply(201, {"id": str(uuid.uuid4())})
+
+            def do_GET(self) -> None:
+                gateway.requests.append(
+                    Recorded("GET", self.path, {k.lower(): v for k, v in self.headers.items()}, b"")
+                )
+                self._reply(
+                    200,
+                    [{"id": "slot-window-1", "start_time": "2026-01-05T05:30:00Z", "end_time": "2026-01-05T06:00:00Z", "status": "available"}],
+                )
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def fake_gateway() -> Iterator[FakeGateway]:
+    g = FakeGateway()
+    try:
+        yield g
+    finally:
+        g.close()
+
+
+def _seed_env() -> dict[str, str]:
+    return {"DEMO_ADMIN_EMAIL": FAKE_ADMIN_EMAIL, "DEMO_ADMIN_PASSWORD": FAKE_ADMIN_PASSWORD}
+
+
+def test_seed_requires_admin_env() -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("DEMO_", "BOOTSTRAP_"))}
+    result = subprocess.run(
+        [sys.executable, str(UI_DIR / "seed_demo_users.py")], env=env, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 1
+    assert "DEMO_ADMIN_EMAIL" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_seed_refuses_non_local_gateway_without_flag(stub: StubUpstream) -> None:
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith(("DEMO_", "BOOTSTRAP_"))}, **_seed_env()}
+    result = subprocess.run(
+        [sys.executable, str(UI_DIR / "seed_demo_users.py"), "--gateway-url", "http://example.org"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 2
+    assert "--allow-non-local" in result.stderr
+    assert FAKE_ADMIN_PASSWORD not in result.stderr + result.stdout
+    assert stub.requests == []
+
+
+def test_seed_help_documents_env() -> None:
+    result = subprocess.run(
+        [sys.executable, str(UI_DIR / "seed_demo_users.py"), "--help"], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0
+    for name in ("DEMO_ADMIN_EMAIL", "DEMO_ADMIN_PASSWORD", "DEMO_PASSWORD", "GATEWAY_URL"):
+        assert name in result.stdout
+
+
+def _aware(hour: int, minute: int) -> datetime:
+    return datetime(2026, 1, 5, hour, minute, tzinfo=timezone(timedelta(hours=5)))
+
+
+def test_seed_builds_world_against_fake_gateway(fake_gateway: FakeGateway) -> None:
+    out = io.StringIO()
+    code = seed.run(["--gateway-url", fake_gateway.url], now=_aware(10, 0), out=out, env=_seed_env())
+    assert code == 0, out.getvalue()
+    reqs = fake_gateway.requests
+    assert reqs[0].target == "/api/auth/login"
+    assert json.loads(reqs[0].body)["email"] == FAKE_ADMIN_EMAIL
+
+    def bodies(target: str) -> list[dict[str, Any]]:
+        return [json.loads(r.body) for r in reqs if r.target == target]
+
+    order = [(r.method, re.sub(r"[0-9a-f-]{36}", "{id}", r.target.split("?")[0])) for r in reqs]
+    expected_order = [
+        ("POST", "/api/auth/login"),
+        ("POST", "/api/clinics"),
+        ("POST", "/api/clinics/{id}/departments"),
+        ("POST", "/api/auth/admin/users"),
+        ("POST", "/api/providers"),
+        *[("POST", "/api/providers/{id}/availability")] * 7,
+        ("POST", "/api/auth/admin/users"),
+        ("POST", "/api/auth/register"),
+        ("POST", "/api/patients"),
+    ]
+    assert order[: len(expected_order)] == expected_order
+    assert order.count(("POST", "/api/patients")) == 1 + 6
+    tail = order[len(expected_order) + 6 :]
+    assert tail == [
+        ("POST", "/api/slots/generate"),
+        ("POST", "/api/providers"),
+        ("POST", "/api/providers/{id}/availability"),
+        ("POST", "/api/slots/generate"),
+        ("GET", "/api/slots"),
+    ]
+    users = bodies("/api/auth/admin/users")
+    assert [u["role"] for u in users] == ["provider", "front_desk"]
+    provider_profiles = bodies("/api/providers")
+    assert provider_profiles[0]["user_id"] and "user_id" not in provider_profiles[1]
+    patients = bodies("/api/patients")
+    assert patients[0]["user_id"] and all("user_id" not in p for p in patients[1:])
+    # window slot: 10:00 +05:00 -> earliest 10:05 -> 10:30-11:00 on a Monday
+    window_template = [json.loads(r.body) for r in reqs if "availability" in r.target][-1]
+    assert (window_template["start_time"], window_template["end_time"], window_template["day_of_week"]) == ("10:30:00", "11:00:00", 0)
+
+    assert all(r.headers.get("authorization") == "Bearer fake-admin-access" for r in reqs[1:])
+
+    stdout = out.getvalue()
+    register_password = bodies("/api/auth/register")[0]["password"]
+    assert register_password in stdout
+    assert FAKE_ADMIN_PASSWORD not in stdout
+    context_lines = [ln for ln in stdout.splitlines() if ln.startswith("CONTEXT_JSON: ")]
+    assert len(context_lines) == 1
+    context = json.loads(context_lines[0][len("CONTEXT_JSON: "):])
+    ui_fields = set(re.search(r'var CTX_FIELDS = \[(.*?)\];', (UI_DIR / "core.js").read_text(), re.S).group(1).replace('"', "").replace("\n", "").replace(" ", "").split(",")) - {""}
+    informational = {"window_provider_id", "window_slot_start", "window_slot_end"}
+    assert set(context) <= ui_fields | informational
+    assert context["slot_id"] == "slot-window-1"
+    flat = json.dumps(context)
+    assert "@" not in flat and register_password not in flat
+
+
+def test_seed_skips_window_slot_near_midnight(fake_gateway: FakeGateway) -> None:
+    out = io.StringIO()
+    code = seed.run(["--gateway-url", fake_gateway.url], now=_aware(23, 30), out=out, env=_seed_env())
+    assert code == 0
+    stdout = out.getvalue()
+    assert "WARNING" in stdout
+    assert len([r for r in fake_gateway.requests if r.target == "/api/providers"]) == 1
+    context = json.loads(next(ln for ln in stdout.splitlines() if ln.startswith("CONTEXT_JSON: "))[len("CONTEXT_JSON: "):])
+    assert "slot_id" not in context
