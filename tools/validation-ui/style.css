@@ -1,0 +1,112 @@
+:root {
+  color-scheme: light dark;
+  --border: #8884;
+  --muted: #888;
+  --ok: #1a7f37;
+  --bad: #c62828;
+  --warn: #b26a00;
+  --info: #1565c0;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 1rem 2rem;
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+h1 { font-size: 1.3rem; margin: 0.6rem 0 0.3rem; }
+h2 { font-size: 1.1rem; margin: 0 0 0.4rem; }
+h3 { font-size: 1rem; margin: 0.6rem 0 0.3rem; }
+h4 { margin: 0.4rem 0 0.2rem; }
+
+code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+
+.header-line { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+.notice, .hint, .muted { color: var(--muted); margin: 0.3rem 0; }
+.hint { font-size: 13px; }
+
+#context, .panel, #log-pane {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.6rem 0;
+}
+
+#context-fields { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin-bottom: 0.4rem; }
+.ctx-field { display: flex; flex-direction: column; font-size: 12px; }
+#context-json { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+
+#layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+#log-pane {
+  position: sticky;
+  top: 0.5rem;
+  max-height: calc(100vh - 1rem);
+  overflow: auto;
+}
+
+@media (max-width: 1100px) {
+  #layout { grid-template-columns: minmax(0, 1fr); }
+  #log-pane { position: static; max-height: none; }
+}
+
+.row { display: flex; flex-wrap: wrap; gap: 0.4rem 0.6rem; align-items: flex-end; margin: 0.35rem 0; }
+.field { display: flex; flex-direction: column; font-size: 12px; }
+label.inline { display: flex; align-items: center; gap: 0.3rem; font-size: 13px; }
+.sub-block { border-top: 1px dashed var(--border); padding-top: 0.4rem; margin-top: 0.5rem; }
+
+input, select, textarea, button { font: inherit; padding: 0.2rem 0.4rem; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.status { margin: 0.3rem 0; padding: 0.2rem 0.4rem; border-left: 3px solid var(--border); }
+.status.ok { border-color: var(--ok); color: var(--ok); }
+.status.bad { border-color: var(--bad); color: var(--bad); }
+.status.warn { border-color: var(--warn); color: var(--warn); }
+.status.info { border-color: var(--info); color: var(--info); }
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; font-size: 12px; margin: 0.3rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.15rem 0.4rem; text-align: left; vertical-align: top; word-break: break-all; }
+td.actions { white-space: nowrap; }
+td.actions button { margin-right: 0.2rem; font-size: 11px; padding: 0.1rem 0.3rem; }
+
+.kv-line { font-size: 12px; }
+.kv-key { font-weight: 600; margin-right: 0.3rem; }
+.kv-val { font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.claims-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.6rem; }
+
+pre {
+  margin: 0.15rem 0;
+  padding: 0.3rem;
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #8881;
+  border-radius: 4px;
+}
+
+.log-tools { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+.log-entry { border: 1px solid var(--border); border-radius: 4px; margin: 0.3rem 0; padding: 0.2rem 0.4rem; }
+.log-entry summary { cursor: pointer; word-break: break-all; }
+.log-entry summary.s2xx .log-status { color: var(--ok); }
+.log-entry summary.s3xx .log-status { color: var(--info); }
+.log-entry summary.s4xx .log-status { color: var(--warn); }
+.log-entry summary.s5xx .log-status { color: var(--bad); }
+.log-entry summary.s0 .log-status { color: var(--bad); font-weight: 700; }
+.log-label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.log-note { font-size: 12px; color: var(--muted); border-left: 3px solid var(--border); padding-left: 0.4rem; margin: 0.3rem 0; }
+.log-time { color: var(--muted); font-size: 11px; }
+
+.badge { display: inline-block; padding: 0 0.4rem; border-radius: 3px; font-size: 11px; font-weight: 700; color: #fff; }
+.badge.pass { background: var(--ok); }
+.badge.fail { background: var(--bad); }
+.badge[hidden] { display: none; }

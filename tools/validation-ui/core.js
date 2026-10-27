@@ -132,6 +132,17 @@
   ];
   var ctxState = {};
   var ctxInputs = {};
+  var ctxListeners = [];
+
+  function notifyCtx(name) {
+    ctxListeners.forEach(function (fn) {
+      try {
+        fn(name);
+      } catch (e) {
+        /* a listener error must not break the others */
+      }
+    });
+  }
 
   function loadCtxState() {
     var stored = VUI.store.get(KEY_CTX, {});
@@ -153,9 +164,13 @@
       }
       ctxState[name] = value === null || value === undefined ? "" : String(value);
       VUI.store.set(KEY_CTX, ctxState);
-      if (ctxInputs[name]) {
+      if (ctxInputs[name] && ctxInputs[name].value !== ctxState[name]) {
         ctxInputs[name].value = ctxState[name];
       }
+      notifyCtx(name);
+    },
+    onChange: function (fn) {
+      ctxListeners.push(fn);
     },
   };
 
@@ -171,6 +186,7 @@
             input: function () {
               ctxState[name] = input.value;
               VUI.store.set(KEY_CTX, ctxState);
+              notifyCtx(name);
             },
           },
         });

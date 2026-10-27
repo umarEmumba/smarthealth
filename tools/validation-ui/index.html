@@ -4,8 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SmartHealth Phase 2.1 validation UI</title>
+  <link rel="stylesheet" href="/style.css">
   <script src="/lib.js" defer></script>
   <script src="/core.js" defer></script>
+  <script src="/panels_booking.js" defer></script>
+  <script src="/panels_ops.js" defer></script>
 </head>
 <body>
   <header id="app-header">
@@ -37,6 +40,36 @@
         <h2>1. Auth</h2>
         <p class="hint">Log in as each role (patient, provider, front_desk, admin). Expected: login 200 with decoded claims (jti, rjti, role, exp); Refresh stores a NEW refresh token and the old one replays as 401; Logout then the logged-out refresh and access tokens are 401; the upper-case email login is 200.</p>
         <div data-panel="auth"></div>
+      </section>
+      <section class="panel" id="panel-me">
+        <h2>2. Me</h2>
+        <p class="hint">Act as a patient. Expected: 200 for a patient, 403 for every other role, 404 without a linked profile.</p>
+        <div data-panel="me"></div>
+      </section>
+      <section class="panel" id="panel-lists">
+        <h2>3. Lists</h2>
+        <p class="hint">Admin: clinics, departments, providers. front_desk or admin: patients. Expected: X-Total-Count visible, paging with Prev/Next, limit 0 or 500 gives 422.</p>
+        <div data-panel="lists"></div>
+      </section>
+      <section class="panel" id="panel-booking">
+        <h2>4. Booking</h2>
+        <p class="hint">Find slots, book with an Idempotency-Key, replay returns the same appointment id, poll pending to confirmed, and a past slot is refused with 422.</p>
+        <div data-panel="booking"></div>
+      </section>
+      <section class="panel" id="panel-visit">
+        <h2>5. Visit state machine</h2>
+        <p class="hint">Act as front_desk. Check-in 201, then Cancel and Reschedule are 409, Start, Complete, and the appointment ends completed.</p>
+        <div data-panel="visit"></div>
+      </section>
+      <section class="panel" id="panel-provider">
+        <h2>6. Provider view</h2>
+        <p class="hint">Act as the provider. Only own appointments; another provider's appointment and an unknown id return the identical 404.</p>
+        <div data-panel="provider"></div>
+      </section>
+      <section class="panel" id="panel-schedule">
+        <h2>7. Schedule change</h2>
+        <p class="hint">Flagged appointments after an availability template change (needs the schedule-change poller unpaused).</p>
+        <div data-panel="schedule"></div>
       </section>
     </div>
     <aside id="log-pane">

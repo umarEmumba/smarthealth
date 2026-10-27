@@ -417,3 +417,167 @@ def test_cli_entrypoint_reads_gateway_url_env_and_port(stub: StubUpstream) -> No
         for stream in (proc.stdout, proc.stderr):
             if stream:
                 stream.close()
+
+
+# ------------------------------------------------------------ JS contracts
+
+import base64
+import shutil
+
+NODE = shutil.which("node")
+JS_FILES = sorted(UI_DIR.glob("*.js"))
+
+# Names of the HTML-parsing DOM sinks, assembled so this file does not itself
+# trip a repository-wide scan for them.
+_BANNED_SINKS = [
+    "inner" + "HTML",
+    "outer" + "HTML",
+    "insertAdjacent" + "HTML",
+    "document" + r"\.write",
+    r"\beval\s*\(",
+    r"\bnew\s+Function\b",
+    r"\bFunction\s*\(",
+    "src" + "doc",
+    r"setAttribute\(\s*['\"]on",
+]
+
+
+def test_js_has_no_html_injection_sinks() -> None:
+    files = [*JS_FILES, UI_DIR / "index.html"]
+    assert len(JS_FILES) == 4
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for pattern in _BANNED_SINKS:
+            assert not re.search(pattern, text), f"{path.name} matches banned sink {pattern!r}"
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+    for match in re.finditer(r"<script\b([^>]*)>(.*?)</script>", html, re.S):
+        assert "src=" in match.group(1), "inline script"
+        assert match.group(2).strip() == "", "inline script body"
+    assert not re.search(r"\sstyle\s*=", html), "style attribute in index.html"
+    assert not re.search(r"\son[a-z]+\s*=", html), "event-handler attribute in index.html"
+
+
+def test_js_api_paths_match_gateway_route_table() -> None:
+    from services.gateway.routing import ROUTE_TABLE
+
+    prefixes = {prefix for prefix, _service in ROUTE_TABLE}
+    combined = ""
+    for path in JS_FILES:
+        text = path.read_text(encoding="utf-8")
+        combined += text
+        for literal in re.findall(r"/api/[A-Za-z0-9_-]+", text):
+            assert literal in prefixes, f"{path.name}: {literal} is not a gateway route prefix"
+    assert "/internal" not in combined
+    for needed in (
+        "/api/auth/login",
+        "/api/auth/refresh",
+        "/api/auth/logout",
+        "/api/patients/me",
+        "/api/patients",
+        "/api/providers",
+        "/api/clinics",
+        "/api/slots",
+        "/api/slots/generate",
+        "/api/appointments",
+        "/api/visits",
+        "/availability",
+        "/deactivate",
+        "/cancel",
+        "/reschedule",
+    ):
+        assert needed in combined, needed
+
+
+def test_no_external_urls_or_token_literals() -> None:
+    for path in sorted(UI_DIR.iterdir()):
+        if path.suffix not in {".js", ".html", ".css", ".py", ".md"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "eyJ" not in text, f"{path.name} contains a JWT-looking literal"
+        if path.suffix in {".js", ".html", ".css"}:
+            for host in re.findall(r"https?://([A-Za-z0-9.\-\[\]:]+)", text):
+                assert re.match(r"^(localhost|127\.0\.0\.1)(:\d+)?$", host), f"{path.name}: external host {host}"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not on PATH")
+@pytest.mark.parametrize("js", JS_FILES, ids=lambda p: p.name)
+def test_js_syntax_valid(js: Path) -> None:
+    result = subprocess.run([str(NODE), "--check", str(js)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+_LIB_SCRIPT = r"""
+const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const token = process.argv[3];
+const ctx = vm.createContext({
+  atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+  TextDecoder, crypto: require('crypto').webcrypto, Date, Math, console,
+});
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+const V = ctx.VUI;
+const claims = V.decodeJwtClaims(token);
+assert.strictEqual(claims.name, 'Zoë Ünïcode');
+assert.strictEqual(claims.role, 'patient');
+for (const bad of ['garbage', 'a.b', 'a.!!!.c', '', null, undefined, 42, 'x.' + Buffer.from('[1]').toString('base64url') + '.z'])
+  assert.strictEqual(V.decodeJwtClaims(bad), null);
+assert.strictEqual(V.buildQuery({a: '1', b: '', c: null, d: undefined, e: 'x+y z', f: 0}), 'a=1&e=x%2By%20z&f=0');
+assert.strictEqual(V.buildQuery({}), '');
+const seen = new Set();
+for (let i = 0; i < 500; i++) {
+  const k = V.newIdempotencyKey();
+  assert.ok(/^[A-Za-z0-9._:-]{1,128}$/.test(k), k);
+  seen.add(k);
+}
+assert.strictEqual(seen.size, 500);
+const j = (o) => JSON.stringify(o);
+assert.strictEqual(j(V.pageState(0, 5, 0, 0)), j({from: 0, to: 0, hasPrev: false, hasNext: false}));
+assert.strictEqual(j(V.pageState(5, 5, 2, 7)), j({from: 6, to: 7, hasPrev: true, hasNext: false}));
+assert.strictEqual(j(V.pageState(0, 5, 5, 12)), j({from: 1, to: 5, hasPrev: false, hasNext: true}));
+assert.strictEqual(V.pageState(0, 5, 5, null).hasNext, true);
+assert.strictEqual(V.pageState(0, 5, 3, null).hasNext, false);
+assert.strictEqual(V.sameResponse({status: 404, text: 'a'}, {status: 404, text: 'a'}), true);
+assert.strictEqual(V.sameResponse({status: 404, text: 'a'}, {status: 404, text: 'b'}), false);
+assert.strictEqual(V.sameResponse({status: 404, text: 'a'}, {status: 403, text: 'a'}), false);
+assert.strictEqual(V.uppercaseEmail('Ab@x.com'), 'AB@X.COM');
+assert.strictEqual(V.localDateString(new Date(2026, 0, 5, 23, 59)), '2026-01-05');
+assert.strictEqual(V.localDateString(new Date(2026, 10, 30)), '2026-11-30');
+assert.strictEqual(V.isUuid(V.newUuid()), true);
+assert.strictEqual(V.isUuid('nope'), false);
+assert.strictEqual(V.isoOffset(1000, 0), '1970-01-01T00:00:01.000Z');
+const e = V.describeExp(100, 40000);
+assert.strictEqual(e.secondsRemaining, 60);
+assert.strictEqual(V.describeExp('x').iso, null);
+console.log('lib ok');
+"""
+
+
+def _jwt_with_unicode() -> str:
+    def b64(obj: dict[str, Any]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj, ensure_ascii=False).encode()).decode().rstrip("=")
+
+    return f"{b64({'alg': 'none'})}.{b64({'name': 'Zoë Ünïcode', 'role': 'patient'})}.sig"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not on PATH")
+def test_lib_helpers_in_node(tmp_path: Path) -> None:
+    script = tmp_path / "lib_check.js"
+    script.write_text(_LIB_SCRIPT, encoding="utf-8")
+    result = subprocess.run(
+        [str(NODE), str(script), str(UI_DIR / "lib.js"), _jwt_with_unicode()],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "lib ok" in result.stdout
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not on PATH")
+def test_ui_scripts_run_in_a_fake_dom() -> None:
+    """Runtime smoke (fake DOM + stub fetch): all scripts load, every panel
+    builds, the safe builder refuses unsafe attributes, and login / refresh /
+    replay / me / list flows log PASS badges. Not a visual browser check."""
+    smoke = Path(__file__).resolve().parent / "fake_dom_smoke.js"
+    result = subprocess.run([str(NODE), str(smoke), str(UI_DIR)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "smoke ok" in result.stdout
