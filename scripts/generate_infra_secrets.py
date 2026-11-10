@@ -77,7 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     os.makedirs(output_dir, mode=0o700, exist_ok=True)
-    os.chmod(output_dir, 0o700)
+    # 0o700 is owner-only (the stricter choice); the rule flags any value above 0o644.
+    os.chmod(output_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
 
     for name, template in SECRET_FILES.items():
         path = paths[name]
