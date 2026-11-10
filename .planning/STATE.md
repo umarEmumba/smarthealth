@@ -184,12 +184,11 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Phase 2 verification (deferred at the user's request): run the full regression
-  `pytest tests -m "not e2e"` (background + poll, ~17+ min) and `SMARTHEALTH_E2E_REQUIRE_STACK=1 pytest tests/e2e -m e2e`
-  with the stack up (gateway with `GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000`).
-- Write the deferred tests listed under "Deferred tests" in 02-11-SUMMARY.md and 02-12-SUMMARY.md (and any earlier SUMMARY that lists them).
-- 02-12 Task 5: human visual check of docs/architecture-dashboard.html (offline, narrow width), README demo run.
-- Semgrep has not been run in the executor environment (not installed).
+- Phase 2 verification: DONE 2026-11-10 (see `.planning/phases/02-scheduling-service-workflow/02-CLOSEOUT-RUN.md`): full regression 1349 passed (7 trace tests failed only because the script set `OTEL_SDK_DISABLED`; they pass without it, script fixed), e2e 9 passed, Semgrep run (13 findings triaged: 8 Dockerfile missing-USER accepted for now, 5 false positives).
+- Deferred tests from 02-11/02-12: closed. The 8 tests from 02-11 already existed (quick 261013-mhu) and pass on current code; a gateway reschedule e2e was added (quick 261110-gvd). Only the containerized worker-restart e2e is not written.
+- 02-12 Task 5 human visual check of docs/architecture-dashboard.html: done by the user 2026-11-10.
+- Temporal Schedule `scheduling-schedule-change-poller` is intentionally left paused (user decision 2026-11-10); unpause before any demo or Phase 3 work that relies on schedule-change propagation.
+- Production hardening deferred: add a non-root `USER` to the service Dockerfiles (Semgrep missing-user x8).
 
 ### Blockers/Concerns
 
@@ -203,6 +202,7 @@ Recent decisions affecting current work:
 | # | Description | Date | Commit | Status | Directory |
 |---|-------------|------|--------|--------|-----------|
 | 261027-bfy | Phase 2.1 validation UI (tools/validation-ui: stdlib loopback proxy, 7-panel static page, demo seeder; live walkthrough partial, no admin creds) | 2026-10-27 | 2fb042f | Needs Review | [261027-bfy-phase-2-1-validation-ui-static-html-js-s](./quick/261027-bfy-phase-2-1-validation-ui-static-html-js-s/) |
+| 261110-gvd | Phase 2 closeout: re-verified the 8 deferred 02-11 tests (already present, pass) and added a gateway reschedule e2e | 2026-11-10 | 54e6a22 | Complete | [261110-gvd-phase-2-closeout-write-deferred-tests-fr](./quick/261110-gvd-phase-2-closeout-write-deferred-tests-fr/) |
 
 ### Roadmap Evolution
 

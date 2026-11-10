@@ -13,7 +13,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 - [x] **Phase 1: Foundation + Core Services** - Infra skeleton, identity/RBAC, patient/provider/clinic/department management, audit trail, tracing conventions, and dashboard v1 (completed 2026-09-09)
 - [x] **Phase 1.1: Microservice Re-architecture** (INSERTED) - Split the Phase 1 monolith into independently deployable services with their own databases, an API gateway, and RS256/JWKS token verification (week-1 mentor feedback) (completed 2026-10-12)
-- [ ] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check
+- [x] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check (completed 2026-11-10)
 - [ ] **Phase 2.1: Week 1-2 mentor review remediation** (INSERTED) - Appointment state machine and check-in window, provider schedule-change propagation, post-commit saga safety, reconcilers, Week 1 carry-overs, quantified NFRs and a load test (week 1-2 mentor feedback)
 - [ ] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout
 
@@ -251,6 +251,6 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
-| 2. Scheduling + Service Workflow | 12/12 | Executed — verification pending | - |
+| 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | In Progress|  |
 | 3. Event-Driven System + Observability | 0/TBD | Not started | - |

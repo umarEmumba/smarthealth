@@ -148,7 +148,7 @@ coverage:
 2. **Task 2: Real-stack flows + demo** - `6b669b2` (test)
 3. **Task 3: README, architecture, ERD** - `8aa403b` (docs)
 4. **Task 4: Dashboard v3 + requirement-coverage gate** - `b08e5a3` (docs)
-5. **Task 5: Human visual check** - PENDING human review (no commit)
+5. **Task 5: Human visual check** - DONE: the user visually checked `docs/architecture-dashboard.html` on 2026-11-10 (no commit)
 
 **Plan metadata:** see the `docs(02-12): complete plan summary` commit
 
@@ -230,4 +230,4 @@ At the user's request (UPDATE 2):
 - Task 4: `pytest tests/docs -q`: 24 passed. Acceptance: `<svg` count 4; external script/link count 0; `v3 · Phase 2` count 2; "Hand a reminder job to Celery" count 0; quoted requirement IDs 15. HTML of all three pages parses (html.parser).
 - Task 1 acceptance greps: each worker module 1, each heartbeat path 1, `SERVICE_CLIENT_SECRETS_DIR` 1, prometheus jobs 2, healthcheck script mentions scheduling-worker, env-example secret-shape grep prints nothing.
 - Semgrep: not run (not installed in executor environment).
-- Task 5 (manual dashboard/docs visual check, demo from README): **pending human review**. No headless browser exists in this environment, so the SVGs were checked only structurally.
+- Task 5 (manual dashboard/docs visual check): **done by the user on 2026-11-10**. The README demo is covered by the passing `test_demo_prints_one_winner` e2e (closeout run, 9 passed).
