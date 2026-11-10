@@ -24,6 +24,14 @@ class EventType:
 
     APPOINTMENT_BOOKED: Final = "appointment.booked"
     APPOINTMENT_CANCELLED: Final = "appointment.cancelled"
+    APPOINTMENT_RESCHEDULED: Final = "appointment.rescheduled"
+    APPOINTMENT_CHECKED_IN: Final = "appointment.checked_in"
+    APPOINTMENT_COMPLETED: Final = "appointment.completed"
+    APPOINTMENT_NO_SHOW: Final = "appointment.no_show"
+    VISIT_COMPLETED: Final = "visit.completed"
+    PROVIDER_SCHEDULE_CHANGED: Final = "provider.schedule_changed"
+    PATIENT_REGISTERED: Final = "patient.registered"
+    PATIENT_DEACTIVATED: Final = "patient.deactivated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +61,14 @@ EVENT_CATALOG: dict[str, EventSpec] = {
     for spec in (
         _spec(EventType.APPOINTMENT_BOOKED, "appointment", "AppointmentBooked"),
         _spec(EventType.APPOINTMENT_CANCELLED, "appointment", "AppointmentCancelled"),
+        _spec(EventType.APPOINTMENT_RESCHEDULED, "appointment", "AppointmentRescheduled"),
+        _spec(EventType.APPOINTMENT_CHECKED_IN, "appointment", "AppointmentCheckedIn"),
+        _spec(EventType.APPOINTMENT_COMPLETED, "appointment", "AppointmentCompleted"),
+        _spec(EventType.APPOINTMENT_NO_SHOW, "appointment", "AppointmentNoShow"),
+        _spec(EventType.VISIT_COMPLETED, "visit", "VisitCompleted"),
+        _spec(EventType.PROVIDER_SCHEDULE_CHANGED, "provider", "ProviderScheduleChanged"),
+        _spec(EventType.PATIENT_REGISTERED, "patient", "PatientRegistered"),
+        _spec(EventType.PATIENT_DEACTIVATED, "patient", "PatientDeactivated"),
     )
 }
 
