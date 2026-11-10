@@ -106,7 +106,7 @@ Decisions honoured: D-12 (event-flow diagrams for booking, cancel/reschedule, vi
   <files>docs/architecture-dashboard.html, tests/docs/test_dashboard.py, .planning/PROJECT.md</files>
   <behavior>
     - `flows` covers cancel/reschedule, visit lifecycle, notifications and reminders, and analytics, each as an accessible SVG or a flow block
-    - `decisions` has the nine Phase 3 cards with alternatives and reasoning, including the cost accepted for CDC, and the EVENT-04 and Connect image deviations with the user's answers from the plan 03-01 SUMMARY
+    - `decisions` has the nine Phase 3 cards with alternatives and reasoning, including the cost accepted for CDC, and the EVENT-04 and Connect image deviations with the user's answers from the plan 03-01 SUMMARY; the Q&A and a decision card state that analytics start at cutover (CONTEXT D-13) and that the event claim is scoped to the D-07 set
     - `qa` answers the Phase 3 questions listed in the must-haves (including "what if a real SMS/email provider has no idempotency key?") and keeps the phrase "not yet verified" for the deferred k6 profiles
     - the roadmap has a `Phase 3 ·` block; Phase 1.1, 2 and 2.1 blocks remain
     - the open-risks callout lists the Phase 3 limitations from docs/architecture.md

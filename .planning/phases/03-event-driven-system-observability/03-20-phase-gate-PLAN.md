@@ -124,7 +124,7 @@ Live stack rules: Task 2 recreates the application containers from the committed
     The per-task automated check below reads the recorded logs and runs the fast docs tests; it does not re-run the long suites.
   </action>
   <verify>
-    <automated>grep -qE "[0-9]+ passed" .planning/phases/03-event-driven-system-observability/closeout-logs/non-e2e.txt && grep -qE "[0-9]+ passed" .planning/phases/03-event-driven-system-observability/closeout-logs/e2e.txt && ! grep -qE "[0-9]+ (failed|error)" .planning/phases/03-event-driven-system-observability/closeout-logs/non-e2e.txt .planning/phases/03-event-driven-system-observability/closeout-logs/e2e.txt && .venv/bin/python -m pytest tests/docs -q</automated>
+    <automated>grep -qE "[0-9]+ passed" .planning/phases/03-event-driven-system-observability/closeout-logs/non-e2e.txt && grep -qE "[0-9]+ passed" .planning/phases/03-event-driven-system-observability/closeout-logs/e2e.txt && ! tail -n 1 .planning/phases/03-event-driven-system-observability/closeout-logs/non-e2e.txt | grep -qE "[0-9]+ (failed|error)" && ! tail -n 1 .planning/phases/03-event-driven-system-observability/closeout-logs/e2e.txt | grep -qE "[0-9]+ (failed|error)" && .venv/bin/python -m pytest tests/docs -q</automated>
     <fails_when>A gate log is missing, has no pytest "passed" summary, reports any failed or errored test, or the docs suite exits non-zero (finishes in about 30 s).</fails_when>
   </verify>
   <acceptance_criteria>
