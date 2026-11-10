@@ -241,7 +241,51 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   4. Every service exposes Prometheus metrics visible in Grafana dashboards for critical flows, and a single booking request can be traced end-to-end in Jaeger across HTTP → Temporal workflow/activity → Kafka → Celery as one connected trace (not disconnected fragments), with structured logs available for booking, availability sync, billing, notifications, and background workers.
   5. The Architecture & Decision dashboard shows the key data/event flows (booking, cancel/reschedule, visit lifecycle, notifications, analytics) and includes a prepared evaluation Q&A section, complete and current as of this phase's close.
 
-**Plans**: TBD
+Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-02, 03-07, 03-13).
+
+**Plans:** 15 plans (waves ordered by file ownership; one plan per wave edits `infra/docker-compose.yml`)
+
+**Wave 1**
+
+- [ ] 03-01-event-foundation-PLAN.md — package legitimacy checkpoint, D-05 event-contract decision, event catalogue, Avro schemas, strict registry client, outbox helper, infra secrets (EVENT-01, EVENT-02, OBS-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03-02-cdc-pipeline-PLAN.md — TRACER: wal_level=logical, Debezium Connect, four outbox connectors with task-state checks, topics, schema-init, Connect stop/kill durability (EVENT-01, EVENT-02)
+- [ ] 03-03-consumer-base-PLAN.md — shared consumer: child-span tracing, commit after effect, DLQ, outage retry, metrics, processed-event claims (EVENT-03, EVENT-05, OBS-02)
+- [ ] 03-04-notification-delivery-PLAN.md — Celery on RabbitMQ 4.3, one send task with dedupe, retry, DLX dead-lettering, closed-appointment guard (EVENT-04, EVENT-05, NOTIF-04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03-05-scheduling-producer-PLAN.md — six appointment events through the outbox, accept path untouched, kill-after-commit proof, k6 smoke (EVENT-01, EVENT-02, NOTIF-01)
+- [ ] 03-06-patient-provider-producer-PLAN.md — patient.registered/deactivated and provider.schedule_changed, PHI-free (EVENT-01, ANLY-01)
+- [ ] 03-07-visit-outbox-downstream-PLAN.md — visit.completed via outbox, visit-downstream consumer, D-03 kill-between-commit-and-publish proof (EVENT-02, EVENT-03)
+- [ ] 03-08-reminder-workflows-PLAN.md — Temporal ReminderWorkflow and FollowUpReminderWorkflow enqueueing the Celery send, recorded histories (NOTIF-02, NOTIF-03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 03-09-analytics-projections-PLAN.md — Analytics service: event-derived projections, five metrics API, replay rebuild, isolation (ANLY-01..06)
+- [ ] 03-10-visit-sweeper-retirement-PLAN.md — delete the live sweeper Schedule, tombstone, backfill (D-03)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 03-11-notification-trigger-PLAN.md — notification-trigger consumer, Compose notification processes, live DLQ proofs (NOTIF-01..04, EVENT-04, EVENT-05)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 03-12-metrics-dashboards-nfr-PLAN.md — every process scraped, Temporal SDK metrics, provisioned Grafana dashboards, NFR histograms, k6 smoke on the finished stack (OBS-01)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 03-13-e2e-guarantees-PLAN.md — one Jaeger trace across HTTP/Temporal/Kafka/Celery, forced redelivery with one effect, structured logs (OBS-02, OBS-03, EVENT-03)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [ ] 03-14-docs-closeout-PLAN.md — README, architecture, ERD, NFR docs for Phase 3 with a docs-to-code test (DASH-03, DASH-04)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [ ] 03-15-dashboard-closeout-PLAN.md — dashboard flows/decisions/Q&A, PHASE3_TRACE, full regression, end-of-phase human checks (DASH-03, DASH-04)
 
 ## Progress
 
@@ -253,4 +297,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 0/TBD | Not started | - |
+| 3. Event-Driven System + Observability | 0/15 | Planned | - |

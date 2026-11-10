@@ -9,7 +9,7 @@ created: "2026-11-10"
 
 # Phase 3 — Validation Strategy
 
-> Per-phase validation contract for feedback sampling during execution. Plan and wave columns are filled in once plans exist; the commands come from 03-RESEARCH.md "Validation Architecture".
+> Per-phase validation contract for feedback sampling during execution. Task ids are `<plan>-<task>` from the 15 PLAN files (filled by the planner 2026-11-10); every task carries an automated command, and each test file is created by the task that needs it (no separate Wave 0 plan).
 
 ---
 
@@ -39,23 +39,53 @@ created: "2026-11-10"
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 03-TBD-01 | TBD | TBD | EVENT-01 | PHI-free events / no secrets | Every `.avsc` registers and is BACKWARD compatible; no PHI fields | unit/integration | `pytest tests/events/test_schemas.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-02 | TBD | TBD | EVENT-02 | PHI-free events / no secrets | Transition + outbox row commit atomically; rollback leaves no row; double call is a no-op (uuid5 PK) | integration | `pytest tests/scheduling/test_outbox.py tests/visit/test_outbox.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-03 | TBD | TBD | EVENT-02 | PHI-free events / no secrets | Commit then kill, Connect stop/start: delivered once in order | e2e | `pytest tests/e2e/test_phase3_outbox_cdc.py -m e2e` | ❌ W0 | ⬜ pending |
-| 03-TBD-04 | TBD | TBD | EVENT-03 | PHI-free events / no secrets | Forced redelivery yields one effect per consumer | integration + e2e | `pytest tests/events/test_consumer_idempotency.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-05 | TBD | TBD | EVENT-04 | PHI-free events / no secrets | Task runs on the worker via RabbitMQ (eager mode unit; real broker e2e) | unit + e2e | `pytest tests/notification/test_tasks.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-06 | TBD | TBD | EVENT-05 | PHI-free events / no secrets | Retry with backoff; poison -> `notifications.dlq`; Kafka poison -> DLQ topic | integration | `pytest tests/notification/test_dlq.py tests/events/test_consumer_dlq.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-07 | TBD | TBD | NOTIF-01 | PHI-free events / no secrets | booked/cancelled/rescheduled events produce one task each; booking transaction unaffected | integration | `pytest tests/notification/test_triggers.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-08 | TBD | TBD | NOTIF-02/03 | PHI-free events / no secrets | Reminder fires at lead, cancel stops it, reschedule moves it, replay of recorded history | workflow (time-skipping) | `pytest tests/workflows/test_reminder_workflow.py tests/workflows/test_replay_reminder.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-09 | TBD | TBD | NOTIF-04 | PHI-free events / no secrets | Same task twice sends once (Mongo unique index) | unit | `pytest tests/notification/test_dedupe.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-10 | TBD | TBD | ANLY-01..05 | PHI-free events / no secrets | Projection math for each metric from a fixed event sequence (incl. out-of-order, D-10 definition) | unit/integration | `pytest tests/analytics/test_projections.py tests/analytics/test_api.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-11 | TBD | TBD | ANLY-06 | PHI-free events / no secrets | Analytics process never imports/queries an OLTP DB; replay rebuilds identical tables | integration | `pytest tests/analytics/test_replay_rebuild.py tests/libs/test_service_isolation.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-12 | TBD | TBD | OBS-01 | PHI-free events / no secrets | Every scrape target answers `/metrics`; dashboards JSON parse; provisioning files reference existing UIDs | unit + e2e | `pytest tests/infra/test_grafana_provisioning.py tests/e2e/test_phase3_metrics.py` | ❌ W0 | ⬜ pending |
-| 03-TBD-13 | TBD | TBD | OBS-02 | PHI-free events / no secrets | One trace id across HTTP -> Temporal -> outbox -> consumer -> Celery (in-memory exporter; real Jaeger query in e2e) | integration + e2e | `pytest tests/events/test_trace_chain.py tests/e2e/test_phase3_trace.py` | ❌ W0 | ⬜ pending |
-| 03-TBD-14 | TBD | TBD | OBS-03 | PHI-free events / no secrets | Log lines for each flow carry `trace_id`, no PHI | unit | `pytest tests/libs/test_observability.py -x` | ❌ W0 | ⬜ pending |
-| 03-TBD-15 | TBD | TBD | D-03 | PHI-free events / no secrets | Visit completion starts downstream via consumer; sweeper Schedule absent; backfill | integration + e2e | `pytest tests/visit/test_downstream.py tests/e2e/test_phase3_visit_downstream.py` | ❌ W0 | ⬜ pending |
-| 03-TBD-16 | TBD | TBD | D-04 | PHI-free events / no secrets | `smoke` k6 profile still passes; histograms exist | e2e | `tests/e2e/test_loadtest_smoke.py` | ❌ W0 | ⬜ pending |
-| 03-TBD-17 | TBD | TBD | DASH-03/04 | PHI-free events / no secrets | New sections/diagrams/Q&A present, self-contained | static | `pytest tests/docs -x` | ❌ W0 | ⬜ pending |
+| 03-01-01 | 03-01 | 1 | (package gate) | T-3-SC | Pins installed only after human approval | checkpoint | `.venv/bin/python -m pip --version` | ❌ created in task | ⬜ pending |
+| 03-01-02 | 03-01 | 1 | EVENT-01 | T-3-02 | D-05 contract confirmed before any schema exists | checkpoint | `test -f .../03-CONTEXT.md` | ❌ created in task | ⬜ pending |
+| 03-01-03 | 03-01 | 1 | EVENT-02, OBS-02 | T-3-01, T-3-04 | Outbox row atomic, uuid5 no-op repeat, traceparent from active span, never commits | integration | `.venv/bin/python -m pytest tests/events/test_outbox_roundtrip.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-01-04 | 03-01 | 1 | EVENT-01 | T-3-01, T-3-03 | 10 PHI-free schemas, BACKWARD registration CLI, 0600 gitignored secrets | unit | `.venv/bin/python -m pytest tests/events tests/tools/test_generate_infra_secrets.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-02-01 | 03-02 | 2 | EVENT-01, EVENT-02 | T-3-05, T-3-06, T-3-10 | Probe row -> Debezium -> Kafka with key/headers, Avro decodes; no :8083 host port | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_outbox_cdc.py -m e2e -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-02-02 | 03-02 | 2 | EVENT-02 | T-3-07, T-3-08 | Four connector TASKS RUNNING; debezium role reads outbox only | static + e2e | `.venv/bin/python -m pytest tests/infra/test_cdc_config.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-02-03 | 03-02 | 2 | EVENT-02 | T-3-09 | Connect stop/start in order, hard kill no loss (duplicates counted), snapshot covers pre-start rows | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_outbox_cdc.py -m e2e -x -q` | ❌ created in task | ⬜ pending |
+| 03-03-01 | 03-03 | 2 | OBS-02 | T-3-12 | Consumer span is CHILD of producer span; commit after effect; one persistent loop | integration | `.venv/bin/python -m pytest tests/events/test_consumer_base.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-03-02 | 03-03 | 2 | EVENT-05 | T-3-11, T-3-13, T-3-14 | Poison -> DLQ with type-only headers; transient never dead-lettered; failed DLQ write never commits | integration | `.venv/bin/python -m pytest tests/events/test_consumer_dlq.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-03-03 | 03-03 | 2 | EVENT-03 | T-3-12 | Forced redelivery -> one DB effect (claim in same txn) | integration | `.venv/bin/python -m pytest tests/events/test_consumer_idempotency.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-04-01 | 03-04 | 2 | EVENT-04, OBS-02 | T-3-15, T-3-16 | Send runs on threads worker over live RabbitMQ, same trace, json only | integration | `.venv/bin/python -m pytest tests/notification/test_tasks.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-04-02 | 03-04 | 2 | NOTIF-04 | T-3-18 | Duplicate send -> one provider call; retry with backoff; closed reminder skipped | integration | `.venv/bin/python -m pytest tests/notification/test_dedupe.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-04-03 | 03-04 | 2 | EVENT-05 | T-3-17, T-3-19 | Exhausted/invalid -> Reject(requeue=False) -> notifications.dlq; least-privilege broker user | integration | `.venv/bin/python -m pytest tests/notification -x -q` | ❌ created in task | ⬜ pending |
+| 03-05-01 | 03-05 | 3 | EVENT-01, OBS-02 | T-3-20 | Gateway booking -> appointment.booked on Kafka with request trace id, no coverage_ref | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_booking_events.py -m e2e -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-05-02 | 03-05 | 3 | EVENT-02, ANLY-02, ANLY-04 | T-3-20, T-3-21 | Six transitions atomic; accept path writes nothing; PHI/coverage_ref absent | integration | `.venv/bin/python -m pytest tests/scheduling/test_outbox.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-05-03 | 03-05 | 3 | EVENT-02, NOTIF-01 | T-3-22 | Kill committing worker / Connect down -> event still delivered; k6 smoke passes | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_booking_events.py -m e2e -x -q` | ❌ created in task | ⬜ pending |
+| 03-06-01 | 03-06 | 3 | EVENT-01, ANLY-01 | T-3-24 | patient.registered on Kafka with no PHI bytes | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_registry_events.py -m e2e -k registered -x -q` | ❌ created in task | ⬜ pending |
+| 03-06-02 | 03-06 | 3 | EVENT-02, ANLY-01 | T-3-24, T-3-25 | patient events atomic, repeat no-op, PHI absent at the table | integration | `.venv/bin/python -m pytest tests/patient -x -q` | ❌ created in task | ⬜ pending |
+| 03-06-03 | 03-06 | 3 | EVENT-01 | T-3-26 | provider.schedule_changed with each feed row; feed unchanged | integration + e2e | `.venv/bin/python -m pytest tests/provider -x -q` | ❌ created in task | ⬜ pending |
+| 03-07-01 | 03-07 | 3 | EVENT-01, EVENT-02 | T-3-27 | Visit completion -> outbox -> visit-downstream consumer starts workflow within 15 s | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_visit_downstream.py -m e2e -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-07-02 | 03-07 | 3 | EVENT-03, ANLY-03, ANLY-05 | T-3-27, T-3-28 | Redelivery starts one run; unknown visit DLQ; Temporal outage retried | integration | `.venv/bin/python -m pytest tests/visit -x -q` | ❌ created in task | ⬜ pending |
+| 03-07-03 | 03-07 | 3 | EVENT-02 (D-03 gate) | T-3-28 | Kill API after commit / consumer down / Connect down -> one downstream start | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_visit_downstream.py -m e2e -x -q` | ❌ created in task | ⬜ pending |
+| 03-08-01 | 03-08 | 3 | NOTIF-02, EVENT-04 | T-3-30 | Timer fires -> real activity -> Celery -> sent in Mongo | workflow (time-skipping) | `.venv/bin/python -m pytest tests/workflows/test_reminder_workflow.py -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-08-02 | 03-08 | 3 | NOTIF-02, NOTIF-03 | T-3-30 | Cancel stops, reschedule moves, past skipped, duplicate starts safe, follow-up once | workflow (time-skipping) | `.venv/bin/python -m pytest tests/workflows/test_reminder_workflow.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-08-03 | 03-08 | 3 | NOTIF-02, NOTIF-03 | T-3-31 | Recorded histories replay | replay | `.venv/bin/python -m pytest tests/workflows/test_replay_reminder.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-09-01 | 03-09 | 4 | ANLY-01, ANLY-06 | T-3-36 | Patient registered -> projection -> /api/analytics total_patients | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_analytics.py -m e2e -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-09-02 | 03-09 | 4 | ANLY-01..05, EVENT-03 | T-3-35 | Fixed sequence -> exact metrics, order-tolerant, idempotent; replay rebuild identical | integration | `.venv/bin/python -m pytest tests/analytics/test_projections.py tests/analytics/test_replay_rebuild.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-09-03 | 03-09 | 4 | ANLY-06 | T-3-33, T-3-34, T-3-36 | RBAC per role/clinic; analytics imports no other service, one DB URL | integration + e2e | `.venv/bin/python -m pytest tests/analytics tests/libs/test_service_isolation.py tests/gateway/test_routing.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-10-01 | 03-10 | 4 | EVENT-02 (D-03) | T-3-38 | Live sweeper Schedule deleted; reconciler kept; poller still paused | workflow + e2e | `.venv/bin/python -m pytest tests/workflows/test_visit_schedules.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-10-02 | 03-10 | 4 | EVENT-03 (D-03) | T-3-40 | Sweep path removed; tombstone keeps replay safe | integration | `.venv/bin/python -m pytest tests/visit tests/workflows -x -q` | ❌ created in task | ⬜ pending |
+| 03-10-03 | 03-10 | 4 | EVENT-02 (D-03) | T-3-39 | Backfill writes one event per unstarted visit, idempotent | integration | `.venv/bin/python -m pytest tests/visit/test_backfill.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-11-01 | 03-11 | 5 | NOTIF-01, NOTIF-02, EVENT-04 | T-3-42 | Booking -> one sent delivery by Compose Celery worker; reminder running | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_notifications.py -m e2e -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-11-02 | 03-11 | 5 | NOTIF-01..04, EVENT-03 | T-3-41 | Each event -> intended sends/reminder ops; stale guard; outages transient | unit | `.venv/bin/python -m pytest tests/notification -x -q` | ❌ created in task | ⬜ pending |
+| 03-11-03 | 03-11 | 5 | NOTIF-01, NOTIF-03, EVENT-05 | T-3-43, T-3-44 | Cancel/reschedule one send each; follow-up; live Kafka and Celery DLQs | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_notifications.py -m e2e -x -q` | ❌ created in task | ⬜ pending |
+| 03-12-01 | 03-12 | 6 | OBS-01 | T-3-45 | booking_saga_seconds scraped; temporal_ series scraped; Grafana provisioning clean | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_metrics.py -m e2e -k tracer -x -q` | ❌ created in task | ⬜ pending |
+| 03-12-02 | 03-12 | 6 | OBS-01, ANLY-01..05 | T-3-46, T-3-47, T-3-48 | All targets up; dashboards reference real datasources/metrics; NFR thresholds = nfr.json | static + e2e | `.venv/bin/python -m pytest tests/infra -x -q` | ❌ created in task | ⬜ pending |
+| 03-12-03 | 03-12 | 6 | OBS-01 (D-04) | T-3-45 | NFR histograms present; k6 smoke passes on finished stack | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_metrics.py tests/e2e/test_loadtest_smoke.py -m e2e -q` | ❌ created in task | ⬜ pending |
+| 03-13-01 | 03-13 | 7 | OBS-02 | T-3-49 | One Jaeger trace across gateway, scheduling, Temporal, Kafka consumer, Celery (CHILD_OF) | integration + e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_trace.py -m e2e -x -q` | ❌ created in task | ⬜ pending |
+| 03-13-02 | 03-13 | 7 | EVENT-03, EVENT-02 | T-3-50, T-3-51 | Offset rewind + Connect hard kill -> every effect still one | e2e | `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_redelivery.py -m e2e -x -q` | ❌ created in task | ⬜ pending |
+| 03-13-03 | 03-13 | 7 | OBS-03 | T-3-49 | JSON logs with trace_id for five flows, no PHI; booking trace id in each process's logs | unit + e2e | `.venv/bin/python -m pytest tests/libs/test_observability.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-14-01 | 03-14 | 8 | DASH-03 | T-3-53 | Booking event flow documented; doc names resolve to code; no wire exactly-once claim | static | `.venv/bin/python -m pytest tests/docs/test_phase3_docs.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-14-02 | 03-14 | 8 | DASH-03, DASH-04 | T-3-52, T-3-53 | All flows, decisions, limitations in architecture md/html and README | static | `.venv/bin/python -m pytest tests/docs -x -q` | ❌ created in task | ⬜ pending |
+| 03-14-03 | 03-14 | 8 | DASH-03 | T-3-52 | ERD, NFR doc, load-test README current | static | `.venv/bin/python -m pytest tests/docs tests/loadtest -x -q` | ❌ created in task | ⬜ pending |
+| 03-15-01 | 03-15 | 9 | DASH-03 | T-3-54 | Booking flow SVG on the dashboard; marker v4 · Phase 3; self-contained | static | `.venv/bin/python -m pytest tests/docs/test_dashboard.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-15-02 | 03-15 | 9 | DASH-03, DASH-04 | T-3-54 | Remaining flows, decisions, Q&A, roadmap, PROJECT.md rows | static | `.venv/bin/python -m pytest tests/docs -x -q` | ❌ created in task | ⬜ pending |
+| 03-15-03 | 03-15 | 9 | all 20 | T-3-55 | PHASE3_TRACE; full non-e2e and e2e green | static + full | `.venv/bin/python -m pytest tests/docs/test_requirement_traceability.py -x -q` | ❌ created in task | ⬜ pending |
+| 03-15-04 | 03-15 | 9 | OBS-01, OBS-02, DASH-03/04 | T-3-54 | Human: Jaeger trace, Grafana dashboards, dashboard HTML, manual k6 smoke | manual | `.venv/bin/python -m pytest tests/docs -q` | ❌ created in task | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -63,10 +93,15 @@ created: "2026-11-10"
 
 ## Wave 0 Requirements
 
-- [ ] `tests/events/` (schemas, outbox helper, consumer base, trace chain), `tests/notification/`, `tests/analytics/`, `tests/infra/`, `tests/e2e/test_phase3_*.py`
-- [ ] Mock Schema Registry fixture (`mock://`), Kafka fixtures (unique topic and group per test), eager-mode Celery fixture, `tests/workflows/histories/reminder_v1.json`
-- [ ] Rebuild images, `alembic upgrade head` on live DBs, `wal_level=logical`, Connect up
-- [ ] Update `tests/docs/test_dashboard.py`, add `PHASE3_TRACE` to the traceability test, rewrite the sweeper tests (`tests/visit/test_downstream.py`, `tests/workflows/test_visit_schedules.py`)
+Covered inside the plans (each test file is written by the task that first needs it):
+
+- [ ] `tests/events/` schemas, outbox helper and mock registry fixture: 03-01 Tasks 3-4; consumer base, Kafka fixtures, DLQ and idempotency: 03-03; trace chain: 03-13 Task 1
+- [ ] `tests/notification/` with the throwaway RabbitMQ vhost helper and in-process Celery worker: 03-04; triggers: 03-11
+- [ ] `tests/analytics/`: 03-09; `tests/infra/`: 03-02 Task 2 and 03-12 Task 2; `tests/e2e/test_phase3_*.py` and `tests/e2e/phase3_stack.py`: 03-02 onward
+- [ ] `tests/workflows/histories/reminder_v1.json` and `followup_v1.json`: 03-08 Task 3
+- [ ] Rebuild images, `alembic upgrade head` on the existing volumes, `wal_level=logical`, Connect up: 03-02 Task 1
+- [ ] Sweeper tests rewritten (`tests/visit/test_downstream.py`, `tests/workflows/test_visit_schedules.py`, `tests/visit/test_visit_reconciler.py`): 03-07 Task 2 and 03-10 Tasks 1-2
+- [ ] `tests/docs/test_dashboard.py` updated and `PHASE3_TRACE` added: 03-15 Tasks 1-3
 
 ---
 
