@@ -78,3 +78,5 @@ This section is deliberately blunt.
 ## Running it safely
 
 The load test sends thousands of requests and must only target a local or dedicated test stack. It needs the gateway rate budgets raised for the run; never do that on a shared or production environment. See `loadtest/README.md` for prerequisites, the exact commands and how to read the thresholds.
+
+**Latest smoke run (2026-11-10):** all thresholds passed on a quiet host (accept p95 21.8 ms, saga completion p95 0.52 s, 0 errors); the two earlier misses in plan 02.1-13 were taken on a heavily loaded laptop. `sustained`, `burst` and `contention` are deferred until after Phase 3, so NFR-01..08 stay unmeasured targets. Details: `loadtest/README.md`.

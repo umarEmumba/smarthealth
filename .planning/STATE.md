@@ -188,6 +188,7 @@ Recent decisions affecting current work:
 - Deferred tests from 02-11/02-12: closed. The 8 tests from 02-11 already existed (quick 261013-mhu) and pass on current code; a gateway reschedule e2e was added (quick 261110-gvd). Only the containerized worker-restart e2e is not written.
 - 02-12 Task 5 human visual check of docs/architecture-dashboard.html: done by the user 2026-11-10.
 - Temporal Schedule `scheduling-schedule-change-poller` is intentionally left paused (user decision 2026-11-10); unpause before any demo or Phase 3 work that relies on schedule-change propagation.
+- Phase 2.1 human checks resolved 2026-11-10: dashboard accepted, k6 smoke passes on a quiet host, DASH-04 ticked. k6 `sustained`/`burst`/`contention` deferred until after Phase 3 (NFR-01..08 stay unmeasured targets).
 - Production hardening deferred: add a non-root `USER` to the service Dockerfiles (Semgrep missing-user x8).
 
 ### Blockers/Concerns

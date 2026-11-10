@@ -83,3 +83,7 @@ The contention profile also retries each accepted request with the same `Idempot
 ## Recording a result
 
 Numbers from the local stack are informational, not a gate (measurement is Phase 3). If you run the profiles, note the date, the host, the replica counts and the k6 end-of-test summary next to the result; a number without that context is not comparable.
+
+## Latest smoke result (2026-11-10)
+
+Re-run after Phase 2 closeout on a quiet laptop, Compose stack of one instance per service, `--providers 2 --patients 250 --days 2` seed, gateway budgets raised. **All thresholds passed (k6 exit 0)**: 151 iterations, 0 dropped; booking accept p95 21.8 ms / p99 78.9 ms (threshold 300 / 800 ms); reads p95 9 to 13 ms; saga completion p95 0.52 s (threshold 5 s), 0 confirm timeouts; booking error rate 0.00%. This contrasts with the two earlier runs in plan 02.1-13 (accept p95 2.0 to 6.0 s, saga p95 16.7 to 28.5 s), which were taken on a heavily loaded laptop, so those misses were environmental. The `sustained`, `burst` and `contention` profiles are still not run; they are deferred until after Phase 3 (user decision, 2026-11-10) so they measure the event-driven stack. NFR-01..08 remain targets, not measured results.

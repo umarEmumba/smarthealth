@@ -87,7 +87,7 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 - [x] **DASH-01**: A self-contained HTML dashboard presents the system architecture diagram
 - [x] **DASH-02**: The dashboard documents each major technology/design decision with alternatives considered and the reasoning for the choice
 - [ ] **DASH-03**: The dashboard shows the key data and event flows (booking, cancel/reschedule, visit lifecycle, notifications, analytics)
-- [ ] **DASH-04**: The dashboard includes an anticipated evaluation Q&A section with prepared answers, and is updated at each phase boundary
+- [x] **DASH-04**: The dashboard includes an anticipated evaluation Q&A section with prepared answers, and is updated at each phase boundary
 
 ### Non-Functional Requirements (NFR)
 
