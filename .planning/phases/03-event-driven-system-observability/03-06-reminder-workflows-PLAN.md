@@ -1,9 +1,9 @@
 ---
 phase: 03-event-driven-system-observability
-plan: 08
+plan: 06
 type: execute
 wave: 3
-depends_on: ["03-04"]
+depends_on: ["03-02"]
 files_modified:
   - libs/temporal_policies.py
   - services/notification/config.py
@@ -33,7 +33,7 @@ must_haves:
     - "A follow-up reminder workflow fires once after a fixed delay from visit completion (NOTIF-03)"
     - "Starts are idempotent: deterministic ids reminder-{appointment_id} / followup-{visit_id}; a duplicate start attaches or is refused; reschedule uses signal-with-start (research Pattern 7)"
     - "Recorded histories for both workflows replay cleanly; activity and workflow names are stable from day one"
-    - "No existing workflow changes shape; the booking saga does not start reminders (the notification consumer does, plan 03-11)"
+    - "No existing workflow changes shape; the booking saga does not start reminders (the notification consumer does, plan 03-14)"
   artifacts:
     - path: services/notification/workflows/reminder.py
       provides: "ReminderWorkflow (signals cancel, reschedule), FollowUpReminderWorkflow"
@@ -57,15 +57,15 @@ must_haves:
 ---
 
 <objective>
-Schedule appointment reminders and post-visit follow-ups with Temporal durable timers that hand the actual send to the Celery task from plan 03-04.
+Schedule appointment reminders and post-visit follow-ups with Temporal durable timers that hand the actual send to the Celery task from plan 03-02.
 
-Purpose: NOTIF-02 (reminders scheduled and delivered ahead) and NOTIF-03 (visit completion schedules a follow-up) under D-02 (Temporal timers) and D-09 (Celery delivery, one send task). Plan 03-11's notification consumer starts, signals and cancels these workflows from events.
+Purpose: NOTIF-02 (reminders scheduled and delivered ahead) and NOTIF-03 (visit completion schedules a follow-up) under D-02 (Temporal timers) and D-09 (Celery delivery, one send task). Plan 03-14's notification consumer starts, signals and cancels these workflows from events.
 
-Output: task queue `notification-tq`, workflow contracts, `ReminderWorkflow`, `FollowUpReminderWorkflow`, the `notification.enqueue` activity, client helpers, the `notification-temporal-worker` entrypoint (its Compose container is added in plan 03-11), time-skipping tests and recorded histories.
+Output: task queue `notification-tq`, workflow contracts, `ReminderWorkflow`, `FollowUpReminderWorkflow`, the `notification.enqueue` activity, client helpers, the `notification-temporal-worker` entrypoint (its Compose container is added in plan 03-14), time-skipping tests and recorded histories.
 
 Decisions honoured: D-02, D-09 revised (reminder dedupe key includes the slot so a rescheduled slot gets its own reminders; the send task refuses reminders for closed appointments), research Pattern 7 (signal-with-start, deterministic ids, spike-verified policies), Pitfall 11 (compute slot times from `env.get_current_time()` per test). Claude's discretion: lead times `1440,120` minutes and follow-up delay 4320 minutes as settings (assumption A7), passed as workflow inputs and never read inside the workflow. Reminder dedupe key `appointment.reminder:{appointment_id}:{slot_epoch_seconds}:{lead_minutes}`; follow-up `visit.followup:{visit_id}`.
 
-Live stack note: tests use the Temporal time-skipping environment, the live RabbitMQ through the throwaway vhost helper from plan 03-04 (`tests/notification/broker.py`) and the live Mongo; no Compose change and no container restart in this plan.
+Live stack note: tests use the Temporal time-skipping environment, the live RabbitMQ through the throwaway vhost helper from plan 03-02 (`tests/notification/broker.py`) and the live Mongo; no Compose change and no container restart in this plan. Wave 3 coupling: plan 03-05 runs alongside and recreates Postgres, rebuilds the application images and starts Kafka Connect; this plan uses none of those (the time-skipping environment is an in-process test server, not the Compose Temporal), and 03-05 does not change the `rabbitmq` or `mongo` service definitions. If RabbitMQ or Mongo is nevertheless briefly unreachable, re-run the failed test once after `scripts/compose_healthcheck.sh` passes.
 </objective>
 
 <execution_context>
@@ -76,7 +76,7 @@ Live stack note: tests use the Temporal time-skipping environment, the live Rabb
 <context>
 @.planning/phases/03-event-driven-system-observability/03-CONTEXT.md
 @.planning/phases/03-event-driven-system-observability/03-RESEARCH.md
-@.planning/phases/03-event-driven-system-observability/03-04-SUMMARY.md
+@.planning/phases/03-event-driven-system-observability/03-02-SUMMARY.md
 @libs/temporal.py
 @libs/temporal_policies.py
 @services/scheduling/workflows/booking.py
@@ -220,9 +220,9 @@ Live stack note: tests use the Temporal time-skipping environment, the live Rabb
 
 | Threat ID | Category | Component | Severity | Disposition | Mitigation Plan |
 |-----------|----------|-----------|----------|-------------|-----------------|
-| T-3-30 | Tampering | duplicate or late reminders | medium | mitigate | Deterministic ids with REJECT_DUPLICATE, signal-with-start for reschedule, slot-specific dedupe key, and the send task's closed-appointment guard (plan 03-04) |
+| T-3-30 | Tampering | duplicate or late reminders | medium | mitigate | Deterministic ids with REJECT_DUPLICATE, signal-with-start for reschedule, slot-specific dedupe key, and the send task's closed-appointment guard (plan 03-02) |
 | T-3-31 | Information Disclosure | workflow inputs and histories | medium | mitigate | Contracts carry ids, ISO timestamps and integers only; recorded histories are synthetic ids; no PHI in Temporal history |
-| T-3-32 | Denial of Service | many long-lived reminder workflows | low | accept | One workflow per active appointment, idle on a timer (no polling); Temporal is built for this; documented capacity note in plan 03-14 |
+| T-3-32 | Denial of Service | many long-lived reminder workflows | low | accept | One workflow per active appointment, idle on a timer (no polling); Temporal is built for this; documented capacity note in plan 03-18 |
 | T-3-SC | Tampering | npm/pip/cargo installs | low | accept | No package installed in this plan |
 </threat_model>
 
@@ -238,5 +238,5 @@ Live stack note: tests use the Temporal time-skipping environment, the live Rabb
 </success_criteria>
 
 <output>
-Create `.planning/phases/03-event-driven-system-observability/03-08-SUMMARY.md` when done
+Create `.planning/phases/03-event-driven-system-observability/03-06-SUMMARY.md` when done
 </output>

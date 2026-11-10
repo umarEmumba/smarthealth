@@ -576,18 +576,29 @@ providers:
 | A9 | Retention of Postgres retained-WAL visibility via a SQL panel is acceptable instead of a Postgres exporter | Pitfall 4 | Extra container if an alert is wanted |
 | A10 | Recommending classic over quorum queues is acceptable for a single-node dev stack | Standard Stack | Mentor may ask about production; documented answer exists |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Resolutions recorded 2026-11-10 during plan revision. Plan ids refer to the revised 20-plan set; every planner choice below is also on the user-veto list in plan 03-01 Task 2 (`checkpoint:decision`), so the user can still overrule it before any schema is written.
 
 1. **Average wait time definition (D-10).**
    - Known: "appointment start minus check-in" is <= 0 for on-time/late arrivals.
    - Unclear: whether the user wants the literal formula (clamped to 0?) or "time from check-in to visit start".
    - Recommendation: implement D-10 literally in the API and document it; carry `slot_start` and `checked_in_at` in the event; offer `visit.started` as an optional extra event for the better definition. Ask during plan-phase.
+   - **RESOLVED:** wait time = check-in to visit start (`visit.completed` carries `checked_in_at` and `started_at`; appointment events carry `slot_start` so the definition can change by replay). Source: 03-CONTEXT.md "Research refinements", D-10 revised. Implemented by plans 03-03 (VisitCompleted schema), 03-10 (`v_visit_wait`), 03-13 (API) and documented in 03-18.
 2. **Patient deactivation.** "Total patients" from `patient.registered` alone never decreases. Recommend adding `patient.deactivated` (cheap, same hook as registration) and defining total = active patients. Confirm.
+   - **RESOLVED:** `patient.deactivated` is added and total patients = active patients. Source: 03-CONTEXT.md D-10 revised ("Add `patient.deactivated` so total patients can decrease"). Implemented by plans 03-03 (schema), 03-08 (producer) and 03-10 (`v_active_patients`).
 3. **Provider schedule-change consumption.** EVENT-01 requires the event to be published. Whether Scheduling should consume it (start `ScheduleChangeWorkflow` via deterministic id, replacing the paused poller) is a separate decision tied to the deferred poller idea. Recommendation: publish only; keep the poller paused; list consumption as an optional follow-up plan flagged for the user.
+   - **RESOLVED:** Scheduling does not consume `provider.schedule_changed` in Phase 3; the event is published only (plan 03-08) and the `scheduling-schedule-change-poller` stays paused. Source: 03-CONTEXT.md "Deferred by default" and Deferred Ideas (user decision 2026-11-10 on the paused poller); user-veto item 4 in plan 03-01 Task 2.
 4. **Outbox retention.** Recommendation: insert-only, no pruning in Phase 3 (keeps the replay source and the debuggable pending state; about 200 bytes per row); document a prune SQL. Alternative (insert then delete in the same transaction) keeps the table empty but loses replay-from-table.
+   - **RESOLVED:** insert-only outbox, no pruning; a prune statement is documented (plan 03-18). Source: 03-CONTEXT.md D-10 revised ("Outbox rows are insert-only (no pruning); they are the replay source"); user-veto item 5 in plan 03-01 Task 2.
 5. **Connect image deviation from "CP line".** Confirm the user accepts `quay.io/debezium/connect` for Connect only (broker and registry stay on 7.6.13).
+   - **RESOLVED (pending user confirmation):** the plan uses `quay.io/debezium/connect:3.7.1.Final` for Kafka Connect only; this deviates from the CLAUDE.md "same Confluent Platform line" rule because `cp-kafka-connect:7.6.13` runs Java 11 and cannot load Debezium 3.x (Finding F1); `cp-kafka` and `cp-schema-registry` stay on 7.6.13, so the broker/registry matching rule still holds. Source: 03-CONTEXT.md D-01 detail. The user confirms or vetoes it at plan 03-01 Task 2 (user-veto item 1), and the image is named for approval in plan 03-01 Task 1 alongside the package pins; plan 03-05 stops if it is not approved.
 6. **S3 follow-up (audit via outbox).** Recommendation: defer; moving audit writes into the outbox needs an audit-writing consumer and changes the audit contract, which widens scope. Keep the best-effort audits and record this honestly.
+   - **RESOLVED:** deferred; post-commit audits stay best effort and the docs say so (plan 03-18). Source: 03-CONTEXT.md "Deferred by default" and Claude's Discretion; user-veto item 3 in plan 03-01 Task 2.
 7. **Backfill for already-completed, unstarted visits** (dev data only): do or document.
+   - **RESOLVED:** backfill, not only document: `scripts/backfill_visit_completed_events.py` (dry run, then `--apply`, idempotent through the uuid5 event id) runs at the sweeper cutover in plan 03-12. Source: 03-CONTEXT.md D-03 detail ("backfill (or document) completed visits that never started downstream work"); user-veto item 6 in plan 03-01 Task 2.
+
+Related deviation put to the user at the same checkpoint (not an original open question): **EVENT-04 names projections among the Celery + RabbitMQ background tasks, but D-10 runs the analytics projections on a Kafka consumer** (`analytics-projection`). Reason: projections are stateful database upserts that need their idempotency claim in the same transaction as the effect, which a Kafka consumer with a processed-event table gives and a Celery task does not; Celery stays for notifications and follow-up sends. User-veto item 2 in plan 03-01 Task 2; recorded in the docs (plan 03-18) and the PHASE3_TRACE notes (plan 03-20). REQUIREMENTS.md wording is left to the user.
 
 ## Environment Availability
 

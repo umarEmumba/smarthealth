@@ -1,20 +1,17 @@
 ---
 phase: 03-event-driven-system-observability
-plan: 10
+plan: 12
 type: execute
-wave: 4
-depends_on: ["03-07"]
+wave: 6
+depends_on: ["03-09", "03-11"]
 files_modified:
   - services/visit/worker.py
   - services/visit/schedules.py
   - services/visit/downstream.py
   - services/visit/activities/downstream.py
   - services/visit/workflows/sweeper.py
-  - services/visit/workflows/__init__.py
-  - services/visit/workflows/reconciler.py
   - services/visit/config.py
   - services/visit/repository/visit_repo.py
-  - services/visit/app.py
   - scripts/backfill_visit_completed_events.py
   - tests/visit/test_downstream.py
   - tests/visit/test_visit_reconciler.py
@@ -58,15 +55,17 @@ must_haves:
 ---
 
 <objective>
-Retire the visit downstream sweeper (second half of D-03) now that plan 03-07 proved the outbox trigger with kill-between-commit-and-publish tests: delete the live Temporal Schedule, remove the start-up sweep and the sweep code path, keep the sweeper workflow registered as a harmless tombstone, and backfill the cutover set.
+Retire the visit downstream sweeper (second half of D-03) now that plan 03-11 Task 2 proved the outbox trigger with kill-between-commit-and-publish tests on a quiet stack: delete the live Temporal Schedule, remove the start-up sweep and the sweep code path, keep the sweeper workflow registered as a harmless tombstone, and backfill the cutover set.
 
 Purpose: D-03 is user-confirmed and costly; leaving the Schedule running would keep a second trigger alive and make the docs untrue. Removing an activity or workflow name that histories reference would break replay, so the tombstone stays.
 
-Output: schedule retirement on worker start, simplified worker and downstream module, tombstone sweeper, removed sweeper settings, updated docstrings and tests, the backfill script and its run on the live data.
+Output: schedule retirement on worker start, simplified worker and downstream module, tombstone sweeper (documented in `workflows/sweeper.py`), removed sweeper settings, rewritten tests, the backfill script and its run on the live data. The remaining docstrings that mention the sweeper (`services/visit/app.py`, `services/visit/workflows/__init__.py`, `services/visit/workflows/reconciler.py`) are corrected with the other docs in plan 03-18.
 
-Decisions honoured: D-03 and D-03 detail (delete the Schedule explicitly because `ensure_visit_schedules` leaves existing Schedules alone; keep the workflow class registered until that ships; backfill rather than only document the cutover set; the other interim mechanisms stay as safety nets and the docs in plan 03-14 record why), research Pattern 5 steps 3-4 and Pitfall 10. User decision 2026-11-10: the `scheduling-schedule-change-poller` stays paused; this plan never touches it.
+Precondition: the plan 03-11 SUMMARY states the D-03 gate passed (three visit scenarios green). If it does not, stop: the sweeper must not be retired.
 
-Live stack rules: rebuild `visit-worker` (and `visit`, `visit-consumer`, which share the image) with `docker compose -f infra/docker-compose.yml up -d --build --no-deps visit visit-worker visit-consumer`. No migration in this plan. Never touch `tjo-*` containers (record status before and after). The backfill runs from the host against the live visit_db (`.venv/bin/python scripts/backfill_visit_completed_events.py`, then `--apply`).
+Decisions honoured: D-03 and D-03 detail (delete the Schedule explicitly because `ensure_visit_schedules` leaves existing Schedules alone; keep the workflow class registered until that ships; backfill rather than only document the cutover set; the other interim mechanisms stay as safety nets and the docs in plan 03-18 record why), research Pattern 5 steps 3-4 and Pitfall 10. User decision 2026-11-10: the `scheduling-schedule-change-poller` stays paused; this plan never touches it.
+
+Live stack rules: rebuild and recreate only `visit-worker` with `docker compose -f infra/docker-compose.yml up -d --build --no-deps visit-worker` (it is the only process whose behaviour changes: the Schedule deletion at start and the tombstone activity). `visit` and `visit-consumer` are not recreated here: nothing they run changes behaviour (the removed sweep function, sweeper settings and tombstone are used only by the worker); the phase gate (plan 03-20) recreates every application container from the committed code. No migration in this plan. Never touch `tjo-*` containers (record status before and after). The backfill runs from the host against the live visit_db (`.venv/bin/python scripts/backfill_visit_completed_events.py`, then `--apply`). Wave 6 coupling: plan 03-13 runs alongside, recreates the gateway and creates the analytics containers; neither plan touches the other's services; a `visit-worker` restart only delays queued Temporal tasks (they wait on the task queue), and 03-13's e2e does not depend on `visit-worker`.
 </objective>
 
 <execution_context>
@@ -77,7 +76,8 @@ Live stack rules: rebuild `visit-worker` (and `visit`, `visit-consumer`, which s
 <context>
 @.planning/phases/03-event-driven-system-observability/03-CONTEXT.md
 @.planning/phases/03-event-driven-system-observability/03-RESEARCH.md
-@.planning/phases/03-event-driven-system-observability/03-07-SUMMARY.md
+@.planning/phases/03-event-driven-system-observability/03-09-SUMMARY.md
+@.planning/phases/03-event-driven-system-observability/03-11-SUMMARY.md
 @services/visit/worker.py
 @services/visit/schedules.py
 @services/visit/downstream.py
@@ -104,7 +104,7 @@ Live stack rules: rebuild `visit-worker` (and `visit`, `visit-consumer`, which s
 
 <task type="tracer" tdd="true">
   <name>Task 1: Tracer — the rebuilt visit worker deletes the live sweeper Schedule and leaves every other Schedule as it was</name>
-  <reversibility rating="costly">D-03: removes a safety net that Phase 2 verification relied on; the replacement (outbox consumer) was proven in plan 03-07 Task 3. Recreating the Schedule later needs the old definition restored.</reversibility>
+  <reversibility rating="costly">D-03: removes a safety net that Phase 2 verification relied on; the replacement (outbox consumer) was proven in plan 03-11 Task 2. Recreating the Schedule later needs the old definition restored.</reversibility>
   <files>services/visit/schedules.py, services/visit/worker.py, tests/workflows/test_visit_schedules.py, tests/e2e/test_phase3_visit_downstream.py</files>
   <behavior>
     - `retire_sweeper_schedule(client)` deletes an existing `visit-downstream-sweeper` Schedule and returns True; a second call returns False without raising
@@ -123,7 +123,7 @@ Live stack rules: rebuild `visit-worker` (and `visit`, `visit-consumer`, which s
 
     Tests: adapt `tests/workflows/test_visit_schedules.py` (reconciler-only creation, retirement idempotency on a time-skipping server where the old Schedule was created first with the previous definition inline in the test). Add an e2e test `test_sweeper_schedule_retired_on_live_server` to `tests/e2e/test_phase3_visit_downstream.py` for the live behaviors (read-only: it never deletes or pauses anything itself).
 
-    Rebuild the three visit containers with `--no-deps`, then run the e2e test.
+    Rebuild and recreate `visit-worker` only, with `--no-deps` (live stack rules), then run the e2e test.
   </action>
   <verify>
     <automated>.venv/bin/python -m pytest tests/workflows/test_visit_schedules.py -x -q && SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_visit_downstream.py -m e2e -k sweeper_schedule_retired -x -q</automated>
@@ -139,24 +139,24 @@ Live stack rules: rebuild `visit-worker` (and `visit`, `visit-consumer`, which s
 </task>
 
 <task type="auto" tdd="true">
-  <name>Task 2: Remove the sweep code path, keep a tombstone, update docstrings and rewrite the sweep tests</name>
-  <files>services/visit/downstream.py, services/visit/activities/downstream.py, services/visit/workflows/sweeper.py, services/visit/workflows/__init__.py, services/visit/workflows/reconciler.py, services/visit/config.py, services/visit/repository/visit_repo.py, services/visit/app.py, tests/visit/test_downstream.py, tests/visit/test_visit_reconciler.py</files>
+  <name>Task 2: Remove the sweep code path, keep a tombstone and rewrite the sweep tests</name>
+  <files>services/visit/downstream.py, services/visit/activities/downstream.py, services/visit/workflows/sweeper.py, services/visit/config.py, services/visit/repository/visit_repo.py, tests/visit/test_downstream.py, tests/visit/test_visit_reconciler.py</files>
   <behavior>
     - `VisitDownstreamSweeperWorkflow` still runs under a test worker: it executes its one activity, which returns zero processed and starts nothing
     - `VisitSettings` has no sweeper fields; constructing it with `VISIT_SWEEPER_INTERVAL_SECONDS` set is accepted and ignored (extra env is ignored by the settings config)
     - The former sweep tests are replaced: two concurrent deliveries of the same visit.completed start one run and one billing finalization; a completed visit whose marker is NULL is NOT touched by any worker start-up path
-    - Reconciler docstrings and tests say never-started visits are handled by the outbox consumer; reconciler behaviour is unchanged
+    - Reconciler test docstrings say never-started visits are handled by the outbox consumer; reconciler behaviour is unchanged
   </behavior>
   <read_first>
     - services/visit/downstream.py (module docstring, the sweep function and `SWEEP_LIMIT`)
     - services/visit/activities/downstream.py (`VisitActivities` constructor takes the sweeper grace; the `ACT_SWEEP` activity near line 272)
-    - services/visit/workflows/sweeper.py, services/visit/workflows/__init__.py, services/visit/workflows/reconciler.py, services/visit/app.py (docstrings mentioning the sweeper)
+    - services/visit/workflows/sweeper.py (docstring and registration)
     - services/visit/repository/visit_repo.py (`list_downstream_unstarted`, `list_unsettled` requiring a non-NULL marker)
     - tests/visit/test_downstream.py (sweep tests near lines 210, 302, 361), tests/visit/test_visit_reconciler.py
-    - tests/visit/conftest.py (`deliver_visit_events` from plan 03-07)
+    - tests/visit/conftest.py (`deliver_visit_events` from plan 03-09)
   </read_first>
   <action>
-    Delete the sweep function and its constant from `downstream.py` and fix its module docstring (trigger = outbox event consumed by the visit-downstream consumer; `ensure_downstream_started` stays the shared start). In `activities/downstream.py`, drop the sweeper-grace constructor parameter and make the `ACT_SWEEP` activity a tombstone that logs `visit.sweeper_retired` and returns zero processed (same name, same result type). In `workflows/sweeper.py` and `workflows/__init__.py`, document the tombstone: kept registered so an in-flight run or recorded history completes; safe to remove once `list_workflows("WorkflowType='VisitDownstreamSweeperWorkflow'")` is empty on every environment (record that query in the docstring). Remove the two sweeper fields from `VisitSettings`. Rename `list_downstream_unstarted` to `list_completed_without_downstream` (no behaviour change; Task 3 uses it). Update the reconciler and app docstrings. Rewrite the three sweep tests as described and update reconciler test docstrings; do not weaken any assertion about single runs or single finalization.
+    Delete the sweep function and its constant from `downstream.py` and fix its module docstring (trigger = outbox event consumed by the visit-downstream consumer; `ensure_downstream_started` stays the shared start). In `activities/downstream.py`, drop the sweeper-grace constructor parameter and make the `ACT_SWEEP` activity a tombstone that logs `visit.sweeper_retired` and returns zero processed (same name, same result type). In `workflows/sweeper.py`, document the tombstone: kept registered so an in-flight run or recorded history completes; safe to remove once `list_workflows("WorkflowType='VisitDownstreamSweeperWorkflow'")` is empty on every environment (record that query in the docstring). Remove the two sweeper fields from `VisitSettings`. Rename `list_downstream_unstarted` to `list_completed_without_downstream` (no behaviour change; Task 3 uses it). Rewrite the three sweep tests as described and update reconciler test docstrings; do not weaken any assertion about single runs or single finalization. The package, reconciler and app docstrings are corrected in plan 03-18 (docs closeout).
   </action>
   <verify>
     <automated>.venv/bin/python -m pytest tests/visit tests/workflows -x -q</automated>
@@ -237,5 +237,5 @@ Live stack rules: rebuild `visit-worker` (and `visit`, `visit-consumer`, which s
 </success_criteria>
 
 <output>
-Create `.planning/phases/03-event-driven-system-observability/03-10-SUMMARY.md` when done
+Create `.planning/phases/03-event-driven-system-observability/03-12-SUMMARY.md` when done
 </output>

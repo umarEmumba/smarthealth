@@ -1,6 +1,6 @@
 ---
 phase: 03-event-driven-system-observability
-plan: 03
+plan: 04
 type: execute
 wave: 2
 depends_on: ["03-01"]
@@ -57,7 +57,7 @@ Output: `libs/events/consumer.py`, `libs/events/tracing.py`, `libs/events/idempo
 
 Decisions honoured: D-08 and D-08 refined (one group per role, a DLQ topic per group, processed-event table only for database effects), D-11 (manual traceparent extraction, no `opentelemetry-instrumentation-confluent-kafka`), research Pattern 3 and Pitfalls 6, 9, 16. Claude's discretion: three in-process attempts with 0.5 s exponential backoff before DLQ for unexpected errors; `TransientEventError` retried with capped backoff (max 30 s) by re-seeking, so an outage never dead-letters valid events and `max.poll.interval.ms` is never exceeded.
 
-Live stack note: tests use the live Kafka on `localhost:9092` with a unique topic and group per test (created and deleted by fixtures) and the `mock://` registry, so nothing reaches the real event topics. Plan 03-02 runs in the same wave and recreates containers; if a test fails while it rebuilds, re-run after `scripts/compose_healthcheck.sh` passes.
+Live stack note: tests use the live Kafka on `localhost:9092` with a unique topic and group per test (created and deleted by fixtures) and the `mock://` registry, so nothing reaches the real event topics. Wave 2 coupling: plans 03-02 and 03-03 run alongside and neither recreates a container (the first stack rebuild is plan 03-05 in wave 3). Plan 03-03 adds catalogue entries during this wave, each only after its schema file exists, and `mock_registry` registers every entry, so these tests see a consistent catalogue at any moment; they only produce `appointment.booked` samples.
 </objective>
 
 <execution_context>
@@ -231,5 +231,5 @@ Live stack note: tests use the live Kafka on `localhost:9092` with a unique topi
 </success_criteria>
 
 <output>
-Create `.planning/phases/03-event-driven-system-observability/03-03-SUMMARY.md` when done
+Create `.planning/phases/03-event-driven-system-observability/03-04-SUMMARY.md` when done
 </output>

@@ -1,9 +1,9 @@
 ---
 phase: 03-event-driven-system-observability
-plan: 13
+plan: 17
 type: execute
-wave: 7
-depends_on: ["03-12"]
+wave: 10
+depends_on: ["03-16"]
 files_modified:
   - tests/events/test_trace_chain.py
   - tests/e2e/test_phase3_trace.py
@@ -55,9 +55,9 @@ Purpose: roadmap success criteria 1 (consumers tolerate redelivery without dupli
 
 Output: an in-memory trace-chain test, Jaeger-based and log-based e2e tests, a forced-redelivery e2e test, extended observability unit tests, and minimal fixes in the listed files only where a test fails.
 
-Decisions honoured: D-11 (traceparent through outbox, Kafka headers and Celery headers; structlog JSON with trace ids; PHI-free), D-08 refined (three idempotency flavors), research F4 and Pitfall 3 (honest at-least-once on the wire; the effect is what must be single), Pattern 8 (trace chain). Reminder timers fire days later inside the same trace; the docs (plan 03-14) label that long-lived trace.
+Decisions honoured: D-11 (traceparent through outbox, Kafka headers and Celery headers; structlog JSON with trace ids; PHI-free), D-08 refined (three idempotency flavors), research F4 and Pitfall 3 (honest at-least-once on the wire; the effect is what must be single), Pattern 8 (trace chain). Reminder timers fire days later inside the same trace; the docs (plan 03-18) label that long-lived trace.
 
-Live stack rules: tests stop, start and kill only `smarthealth` Compose services (`connect`, `visit-consumer`, `analytics-consumer`, `notification-consumer`) through `docker compose -f infra/docker-compose.yml ...`, always restoring them in `finally` and waiting for health; consumer offsets are rewound with `docker compose -f infra/docker-compose.yml exec -T kafka kafka-consumer-groups ... --reset-offsets --to-datetime <test start> --execute` while the group is stopped. No image rebuild unless a fix is needed (then rebuild only the affected service with `--no-deps`). Never touch `tjo-*` containers (record status before and after).
+Live stack rules: tests stop, start and kill only `smarthealth` Compose services (`connect`, `visit-consumer`, `analytics-consumer`, `notification-consumer`) through `docker compose -f infra/docker-compose.yml ...`, always restoring them in `finally` and waiting for health; consumer offsets are rewound with `docker compose -f infra/docker-compose.yml exec -T kafka kafka-consumer-groups ... --reset-offsets --to-datetime <test start> --execute` while the group is stopped. No image rebuild unless a fix is needed (then rebuild only the affected service with `--no-deps`). Never touch `tjo-*` containers (record status before and after). This plan runs alone in wave 10, after the smoke measurement in plan 03-16, so its kills and offset rewinds disturb no other plan's tests.
 </objective>
 
 <execution_context>
@@ -116,7 +116,7 @@ Live stack rules: tests stop, start and kill only `smarthealth` Compose services
   <acceptance_criteria>
     - `.venv/bin/python -m pytest tests/events/test_trace_chain.py -q` exits 0
     - `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_trace.py -m e2e -q` exits 0 and the test names all six services
-    - the SUMMARY records the trace id used and the span count per service (for the human Jaeger check in plan 03-15)
+    - the SUMMARY records the trace id used and the span count per service (for the human Jaeger check in plan 03-20)
   </acceptance_criteria>
   <done>One booking is one connected trace across every async boundary.</done>
 </task>
@@ -210,5 +210,5 @@ Live stack rules: tests stop, start and kill only `smarthealth` Compose services
 </success_criteria>
 
 <output>
-Create `.planning/phases/03-event-driven-system-observability/03-13-SUMMARY.md` when done
+Create `.planning/phases/03-event-driven-system-observability/03-17-SUMMARY.md` when done
 </output>

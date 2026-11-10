@@ -1,9 +1,9 @@
 ---
 phase: 03-event-driven-system-observability
-plan: 05
+plan: 07
 type: execute
-wave: 3
-depends_on: ["03-01", "03-02"]
+wave: 4
+depends_on: ["03-01", "03-05"]
 files_modified:
   - services/scheduling/events.py
   - services/scheduling/repository/appointment_repo.py
@@ -15,8 +15,8 @@ autonomous: true
 requirements: [EVENT-01, EVENT-02, NOTIF-01, ANLY-02, ANLY-04]
 
 estimate:
-  tokens: 90000
-  raw_tokens: 90000
+  tokens: 80000
+  raw_tokens: 80000
   tasks: 3
   confidence: low
 
@@ -25,10 +25,9 @@ must_haves:
     - "Every appointment transition that is a domain event (confirm, cancel, reschedule, check-in, complete, no-show) writes its outbox row in the same transaction as the state change and history row; a rollback leaves neither (EVENT-02, D-06)"
     - "The booking accept path (the 202) writes no outbox row and gains no new work; appointment.booked is emitted at the saga's confirm step (D-04)"
     - "A repeated or retried transition (activity retry after commit, duplicate call) writes no second row: the event id is uuid5 of appointment id, type and the post-transition version (D-06)"
-    - "Killing the committing process right after the commit does not lose the event, and an event committed while Connect is stopped is delivered after it starts (roadmap success criterion 1, delivery half)"
+    - "Booking, cancel and reschedule through the gateway each publish exactly one event of their type (counted by event id) on smarthealth.appointment.events; the kill-after-commit, Connect-down and k6 smoke proofs run on a quiet stack in plan 03-11"
     - "One booking request's trace id is carried into the appointment.booked event's traceparent header (OBS-02)"
     - "Existing Temporal workflows keep their shapes and activity names; no workflow.patched is added; recorded-history replay tests still pass"
-    - "The k6 smoke profile still passes after this change (D-04)"
   artifacts:
     - path: services/scheduling/events.py
       provides: "SCHEDULING_EVENT_TYPES, payload builders and emit_appointment_event(db, event_type, row)"
@@ -36,7 +35,7 @@ must_haves:
     - path: tests/scheduling/test_outbox.py
       provides: "atomicity, rollback, no-op repeat, accept-path-untouched and PHI-free payload tests for all six transitions"
     - path: tests/e2e/test_phase3_booking_events.py
-      provides: "gateway booking -> appointment.booked on Kafka with the request's trace id; kill-after-commit and Connect-down delivery"
+      provides: "gateway booking -> appointment.booked on Kafka with the request's trace id; one cancelled and one rescheduled event (plan 03-11 adds the kill and Connect-down proofs)"
   key_links:
     - from: services/scheduling/repository/appointment_repo.py
       to: services/scheduling/events.py
@@ -45,15 +44,15 @@ must_haves:
 ---
 
 <objective>
-Make Scheduling a producer: each appointment transition that is a domain event commits its outbox row with the state change, so the CDC relay from plan 03-02 publishes it. The booking accept path stays untouched.
+Make Scheduling a producer: each appointment transition that is a domain event commits its outbox row with the state change, so the CDC relay from plan 03-05 publishes it. The booking accept path stays untouched.
 
-Purpose: EVENT-01/EVENT-02 for the appointment aggregate; these events drive notifications (NOTIF-01, plan 03-11), reminders (plan 03-08/11) and the analytics projections for appointments over time and cancellation rate (ANLY-02/04, plan 03-09).
+Purpose: EVENT-01/EVENT-02 for the appointment aggregate; these events drive notifications (NOTIF-01, plan 03-14), reminders (plans 03-06 and 03-14) and the analytics projections for appointments over time and cancellation rate (ANLY-02/04, plans 03-10 and 03-13).
 
-Output: `services/scheduling/events.py`, outbox emission in six repository transitions, registry warm-up in the API lifespan and the worker, integration tests, and an e2e test that books through the gateway and reads the event off Kafka.
+Output: `services/scheduling/events.py`, outbox emission in six repository transitions, registry warm-up in the API lifespan and the worker, integration tests, and e2e tests that book, cancel and reschedule through the gateway and read the events off Kafka.
 
 Decisions honoured: D-04 (only the outbox insert is added, and not on the accept path), D-06 revised (aggregate `appointment`, key = appointment id, uuid5 event id from the version, traceparent of the producing span), D-07 (PHI-free payloads; `coverage_ref` never leaves the appointments table), D-10 revised (events carry `slot_start` and the check-in timestamp), D-09 revised and research F5 (the Phase 2 notification intent activities stay registered and unchanged; no workflow changes, no `workflow.patched`). Hook points are the transition functions, NOT `append_status_history` or `record_history_note` (history notes are not domain events).
 
-Live stack rules: rebuild only `scheduling` and `scheduling-worker` with `docker compose -f infra/docker-compose.yml up -d --build --no-deps scheduling scheduling-worker`; the migration (`scheduling_0006`) already ran in plan 03-02. Never touch `tjo-*` containers (record `docker ps --filter name=tjo- --format '{{.Names}} {{.Status}}'` before and after). Other wave-3 plans rebuild visit, patient and provider at the same time: if an e2e test fails because a service was restarting, re-run after `scripts/compose_healthcheck.sh` passes. From this plan on, host-side scheduling and workflow tests need the live Schema Registry (`localhost:8081`) with the subjects registered by `schema-init`.
+Live stack rules: rebuild only `scheduling` and `scheduling-worker` with `docker compose -f infra/docker-compose.yml up -d --build --no-deps scheduling scheduling-worker`; the migration (`scheduling_0006`) already ran in plan 03-05. Never touch `tjo-*` containers (record `docker ps --filter name=tjo- --format '{{.Names}} {{.Status}}'` before and after). Wave 4 coupling (plans 03-07, 03-08, 03-09 and 03-10 run together): each wave-4 plan rebuilds only its own services, always with `--no-deps`, and only before its own e2e steps; none stops, kills or recreates `connect`, `gateway`, `postgres`, `kafka` or a sibling's service (every disruptive proof is in plan 03-11, alone in wave 5); 03-08 and 03-09 register their connectors by name, which does not restart this plan's `scheduling-outbox` connector. If an e2e seed step fails because a sibling's service was restarting, re-run that test once after `scripts/compose_healthcheck.sh` passes. From this plan on, host-side scheduling and workflow tests need the live Schema Registry (`localhost:8081`) with the subjects registered by `schema-init`.
 </objective>
 
 <execution_context>
@@ -65,7 +64,7 @@ Live stack rules: rebuild only `scheduling` and `scheduling-worker` with `docker
 @.planning/phases/03-event-driven-system-observability/03-CONTEXT.md
 @.planning/phases/03-event-driven-system-observability/03-RESEARCH.md
 @.planning/phases/03-event-driven-system-observability/03-01-SUMMARY.md
-@.planning/phases/03-event-driven-system-observability/03-02-SUMMARY.md
+@.planning/phases/03-event-driven-system-observability/03-05-SUMMARY.md
 @services/scheduling/repository/appointment_repo.py
 @services/scheduling/repository/models.py
 @services/scheduling/app.py
@@ -163,32 +162,29 @@ Live stack rules: rebuild only `scheduling` and `scheduling-worker` with `docker
 </task>
 
 <task type="auto" tdd="true">
-  <name>Task 3: Kill-after-commit and Connect-down delivery for appointment events, plus the k6 smoke check</name>
+  <name>Task 3: Cancel and reschedule through the gateway each publish exactly one event (no container is stopped or killed)</name>
   <files>tests/e2e/test_phase3_booking_events.py</files>
   <behavior>
-    - Cancel through the gateway; as soon as the appointment reads `cancelled`, `docker compose kill scheduling-worker` (the process that committed); the `appointment.cancelled` event id arrives on Kafka; the worker is started again and becomes healthy
-    - With `connect` stopped, a booking confirms; no booked event arrives while Connect is down; after Connect starts and its tasks are RUNNING, the booked event arrives once by event id (duplicates are counted, not asserted zero)
-    - Reschedule through the gateway yields one `appointment.rescheduled` event with the new slot id
+    - Cancel a confirmed booking through the gateway: exactly one `appointment.cancelled` message (counted by its `id` header) for the appointment arrives on `smarthealth.appointment.events`, with `cancelled_at` set and the same partition as the earlier `appointment.booked` (same key)
+    - Reschedule a confirmed booking through the gateway: exactly one `appointment.rescheduled` message with the new slot id and start, after the booked message on the same partition
+    - The Phase 2 gateway flows (`tests/e2e/test_phase2_flows.py`) still pass on the rebuilt scheduling services
   </behavior>
   <read_first>
-    - tests/e2e/test_phase3_booking_events.py (Task 1), tests/e2e/phase3_stack.py (kill/stop/start helpers), tests/e2e/test_phase2_flows.py (cancel and reschedule calls through the gateway)
-    - loadtest/README.md (smoke profile, raised gateway budget) and tests/e2e/test_loadtest_smoke.py (seeds its own admin and world)
+    - tests/e2e/test_phase3_booking_events.py (Task 1), tests/e2e/phase3_stack.py (`consume_matching`), tests/e2e/test_phase2_flows.py (cancel and reschedule calls through the gateway)
   </read_first>
   <action>
-    Add the three scenarios; every test that kills or stops a container restarts it in `finally` and waits for health (and, for Connect, for all four connector tasks RUNNING).
-
-    Then run the k6 smoke profile through the existing wrapper test with the gateway budget raised for the run only: `GATEWAY_RATE_LIMIT_DEFAULT_PER_MINUTE=100000 GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000 docker compose -f infra/docker-compose.yml up -d --no-deps gateway`, then `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_loadtest_smoke.py -m e2e -q`, then recreate the gateway without the overrides (`docker compose -f infra/docker-compose.yml up -d --no-deps gateway`). The wrapper seeds its own world with a test-created admin; do not create or hardcode any other admin credential. If the smoke fails while other wave-3 executors are running tests, re-run when `docker stats --no-stream` shows the host quiet; record the accept p95 and saga p95 from the k6 summary in the SUMMARY (baseline 2026-11-10: accept p95 21.8 ms, saga p95 0.52 s).
+    First rebuild `scheduling` and `scheduling-worker` with `docker compose -f infra/docker-compose.yml up -d --build --no-deps scheduling scheduling-worker` (Task 2 changed the cancel and reschedule transitions the worker runs) and wait for health. Add the two scenarios, each in a fresh clinic, counting messages by event id with `consume_matching(..., min_count=1)` and asserting the count of distinct ids is one and the partition order is booked before cancelled or rescheduled. This plan never stops, kills or recreates a container: the kill-after-commit, Connect-down and k6 smoke proofs for appointment events run in plan 03-11 on a quiet stack (wave-4 coupling rule in the objective).
   </action>
   <verify>
-    <automated>SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_booking_events.py -m e2e -x -q && SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_loadtest_smoke.py tests/e2e/test_phase2_flows.py -m e2e -q</automated>
-    <fails_when>Either pytest run exits non-zero, an event id is missing after the kill or after Connect restarts, or k6 reports a crossed threshold.</fails_when>
+    <automated>SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_booking_events.py -m e2e -x -q && SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase2_flows.py -m e2e -q</automated>
+    <fails_when>Either pytest run exits non-zero, a cancel or reschedule yields zero or two distinct event ids, or the cancelled or rescheduled event lands on a different partition from the booked one.</fails_when>
   </verify>
   <acceptance_criteria>
-    - `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_booking_events.py -m e2e -q` exits 0 with at least 4 passed
-    - `tests/e2e/test_loadtest_smoke.py` passes and the SUMMARY records accept p95 and saga p95
-    - after the run the gateway runs with the default rate budget again (`docker compose -f infra/docker-compose.yml exec -T gateway printenv GATEWAY_RATE_LIMIT_DEFAULT_PER_MINUTE` prints the default from the Compose file or `infra/.env`, not 100000)
+    - `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase3_booking_events.py -m e2e -q` exits 0 with at least 3 passed
+    - `SMARTHEALTH_E2E_REQUIRE_STACK=1 .venv/bin/python -m pytest tests/e2e/test_phase2_flows.py -m e2e -q` exits 0
+    - tjo-* status lines before and after show no restart
   </acceptance_criteria>
-  <done>Appointment events survive a kill of the committing process and a Connect outage, and the booking path still meets the smoke thresholds.</done>
+  <done>Booking, cancel and reschedule each publish exactly one ordered event per appointment through the outbox and CDC.</done>
 </task>
 
 </tasks>
@@ -207,7 +203,7 @@ Live stack rules: rebuild only `scheduling` and `scheduling-worker` with `docker
 |-----------|----------|-----------|----------|-------------|-----------------|
 | T-3-20 | Information Disclosure | appointment event payloads | high | mitigate | Builders copy ids and timestamps only; `coverage_ref` is never read into a payload; test asserts seeded PHI values and coverage_ref bytes are absent for all six types |
 | T-3-21 | Tampering | duplicate or out-of-band emission | medium | mitigate | uuid5 event id from the post-transition version plus `ON CONFLICT (id) DO NOTHING`; only applied branches emit; tests cover repeats and rollbacks |
-| T-3-22 | Denial of Service | booking path latency / registry outage | medium | mitigate | Nothing added to `accept_booking`; serializers warmed at start-up; `outbox_insert_seconds` measured; k6 smoke must pass |
+| T-3-22 | Denial of Service | booking path latency / registry outage | medium | mitigate | Nothing added to `accept_booking`; serializers warmed at start-up; `outbox_insert_seconds` measured; k6 smoke must pass on the quiet stack in plan 03-11 |
 | T-3-23 | Spoofing | client-supplied traceparent | low | accept | Trace context is observability metadata only; it grants nothing and carries no data; standard W3C behaviour of the existing FastAPI instrumentation |
 | T-3-SC | Tampering | npm/pip/cargo installs | low | accept | No package installed in this plan |
 </threat_model>
@@ -221,10 +217,10 @@ Live stack rules: rebuild only `scheduling` and `scheduling-worker` with `docker
 
 <success_criteria>
 - Six appointment events committed atomically, PHI-free, idempotent at the table
-- Accept path untouched; smoke thresholds still met; workflows unchanged
-- Delivery proven across a kill of the committing process and a Connect outage
+- Accept path untouched; workflows unchanged
+- Booking, cancel and reschedule each publish exactly one ordered event per appointment (the kill, Connect-down and smoke proofs follow in plan 03-11)
 </success_criteria>
 
 <output>
-Create `.planning/phases/03-event-driven-system-observability/03-05-SUMMARY.md` when done
+Create `.planning/phases/03-event-driven-system-observability/03-07-SUMMARY.md` when done
 </output>

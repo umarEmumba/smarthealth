@@ -241,51 +241,68 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
   4. Every service exposes Prometheus metrics visible in Grafana dashboards for critical flows, and a single booking request can be traced end-to-end in Jaeger across HTTP → Temporal workflow/activity → Kafka → Celery as one connected trace (not disconnected fragments), with structured logs available for booking, availability sync, billing, notifications, and background workers.
   5. The Architecture & Decision dashboard shows the key data/event flows (booking, cancel/reschedule, visit lifecycle, notifications, analytics) and includes a prepared evaluation Q&A section, complete and current as of this phase's close.
 
-Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-02, 03-07, 03-13).
+Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 15 plans (waves ordered by file ownership; one plan per wave edits `infra/docker-compose.yml`)
+**Plans:** 20 plans in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
 
 **Wave 1**
 
-- [ ] 03-01-event-foundation-PLAN.md — package legitimacy checkpoint, D-05 event-contract decision, event catalogue, Avro schemas, strict registry client, outbox helper, infra secrets (EVENT-01, EVENT-02, OBS-02)
+- [ ] 03-01-event-foundation-PLAN.md — package and Connect-image approval checkpoint, D-05 contract and user-veto checkpoint (incl. EVENT-04 projection deviation), catalogue, strict registry client, outbox helper, first schema (EVENT-01, EVENT-02, OBS-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-cdc-pipeline-PLAN.md — TRACER: wal_level=logical, Debezium Connect, four outbox connectors with task-state checks, topics, schema-init, Connect stop/kill durability (EVENT-01, EVENT-02)
-- [ ] 03-03-consumer-base-PLAN.md — shared consumer: child-span tracing, commit after effect, DLQ, outage retry, metrics, processed-event claims (EVENT-03, EVENT-05, OBS-02)
-- [ ] 03-04-notification-delivery-PLAN.md — Celery on RabbitMQ 4.3, one send task with dedupe, retry, DLX dead-lettering, closed-appointment guard (EVENT-04, EVENT-05, NOTIF-04)
+- [ ] 03-02-notification-delivery-PLAN.md — Celery on RabbitMQ 4.3, one send task, idempotent fake provider (one call per dedupe key even after a worker kill), retry, DLX dead-lettering, closed-appointment guard (EVENT-04, EVENT-05, NOTIF-04, OBS-02)
+- [ ] 03-03-event-schemas-PLAN.md — nine more PHI-free Avro schemas, deploy-time BACKWARD registration CLI, infra secret files (EVENT-01)
+- [ ] 03-04-consumer-base-PLAN.md — shared consumer: child-span tracing, commit after effect, DLQ, outage retry, metrics, processed-event claims (EVENT-03, EVENT-05, OBS-02)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03-05-scheduling-producer-PLAN.md — six appointment events through the outbox, accept path untouched, kill-after-commit proof, k6 smoke (EVENT-01, EVENT-02, NOTIF-01)
-- [ ] 03-06-patient-provider-producer-PLAN.md — patient.registered/deactivated and provider.schedule_changed, PHI-free (EVENT-01, ANLY-01)
-- [ ] 03-07-visit-outbox-downstream-PLAN.md — visit.completed via outbox, visit-downstream consumer, D-03 kill-between-commit-and-publish proof (EVENT-02, EVENT-03)
-- [ ] 03-08-reminder-workflows-PLAN.md — Temporal ReminderWorkflow and FollowUpReminderWorkflow enqueueing the Celery send, recorded histories (NOTIF-02, NOTIF-03)
+- [ ] 03-05-cdc-pipeline-PLAN.md — TRACER: wal_level=logical, Debezium Connect, topics, schema-init, scheduling outbox and connector, per-connector task-state checks, Connect stop/kill durability (EVENT-01, EVENT-02)
+- [ ] 03-06-reminder-workflows-PLAN.md — Temporal ReminderWorkflow and FollowUpReminderWorkflow enqueueing the Celery send, recorded histories (NOTIF-02, NOTIF-03, EVENT-04)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 03-09-analytics-projections-PLAN.md — Analytics service: event-derived projections, five metrics API, replay rebuild, isolation (ANLY-01..06)
-- [ ] 03-10-visit-sweeper-retirement-PLAN.md — delete the live sweeper Schedule, tombstone, backfill (D-03)
+- [ ] 03-07-scheduling-producer-PLAN.md — six appointment events through the outbox, accept path untouched, one event per booking/cancel/reschedule (EVENT-01, EVENT-02, NOTIF-01, ANLY-02, ANLY-04)
+- [ ] 03-08-patient-provider-producer-PLAN.md — patient and provider outboxes and connectors, patient.registered/deactivated and provider.schedule_changed, PHI-free (EVENT-01, EVENT-02, ANLY-01)
+- [ ] 03-09-visit-outbox-downstream-PLAN.md — visit outbox and connector, visit.completed, visit-downstream consumer replacing the API trigger (EVENT-01, EVENT-02, EVENT-03, ANLY-03, ANLY-05)
+- [ ] 03-10-analytics-projections-PLAN.md — analytics_db projections and five metric views from Kafka events, idempotent and order-tolerant (ANLY-01..06, EVENT-03)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 03-11-notification-trigger-PLAN.md — notification-trigger consumer, Compose notification processes, live DLQ proofs (NOTIF-01..04, EVENT-04, EVENT-05)
+- [ ] 03-11-commit-kill-proofs-PLAN.md — quiet-stack kill-between-commit-and-publish proofs (scheduling worker, visit API, consumer, Connect), the D-03 gate, k6 smoke (EVENT-02, EVENT-03)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
-- [ ] 03-12-metrics-dashboards-nfr-PLAN.md — every process scraped, Temporal SDK metrics, provisioned Grafana dashboards, NFR histograms, k6 smoke on the finished stack (OBS-01)
+- [ ] 03-12-visit-sweeper-retirement-PLAN.md — delete the live sweeper Schedule, tombstone, backfill (EVENT-02, EVENT-03; D-03)
+- [ ] 03-13-analytics-api-PLAN.md — analytics API behind the gateway, analytics containers, RBAC, isolation, replay rebuild (ANLY-01..06)
 
 **Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] 03-13-e2e-guarantees-PLAN.md — one Jaeger trace across HTTP/Temporal/Kafka/Celery, forced redelivery with one effect, structured logs (OBS-02, OBS-03, EVENT-03)
+- [ ] 03-14-notification-trigger-PLAN.md — notification-trigger consumer, notification image and broker provisioning, Compose notification processes, live DLQ proofs (NOTIF-01..04, EVENT-03, EVENT-04, EVENT-05)
 
 **Wave 8** *(blocked on Wave 7 completion)*
 
-- [ ] 03-14-docs-closeout-PLAN.md — README, architecture, ERD, NFR docs for Phase 3 with a docs-to-code test (DASH-03, DASH-04)
+- [ ] 03-15-metrics-scrape-PLAN.md — every process scraped, Temporal SDK metrics, saga histogram, booking/NFR dashboard (OBS-01)
 
 **Wave 9** *(blocked on Wave 8 completion)*
 
-- [ ] 03-15-dashboard-closeout-PLAN.md — dashboard flows/decisions/Q&A, PHASE3_TRACE, full regression, end-of-phase human checks (DASH-03, DASH-04)
+- [ ] 03-16-dashboards-nfr-PLAN.md — operations, events and notifications dashboards, analytics and Jaeger datasources, NFR histograms, k6 smoke on the finished stack (OBS-01, ANLY-01..05)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
+- [ ] 03-17-e2e-guarantees-PLAN.md — one Jaeger trace across HTTP/Temporal/Kafka/Celery, forced redelivery with one effect, structured logs (OBS-02, OBS-03, EVENT-02, EVENT-03)
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
+- [ ] 03-18-docs-closeout-PLAN.md — README, architecture, ERD, NFR docs for Phase 3 (incl. EVENT-04 deviation and real-provider caveat) with a docs-to-code test (DASH-03, DASH-04, EVENT-01, OBS-01)
+
+**Wave 12** *(blocked on Wave 11 completion)*
+
+- [ ] 03-19-dashboard-closeout-PLAN.md — dashboard flows, decision cards, Q&A, roadmap, PROJECT.md rows (DASH-03, DASH-04)
+
+**Wave 13** *(blocked on Wave 12 completion)*
+
+- [ ] 03-20-phase-gate-PLAN.md — PHASE3_TRACE, phase-gate full regression on a rebuilt stack, end-of-phase human checks (all 20)
 
 ## Progress
 
@@ -297,4 +314,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 0/15 | Planned | - |
+| 3. Event-Driven System + Observability | 0/20 | Planned | - |
