@@ -5,9 +5,10 @@ named by the Avro record). One topic per aggregate (D-06 revised), so the
 events of one appointment stay ordered relative to each other; the event type
 travels in the Avro record name and the `eventType` header, never in the topic.
 
-Plan 03-01 registers only `appointment.booked`. Plan 03-03 adds the other nine
-event types together with their `.avsc` files, so the catalogue never names a
-schema file that does not exist.
+Plan 03-01 registered `appointment.booked`; plan 03-03 adds the other nine event
+types, each together with its `.avsc` file, so the catalogue never names a schema
+file that does not exist. The deploy-time CLI `libs.events.register` registers
+exactly this catalogue.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ class EventType:
     """Event type constants (dotted, lower-case, as stored in outbox.type)."""
 
     APPOINTMENT_BOOKED: Final = "appointment.booked"
+    APPOINTMENT_CANCELLED: Final = "appointment.cancelled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +50,10 @@ def _spec(event_type: str, aggregate_type: str, pascal_name: str) -> EventSpec:
 
 EVENT_CATALOG: dict[str, EventSpec] = {
     spec.event_type: spec
-    for spec in (_spec(EventType.APPOINTMENT_BOOKED, "appointment", "AppointmentBooked"),)
+    for spec in (
+        _spec(EventType.APPOINTMENT_BOOKED, "appointment", "AppointmentBooked"),
+        _spec(EventType.APPOINTMENT_CANCELLED, "appointment", "AppointmentCancelled"),
+    )
 }
 
 # One topic per aggregate. `cdcprobe` is a test-only topic that no consumer
