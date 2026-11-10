@@ -64,6 +64,17 @@ class SharedSettings(BaseSettings):
     temporal_address: str = "temporal:7233"
     temporal_namespace: str = "default"
 
+    # --- Kafka + Schema Registry (plan 03-01, D-05/D-06) ---
+    # Services never talk to Kafka on the request path: they write an outbox
+    # row and Debezium relays it. The bootstrap servers are read by the
+    # consumer processes; the registry URL is read by every serializer (a
+    # `mock://` URL selects the in-memory client in tests).
+    kafka_bootstrap_servers: str = "localhost:9092"
+    schema_registry_url: str = "http://localhost:8081"
+
+    # --- Analytics service (plan 03-01; read-only metrics API, D-10) ---
+    analytics_service_url: str = "http://analytics:8000"
+
     # --- JWKS cache + internal HTTP behaviour ---
     jwks_cache_ttl_seconds: int = 300
     jwks_miss_backoff_seconds: int = 30

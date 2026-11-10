@@ -32,6 +32,14 @@ dependencies = [
     # Human-vetted in plan 02-06 Task 1 (package legitimacy gate, "Approve 1.34.0").
     # Deviates from the CLAUDE.md pin 1.32.0: every research probe ran on 1.34.0.
     "temporalio==1.34.0",
+    # Human-vetted in plan 03-01 Task 1 (package legitimacy gate, "Approved"); exact pins only.
+    # Celery 5.7.0 is deliberately NOT used (days old at research time).
+    "confluent-kafka[avro,schemaregistry]==2.15.0",
+    "fastavro==1.13.1",
+    "celery==5.6.3",
+    "kombu==5.6.2",
+    "opentelemetry-instrumentation-celery==0.65b0",
+    "prometheus-client==0.26.0",
 ]
 
 [project.optional-dependencies]
@@ -56,3 +64,8 @@ build-backend = "setuptools.build_meta"
 # context installs only the packages it actually copies in (plan 01.1-08).
 [tool.setuptools.packages.find]
 include = ["libs*", "services*"]
+
+# Avro schema files ship with the package (plan 03-01): the registry module
+# loads them with importlib.resources.
+[tool.setuptools.package-data]
+"libs.events" = ["schemas/*.avsc"]
