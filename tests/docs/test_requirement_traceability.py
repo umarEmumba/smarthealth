@@ -38,6 +38,7 @@ PHASE2_TRACE: dict[str, list[str]] = {
     "SCHED-05": [
         "tests/scheduling/test_reschedule.py",
         "tests/workflows/test_change_workflows.py",
+        "tests/e2e/test_phase2_flows.py",
     ],
     "SCHED-06": [
         "tests/scheduling/test_cancel.py",
