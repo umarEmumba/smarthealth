@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-11-commit-kill-proofs-PLAN.md
-last_updated: "2026-11-11T09:26:34.304Z"
+stopped_at: Completed 03-12-visit-sweeper-retirement-PLAN.md
+last_updated: "2026-11-11T09:51:52.971Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 2c24c36f240599ee3e4e2bb1c99ae1947f63d252
+state_head: 5efd4eb069237f2c1d4dd90dc6f7891f98797896
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 53
+  completed_plans: 54
   percent: 60
 ---
 
@@ -105,6 +105,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P09 | 110min | 2 tasks | 19 files |
 | Phase 03 P10 | about 1h20 | 2 tasks | 15 files |
 | Phase 3 P11 | 1h | 3 tasks | 2 files |
+| Phase 03 P12 | 1h | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -205,6 +206,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-09: Temporal client in the visit consumer is connected lazily on the consumer's persistent loop (not eagerly in main); unknown or not-completed visit events are non-retryable, Temporal/DB outages transient
 - [Phase 03]: 03-10: analytics appointment slot_start is versioned by (occurred_at, slot_start) across all six appointment events; views hold the metric math (per-visit wait, per-day booked/cancelled)
 - [Phase 3]: 03-11: D-03 gate passed - visit downstream trigger survives API kill, consumer outage and Connect outage (outbox consumer, not sweeper, proven by consumer log); smoke passes (accept p95 29.3 ms, saga p95 0.52 s); gateway left at the user's raised budget
+- [Phase 03]: 03-12: VisitActivities keeps its positional client argument (unused after the sweeper retired); the visit sweeper workflow and activity name stay registered as a no-op tombstone until list_workflows on its type is empty everywhere
+- [Phase 03]: 03-12: backfill_visit_completed_events.py is dry run by default with an optional --clinic-id scope; live dry run found 0 candidates, no apply was run
 
 ### Pending Todos
 
@@ -245,6 +248,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T09:26:34.238Z
-Stopped at: Completed 03-11-commit-kill-proofs-PLAN.md
+Last session: 2026-11-11T09:51:52.905Z
+Stopped at: Completed 03-12-visit-sweeper-retirement-PLAN.md
 Resume file: None
