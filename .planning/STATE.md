@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-10-analytics-projections-PLAN.md
-last_updated: "2026-11-11T09:12:55.256Z"
+stopped_at: Completed 03-11-commit-kill-proofs-PLAN.md
+last_updated: "2026-11-11T09:26:34.304Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 4879a0bda0c9cc5ab02a90d3e4839a9fd0cc15ff
+state_head: 2c24c36f240599ee3e4e2bb1c99ae1947f63d252
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 52
+  completed_plans: 53
   percent: 60
 ---
 
@@ -104,6 +104,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P08 | 35min | 3 tasks | 13 files |
 | Phase 03 P09 | 110min | 2 tasks | 19 files |
 | Phase 03 P10 | about 1h20 | 2 tasks | 15 files |
+| Phase 3 P11 | 1h | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -203,6 +204,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-08: Patient and Provider are outbox producers (patient-outbox, provider-outbox connectors); only registration/deactivation and schedule-affecting changes emit; events PHI-free, proven at table and Kafka bytes
 - [Phase 03]: 03-09: Temporal client in the visit consumer is connected lazily on the consumer's persistent loop (not eagerly in main); unknown or not-completed visit events are non-retryable, Temporal/DB outages transient
 - [Phase 03]: 03-10: analytics appointment slot_start is versioned by (occurred_at, slot_start) across all six appointment events; views hold the metric math (per-visit wait, per-day booked/cancelled)
+- [Phase 3]: 03-11: D-03 gate passed - visit downstream trigger survives API kill, consumer outage and Connect outage (outbox consumer, not sweeper, proven by consumer log); smoke passes (accept p95 29.3 ms, saga p95 0.52 s); gateway left at the user's raised budget
 
 ### Pending Todos
 
@@ -243,6 +245,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T09:12:55.190Z
-Stopped at: Completed 03-10-analytics-projections-PLAN.md
+Last session: 2026-11-11T09:26:34.238Z
+Stopped at: Completed 03-11-commit-kill-proofs-PLAN.md
 Resume file: None
