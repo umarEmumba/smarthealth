@@ -243,7 +243,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 25 plans: 20/20 executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own), plus 5 gap-closure plans (0/5 executed) from the phase verification (CR-01 event reliability, CR-02 metrics correctness), in waves 14-18, one plan per wave because they share the live stack
+**Plans:** 26 plans: 20/20 executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own), plus 6 gap-closure plans (0/6 executed) from the phase verification (CR-01 event reliability, CR-02 metrics correctness), in waves 14-19, one plan per wave because they share the live stack (revised after plan-check: the multiprocess rollout split into 03-24 and 03-25, closeout renumbered 03-26)
 
 **Wave 1**
 
@@ -306,23 +306,27 @@ Success criterion 1 is defined honestly (research F4): no loss, at-least-once on
 
 **Wave 14** *(gap closure, blocked on Wave 13 completion)*
 
-- [ ] 03-21-consumer-reliability-PLAN.md — shared classifier `libs/events/classify.py` (SQLSTATE 08/53/57/40, narrowed Temporal statuses) in all three consumers, transient cap with `TransientExhausted`, Schema Registry 408/429/5xx retried, commit failures survive (CR-01, WR-02, IN-01, WR-03, WR-07)
+- [ ] 03-21-consumer-reliability-PLAN.md — shared classifier `libs/events/classify.py` (SQLSTATE 08/53/57/40, the seven Temporal outage statuses kept transient) in all three consumers with an AST guard against copies, transient cap with `TransientExhausted` bounding every transient class, Schema Registry 408/429/5xx retried, commit failures survive (CR-01, WR-02, IN-01, WR-03, WR-07)
 
 **Wave 15** *(gap closure, blocked on Wave 14 completion)*
 
-- [ ] 03-22-visit-trigger-recovery-PLAN.md — the existing visit-reconciler restarts lost `visit.completed` triggers, backfill restarts queued-but-dead-lettered visits, live e2e recovery proof (CR-01, D-03)
+- [ ] 03-22-visit-trigger-recovery-PLAN.md — the existing visit-reconciler restarts lost `visit.completed` triggers, clinic-scoped harness tests with a leftover guard, backfill restarts queued-but-dead-lettered visits, `scripts/replay_dlq.py` (dry run by default) replays dead-lettered records to their original topic, live e2e recovery proof (CR-01, D-03, WR-03 recovery)
 
 **Wave 16** *(gap closure, blocked on Wave 15 completion)*
 
-- [ ] 03-23-connection-budget-PLAN.md — engine registry retires closed-loop engines, pool size as settings, Compose budget under `max_connections=300`, measured peak (WR-05)
+- [ ] 03-23-connection-budget-PLAN.md — engine registry retires closed-loop engines, pool size as settings, Compose budget under `max_connections=300` derived from Compose, Dockerfiles, connectors and Grafana provisioning, measured peak below 270 (WR-05)
 
 **Wave 17** *(gap closure, blocked on Wave 16 completion)*
 
-- [ ] 03-24-multiprocess-metrics-PLAN.md — Prometheus multiprocess mode for the nine gunicorn APIs (two workers kept), gateway `/metrics` from `MultiProcessCollector`, no-reset e2e check (CR-02, OBS-01)
+- [ ] 03-24-multiprocess-metrics-PLAN.md — Prometheus multiprocess mode (two workers kept): shared gunicorn config and exposition helper, scheduling and gateway switched, gateway `/metrics` from `MultiProcessCollector`, no-reset e2e with driven traffic, red before and green after (CR-02, OBS-01)
 
 **Wave 18** *(gap closure, blocked on Wave 17 completion)*
 
-- [ ] 03-25-gap-closeout-PLAN.md — docs and dashboard corrected with guard tests, k6 smoke rerun only, final regression, follow-ups, gateway budget restored last (EVENT-05, OBS-01, DASH-03, DASH-04)
+- [ ] 03-25-multiprocess-rollout-PLAN.md — the other seven APIs in multiprocess mode, traffic proven to reach and be fully counted for all nine jobs, single-process roles unaffected, k6 smoke rerun only with exit status and per-job resets recorded (CR-02, OBS-01, D-04 smoke)
+
+**Wave 19** *(gap closure, blocked on Wave 18 completion)*
+
+- [ ] 03-26-gap-closeout-PLAN.md — docs and dashboard corrected with guard tests (three dashboard sentences), final regression with fail-closed gate checks, follow-ups, gateway budget restored as the last automated step, user re-check of the three sentences (EVENT-05, OBS-01, DASH-03, DASH-04)
 
 ## Progress
 
@@ -334,4 +338,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 20/25 | In Progress (gap closure planned) |  |
+| 3. Event-Driven System + Observability | 20/26 | In Progress (gap closure planned) |  |
