@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.scheduling.domain.contracts import BILLING_VOID_CHECKED
 from services.scheduling.domain.enums import AppointmentStatus, SlotStatus
 from services.scheduling.domain.errors import IdempotencyKeyReused, PatientOverlap, SlotTaken
+from services.scheduling.events import APPOINTMENT_BOOKED, emit_appointment_event
 from services.scheduling.repository.idempotency_repo import (
     claim_idempotency_key,
     get_idempotency_record,
@@ -221,17 +222,20 @@ async def confirm_booking(
     if slot is None:
         return False
 
-    confirmed = await db.scalar(
-        text(
-            """
-            UPDATE appointments
-               SET status = 'confirmed', version = version + 1, updated_at = now()
-             WHERE id = :a AND status = 'pending'
-            RETURNING id
-            """
-        ),
-        {"a": appointment_id},
-    )
+    confirmed = (
+        await db.execute(
+            text(
+                """
+                UPDATE appointments
+                   SET status = 'confirmed', version = version + 1, updated_at = now()
+                 WHERE id = :a AND status = 'pending'
+                RETURNING id, clinic_id, patient_id, provider_id, slot_id, slot_start,
+                         slot_end, version, updated_at
+                """
+            ),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
     if confirmed is None:  # pragma: no cover - the row is locked as pending above
         raise RuntimeError("appointment left 'pending' while locked")
     await append_status_history(
@@ -241,6 +245,7 @@ async def confirm_booking(
         to_status=AppointmentStatus.CONFIRMED,
         actor=actor,
     )
+    await emit_appointment_event(db, APPOINTMENT_BOOKED, confirmed)
     return True
 
 

@@ -43,6 +43,7 @@ from libs.audit.mongo_indexes import ensure_audit_indexes
 from libs.auth.service_tokens import ServiceTokenProvider, ServiceTokenUnavailable, load_client_secret
 from libs.db.mongo import get_mongo_client
 from libs.db.postgres import get_session_factory
+from libs.events.registry import warm_up
 from libs.http import _get_default_client
 from libs.observability.logging import configure_logging, get_logger
 from libs.observability.otel import configure_tracer_provider
@@ -55,6 +56,7 @@ from services.scheduling.activities.reconcile import ReconcilerActivities
 from services.scheduling.activities.schedule_change import ScheduleChangeActivities
 from services.scheduling.activities.waitlist import WaitlistActivities
 from services.scheduling.config import settings
+from services.scheduling.events import SCHEDULING_EVENT_TYPES
 from services.scheduling.schedules import ensure_schedules
 from services.scheduling.workflows.booking import BookingWorkflow
 from services.scheduling.workflows.cancel import CancelWorkflow
@@ -172,6 +174,13 @@ async def main() -> int:
     )
     waitlist = WaitlistActivities(get_session_factory(settings.database_url), get_mongo_client())
     await ensure_audit_indexes(get_mongo_client())
+    try:
+        # The confirm, cancel and reschedule activities write outbox rows; resolve
+        # the schema ids before polling (retried while the registry starts, T-3-04).
+        await warm_up(SCHEDULING_EVENT_TYPES)
+    except Exception as exc:  # noqa: BLE001 - the registry is a start-up dependency; restart
+        log.error("worker.event_registry_unavailable", error=type(exc).__name__)
+        return 1
     try:
         await ensure_schedules(client)
     except Exception as exc:  # noqa: BLE001 - recovery Schedules are required; restart
