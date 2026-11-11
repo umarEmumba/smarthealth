@@ -59,6 +59,7 @@ ALLOWED_CAPS = {
     "REJECT_DUPLICATE",  # temporalio WorkflowIDConflictPolicy / reuse policy member
     "USE_EXISTING",
     "ALLOW_DUPLICATE",
+    "CHILD_OF",  # Jaeger / OpenTracing reference type shown in a trace, not a setting
 }
 
 # Phase 3 Compose services; each must exist in the Compose file and in the docs table.
@@ -291,3 +292,113 @@ def test_the_architecture_doc_states_effect_level_exactly_once_and_at_least_once
     text = phase3_markdown()
     assert "effect-level exactly-once" in text or "effect-level exactly once" in text
     assert "at-least-once" in text
+
+
+# --------------------------------------------------------------------------- README settings table
+
+
+def _readme_phase3_settings_rows() -> list[tuple[list[str], list[str]]]:
+    """(variable tokens, default tokens) of each row of the README's 'Phase 3 settings' table."""
+    text = README.read_text(encoding="utf-8")
+    assert "### Phase 3 settings" in text, "README lost its 'Phase 3 settings' section"
+    section = text[text.index("### Phase 3 settings") :]
+    section = section[: section.index("Retired in Phase 1.1")]
+    rows = []
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        rows.append((re.findall(r"`([^`]+)`", cells[0]), re.findall(r"`([^`]+)`", cells[2])))
+    return rows
+
+
+def test_every_phase3_setting_in_the_readme_exists_and_its_default_is_in_the_code() -> None:
+    rows = _readme_phase3_settings_rows()
+    assert len(rows) >= 15
+    for names, defaults in rows:
+        for name in names:
+            assert name.lower() in source_corpus(), f"README Phase 3 settings: {name!r} is not used by the code"
+        for default in defaults:
+            if "<" in default or default in {"none", "false", "true"}:
+                continue
+            assert default.lower() in source_corpus(), f"README default {default!r} for {names} is not in the code"
+
+
+def test_the_readme_names_every_phase3_setting_the_code_defines() -> None:
+    """The notification and analytics settings classes each alias their env names; all are documented."""
+    readme = README.read_text(encoding="utf-8")
+    for module in ("services/notification/config.py", "services/analytics/config.py"):
+        source = (REPO_ROOT / module).read_text(encoding="utf-8")
+        for alias in re.findall(r'validation_alias="([A-Z0-9_]+)"', source):
+            assert f"`{alias}`" in readme, f"README does not document {alias} ({module})"
+
+
+def test_env_example_carries_the_analytics_database_url_in_host_form() -> None:
+    lines = [
+        line
+        for line in (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.startswith("ANALYTICS_DATABASE_URL=")
+    ]
+    assert len(lines) == 1
+    assert "localhost:5433/analytics_db" in lines[0]
+    assert "changeme" in lines[0], "the .env.example value must be a placeholder, never a real credential"
+
+
+# --------------------------------------------------------------------------- stale statements
+
+
+STALE_CLAIMS = (
+    r"no application code uses them yet",
+    r"scaffolding only",
+    r"workers expose no metrics",
+    r"phase 3 replaces\W",
+    r"phase 3 can publish the same",
+    r"the general fix is phase 3's",
+    r"dashboards not built yet",
+    r"grafana dashboards not built",
+    r"container runs; dashboards not built",
+    r"no kafka/outbox until phase 3",
+    r"event backbone \(kafka\), celery jobs\s+and operational analytics are phase 3 and are \*\*not built yet",
+    r"phase 3 observability measures them",
+    r"measurement is phase 3 observability work",
+    r"downstream sweeper \(temporal schedules\) recover",
+    r"`visit-downstream-sweeper` \(every 60 s\)",
+    r"visit-downstream-sweeper \(every 60 s\)",
+    r"removed by\s+event-fed local copies in phase 3",
+)
+
+STALE_DOCS = ("README.md", "architecture.md", "architecture.html")
+
+
+@pytest.mark.parametrize("name", STALE_DOCS)
+def test_documents_no_longer_make_claims_phase3_made_false(name: str) -> None:
+    text = re.sub(r"\s+", " ", documents()[name].lower())
+    for claim in STALE_CLAIMS:
+        assert not re.search(claim, text), f"{name} still claims {claim!r}"
+
+
+def test_the_architecture_doc_states_effect_level_exactly_once_and_the_deviation_records() -> None:
+    text = phase3_markdown()
+    assert "effect-level exactly-once" in text
+    assert "EVENT-04" in text and "REQUIREMENTS.md" in text
+    assert "idempotency key" in text
+    assert "max_slot_wal_keep_size" in text
+    assert "hold reaper" in text.lower() and "pending-booking starter" in text.lower()
+
+
+# --------------------------------------------------------------------------- metric names
+
+
+_METRIC_NAME = re.compile(r"[a-z][a-z0-9_]*_(?:seconds|total|lag)")
+
+
+@pytest.mark.parametrize("name", ["architecture.md", "nfr.md", "loadtest/README.md"])
+def test_metric_names_the_docs_cite_exist_in_the_code_or_the_dashboards(name: str) -> None:
+    text = documents()[name]
+    if name == "architecture.md":
+        text = phase3_markdown()
+    for token in sorted(backticked(text)):
+        base = re.sub(r"\{.*\}$", "", token)
+        if _METRIC_NAME.fullmatch(base):
+            # k6 trend names live in loadtest/booking.js, which the corpus reads (`.js`).
+            assert base in source_corpus(), f"{name}: the metric {token!r} is not defined in the code or dashboards"

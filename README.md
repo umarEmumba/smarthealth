@@ -13,8 +13,12 @@ and a simulated billing pre-check — run by two dedicated Temporal worker conta
 **Phase 2.1 closes the Week 1-2 mentor review** (items M1, M2, S3-S7, C1-C5, D1, D2): the
 appointment state machine with a check-in window, provider schedule-change propagation,
 reconcilers for stuck states, single-use refresh tokens, paginated lists, self-service reads,
-and quantified NFR targets with a runnable load test. The event backbone (Kafka), Celery jobs
-and operational analytics are Phase 3 and are **not built yet**.
+and quantified NFR targets with a runnable load test. **Phase 3 adds the event backbone**: a
+transactional outbox in each producing service, relayed to Kafka by Debezium (change data capture) with Avro
+payloads; three idempotent consumers that drive notifications and reminders (Celery on RabbitMQ, Temporal
+timers, a fake provider), the visit downstream work (the visit sweeper is retired) and the analytics
+projections served at `/api/analytics`; Prometheus metrics from every process, Grafana dashboards provisioned
+from files, and one connected trace per booking across HTTP, Temporal, Kafka and Celery.
 
 - Architecture & decision record (open directly from disk, no server needed):
   `docs/architecture-dashboard.html`
@@ -30,13 +34,15 @@ and operational analytics are Phase 3 and are **not built yet**.
 | API Gateway, Identity, Organization, Provider, Patient services | Built and running in Docker Compose |
 | Scheduling service (Phase 2, 2.1) | Slots, appointments (202 + polling), cancel, reschedule, waitlist; booking / cancel / reschedule / waitlist-advance workflows. Phase 2.1: appointment states `checked_in`, `completed`, `no_show` with a check-in window; the schedule-change workflow (withdraws slots, flags bookings); the reconciler |
 | Billing service (Phase 2) | Simulated, deterministic pre-check and the billing record state machine; internal API plus a read-only `/api/billing` route |
-| Visit service (Phase 2, 2.1) | Check-in (moves the appointment to `checked_in` first) → in progress → completed; completion starts a downstream workflow after its commit, which also completes the appointment; settlement markers and a reconciler Schedule |
+| Visit service (Phase 2, 2.1, 3) | Check-in (moves the appointment to `checked_in` first) → in progress → completed; completion commits a `visit.completed` outbox row, and the `visit-consumer` starts the downstream workflow, which also completes the appointment; settlement markers and a reconciler Schedule |
 | `scheduling-worker`, `visit-worker` (Phase 2) | Temporal workers (same images as their APIs, separate containers) polling `scheduling-tq` / `visit-tq` |
 | PostgreSQL (one database per service), MongoDB `audit_log`, Redis | Built and in use |
-| Temporal (`auto-setup`, local dev only) | In use since Phase 2: sagas, retries, Schedules (hold reaper, pending-booking starter, visit sweeper; Phase 2.1 adds the schedule-change poller, the Scheduling reconciler and the Visit reconciler) |
-| k6 load test, NFR targets (Phase 2.1) | `loadtest/` (k6, pinned image) and `docs/nfr.md`: targets are defined and the profiles are runnable; they are **not yet measured** (Phase 3), and the `smoke` profile crossed its latency thresholds on the local stack (see [Known limitations](#known-limitations)) |
-| Jaeger, Prometheus, Grafana | Tracing and per-service metrics wired; Grafana dashboards not built yet; the workers expose no metrics yet |
-| Kafka + Schema Registry, Celery + RabbitMQ | Containers run and report healthy; **no application code uses them yet** (Phase 3) |
+| Temporal (`auto-setup`, local dev only) | In use since Phase 2: sagas, retries, Schedules (hold reaper, pending-booking starter; Phase 2.1 adds the schedule-change poller, kept paused, the Scheduling reconciler and the Visit reconciler). The visit downstream sweeper Schedule is **retired** in Phase 3; Phase 3 adds the reminder and follow-up workflows on `notification-tq` |
+| Event backbone (Phase 3) | Outbox tables in Scheduling, Visit, Provider and Patient; Debezium Connect (`connect`, four connectors, `quay.io/debezium/connect:3.7.1.Final`); Kafka (KRaft) and Schema Registry with ten Avro subjects; topics `smarthealth.appointment.events`, `smarthealth.visit.events`, `smarthealth.patient.events`, `smarthealth.provider.events` and three dead-letter topics. One-shot jobs `kafka-init`, `schema-init`, `connect-init` |
+| Consumers and background work (Phase 3) | `visit-consumer` (group `visit-downstream`), `notification-consumer` (group `notification-trigger`) with `notification-celery` (Celery on RabbitMQ 4.3, a fake provider) and `notification-temporal-worker` (reminders, follow-ups), `analytics-consumer` (group `analytics-projection`); `rabbitmq-init` provisions the broker vhost and user |
+| Analytics (Phase 3) | `analytics` service and its own `analytics_db`: five operational metrics (total patients, appointments over time, completed visits, cancellation rate, average wait) behind `GET /api/analytics/summary` and `/timeseries`, also in Grafana |
+| Jaeger, Prometheus, Grafana (Phase 3) | One connected trace per booking (57 spans over 12 services measured); Prometheus scrapes 20 targets (APIs, workers, consumers, Celery, RabbitMQ); four Grafana dashboards provisioned from files (booking/NFR, events, notifications, operations) |
+| k6 load test, NFR targets (Phase 2.1) | `loadtest/` (k6, pinned image) and `docs/nfr.md`: the `smoke` profile passed every threshold in three runs on the Phase 3 stack; `sustained`, `burst` and `contention` were **not run** (deferred by the user until after Phase 3), so NFR-01 to NFR-08 are targets that are **not yet measured** (see [Known limitations](#known-limitations)) |
 
 This README describes what the repository contains; it does not claim the platform
 is production-hardened. Known gaps are listed under [Known limitations](#known-limitations).
@@ -71,11 +77,11 @@ is production-hardened. Known gaps are listed under [Known limitations](#known-l
                               |   ScheduleChange, Reconciler                               |
                               |   + Schedules: hold reaper, pending starter,               |
                               |     schedule-change poller, reconciler                     |
-   visit API --start------->  | visit-tq: VisitCompleted + Schedules: downstream           |
-                              |     sweeper, visit reconciler                              |
+   visit-consumer --start-->  | visit-tq: VisitCompleted + the visit reconciler Schedule   |
+   notification-consumer -->  | notification-tq: ReminderWorkflow, FollowUpReminderWorkflow|
                               +------------------------------------------------------------+
-                                   ^ polled by                     ^ polled by
-                            scheduling-worker                 visit-worker
+                                   ^ polled by          ^ polled by       ^ polled by
+                            scheduling-worker      visit-worker   notification-temporal-worker
                      (activities call Patient/Provider/      (activities call Billing
                       Organization/Billing /internal         /internal with Visit's
                       with Scheduling's service token)       service token)
@@ -83,6 +89,14 @@ is production-hardened. Known gaps are listed under [Known limitations](#known-l
    Synchronous /internal reference checks (D-05 of Phase 1.1, aud-scoped service tokens in Phase 2):
      Identity -> Organization        Patient -> Organization, Identity     Provider -> Organization, Identity
      Scheduling -> Patient, Provider, Organization, Billing                Visit -> Scheduling, Provider, Billing
+   (Phase 3 did not replace these checks with event-fed copies: a write still needs the owning service up.)
+
+   Event backbone (Phase 3): services never call Kafka; each writes an outbox row in its own transaction
+     scheduling_db / patient_db / provider_db / visit_db .outbox --WAL--> connect (Debezium, 4 connectors)
+        --> Kafka smarthealth.{appointment,visit,patient,provider}.events (Avro, Schema Registry)
+        --> visit-consumer (visit-downstream) · notification-consumer (notification-trigger) · analytics-consumer (analytics-projection)
+     notification-consumer --> RabbitMQ --> notification-celery (fake provider)   and   --> Temporal reminders
+     analytics-consumer --> analytics_db --> analytics (/api/analytics) and Grafana (SELECT-only role)
 
    Shared infrastructure (not service databases):
      MongoDB  audit_log   - every service and worker appends audit records (ids only, never PHI)
@@ -117,6 +131,14 @@ Key rules (see the dashboard's decision cards for alternatives and tradeoffs):
 - **Convergence for stuck states (Phase 2.1).** Reconciler Schedules re-derive what should have
   happened from the database (dead `pending` bookings, waitlist entries stuck `matched`, voided
   billing, no-shows, unsettled visits) and repeat idempotent steps; they never guess.
+- **Transactional outbox, relayed by CDC (Phase 3).** A state change in the D-07 event set (ten event
+  types) and its outbox row commit together or not at all; Debezium reads the Postgres WAL and publishes
+  to Kafka, so no service holds a relay loop. Delivery is **at-least-once on the wire**: a hard kill of
+  Connect re-emits events (measured: 5 duplicates of 11 messages). Every consumer is idempotent, so the
+  **effect** of each event happens once (effect-level exactly-once, proven by forced redelivery).
+- **Payloads carry ids and timestamps only (Phase 3).** Avro with Schema Registry, one subject per event
+  type; a test scans every schema for PHI field names and the producers' tests search the raw Kafka bytes
+  for seeded PHI.
 
 ## Local development
 
@@ -140,6 +162,11 @@ python scripts/generate_jwt_keypair.py
 # Compose delivers them as secrets. Refuses to overwrite unless --force (rotation).
 python scripts/generate_service_secrets.py
 
+# Phase 3 infrastructure credentials: the Debezium replication role, the read-only Grafana role
+# and the notification broker user. Writes three gitignored 0600 files under infra/secrets/infra/
+# (debezium.properties, grafana_ro.secret, notification_broker.secret); prints paths only.
+python scripts/generate_infra_secrets.py
+
 docker compose -f infra/docker-compose.yml up -d --build
 scripts/compose_healthcheck.sh --wait 420
 ```
@@ -156,13 +183,23 @@ they never run migrations) → the gateway.
 
 The Temporal UI (`http://localhost:8080`, service `temporal-ui`) shows every workflow's
 history: `booking-<appointment id>`, `cancel-…`, `reschedule-…`, `waitlist-advance-…`,
-`visit-completed-<visit id>` and the three Schedules.
+`visit-completed-<visit id>`, `reminder-<appointment id>`, `followup-<visit id>` and the Schedules.
+
+Phase 3 startup adds: Postgres now runs with `wal_level=logical` and `max_slot_wal_keep_size=2GB`
+(an existing volume needs one Postgres restart and loses no data); the one-shot jobs `kafka-init` (topics),
+`schema-init` (Avro subjects) and `connect-init` (the four Debezium connectors, checked by **task** state,
+not just connector state) and `rabbitmq-init` (broker vhost and user) must exit 0; and the analytics
+service runs its own Alembic migration when its container starts. To migrate by hand from the host:
+`.venv/bin/alembic -c services/analytics/migrations/alembic.ini upgrade head` (with `ANALYTICS_DATABASE_URL`
+set, host form `localhost:5433`). The Phase 3 e2e tests need the whole stack, so run
+`scripts/generate_infra_secrets.py` and a rebuilt stack (`up -d --build`) first.
+`Connect` and every consumer, worker and metrics port publish no host port.
 
 Local resource use: the stack is the infrastructure containers plus eight API containers
-(two gunicorn workers each by default, `WEB_CONCURRENCY`) and two worker containers; the
-application side alone uses about 2 GB of memory. Postgres runs with `max_connections=300`
-because Temporal and the per-service pools exhausted the default 100; after an e2e run the
-stack held 62 client connections.
+(two gunicorn workers each by default, `WEB_CONCURRENCY`), the Analytics API and the worker, consumer and
+Celery containers; the application side alone uses about 2 GB of memory. Postgres runs with
+`max_connections=300` because Temporal and the per-service pools exhausted the default 100; after an e2e
+run the stack held 62 client connections (measured before Phase 3).
 
 ### Concurrent-booking demo
 
@@ -253,7 +290,20 @@ kills a worker mid-saga on the Compose Temporal and shows the booking still conf
 
 `tests/docs/test_phase21_traceability.py` maps each Phase 2.1 review item (M1, M2, S3-S7,
 C1-C5, D1, D2) to the test files that prove it and fails if a mapped file disappears or the
-docs stop naming the item.
+docs stop naming the item. `tests/docs/test_phase3_docs.py` checks that every topic, consumer group,
+Compose service, event type, queue and setting the Phase 3 documents name exists in the code, and that no
+document claims wire-level exactly-once delivery.
+
+**Phase 3 tests (`tests/e2e/test_phase3_*.py`, `-m e2e`)** run against the live stack and need the Phase 3
+prerequisites above (the infrastructure secrets script, a rebuilt stack, every one-shot job exited 0). They
+force the failures the guarantees are about: killing the committing process, stopping Connect, rewinding
+consumer groups, hard-killing Connect and counting the duplicate on the wire, and reading one booking back as
+one Jaeger trace. The non-e2e suites use throwaway RabbitMQ vhosts, Mongo databases and Kafka topics.
+Tests that complete visits or book appointments create real events on the shared stack, so the consumers
+process them; analytics assertions are scoped to a unique clinic. Two known unrelated failures:
+`tests/provider/test_provider_tracer.py::test_admin_registers_provider_through_gateway` (a specialty-ordering
+assertion that already failed before Phase 3) and `tests/identity/test_email_migration.py` (timing-sensitive
+under load; it runs real Alembic downgrade and upgrade against `identity_db`).
 
 The in-process suites mount every service ASGI app into one HTTP client, so cross-service
 calls run without sockets. They do **not** exercise real network behaviour: a container going
@@ -266,8 +316,9 @@ verified (see [Known limitations](#known-limitations)).
 `sustained`, `burst`, `contention`; k6 runs from a pinned Docker image, nothing is installed).
 The numeric targets are single-sourced in `loadtest/nfr.json` and explained in `docs/nfr.md`.
 The profiles need the gateway rate limits raised and a seeded world; follow
-`loadtest/README.md`, and run it only against a local or dedicated stack. The targets are
-**not yet measured** (Phase 3 observability measures them).
+`loadtest/README.md`, and run it only against a local or dedicated stack. The `smoke` profile
+has passed on the Phase 3 stack; the other three profiles are **not yet measured** (deferred by the user until
+after Phase 3).
 
 ## API overview
 
@@ -295,6 +346,8 @@ internal-only `/metrics`.
 | `/api/waitlist`, `/api/waitlist/{id}`, `.../cancel` | Scheduling | Join a provider's waitlist (optional window); a freed slot auto-books the first matching entry |
 | `POST /api/visits`, `GET /api/visits`, `GET /api/visits/{id}`, `.../start`, `.../complete` | Visit | Check-in (front-desk/admin, confirmed appointments only, **inside the check-in window**: `409` with `appointment not confirmed`, `check-in window not open` or `check-in window closed`), provider starts/completes; clinic-scoped status list for ops (polling; own `limit`/`offset`, default 50, max 200) |
 | `GET /api/billing/records?appointment_id=`, `/api/billing/records/{id}` | Billing | Read-only billing record and its status history (front-desk/admin, clinic-scoped) |
+| `GET /api/analytics/summary?clinic_id=&from=&to=` | Analytics (Phase 3) | Admin (any clinic, or all) and front desk (own clinic only; another `clinic_id` is `403`); total patients, appointments booked, completed visits, cancellation rate and average wait in seconds over inclusive UTC days (default last 30 days, at most 366; `422` otherwise). A rate or average with nothing to divide is `null`, not 0. Counts start at Phase 3 go-live |
+| `GET /api/analytics/timeseries?metric=appointments_booked\|completed_visits&...` | Analytics (Phase 3) | Same roles and window; one zero-filled value per UTC day |
 | `/health` | each service / gateway | Liveness |
 
 **Appointment states (Phase 2.1):** `pending` → `confirmed` → `checked_in` → `completed`, plus
@@ -315,7 +368,7 @@ Not routed by the gateway (they return `404` at the edge): `/internal/*` (refere
 between services) and any path containing dot segments, encoded slashes or NUL. Billing has no
 write route at the edge: its records change only through Scheduling's and Visit's workflows.
 Every booking-type change is asynchronous — clients poll the returned status URL; there are no
-WebSocket/SSE pushes yet. Soft-delete is `is_active=false` plus `deactivated_at`;
+WebSocket/SSE pushes (the events are internal; nothing is pushed to clients). Soft-delete is `is_active=false` plus `deactivated_at`;
 deactivating something already inactive returns `200` as a no-op.
 
 Behaviour change from Phase 1: creating a provider under a missing (or inactive) department
@@ -367,7 +420,7 @@ credentials, and never place the private key in an environment variable or image
 | `SCHEDULING_RECONCILE_MATCHED_AFTER_MINUTES` | `.env` (optional) | `15` | A waitlist entry stuck `matched` longer than this is resolved from its appointment |
 | `SCHEDULING_RECONCILE_BILLING_LOOKBACK_HOURS` | `.env` (optional) | `24` | Failed bookings (`hold_expired`, `workflow_lost`) in this window get their billing voided if it was not |
 | `SCHEDULING_RECONCILE_BATCH_LIMIT` | `.env` (optional) | `50` | Rows per list per reconciler run, oldest first |
-| `VISIT_SWEEPER_INTERVAL_SECONDS` / `VISIT_SWEEPER_GRACE_SECONDS` | `.env` (optional) | `60` / `30` | Visit downstream sweeper Schedule |
+| `VISIT_SWEEPER_INTERVAL_SECONDS` / `VISIT_SWEEPER_GRACE_SECONDS` | retired | none | The visit sweeper is retired in Phase 3; these variables are ignored if still set |
 | `VISIT_RECONCILE_INTERVAL_SECONDS` / `VISIT_RECONCILE_GRACE_MINUTES` | `.env` (optional) | `60` / `10` | Visit reconciler Schedule; how long a completed visit's billing or appointment marker may stay empty before it steps in |
 | `IDENTITY_BCRYPT_THREADS` | `.env` (optional) | `4` | Size of the bounded thread pool that runs bcrypt off the event loop |
 | `BILLING_PRECHECK_FAIL_PREFIX` | both | `DENY-` | A `coverage_ref` with this prefix is deterministically denied (demo/test lever) |
@@ -381,6 +434,37 @@ credentials, and never place the private key in an environment variable or image
 | `SMARTHEALTH_E2E_REQUIRE_STACK` | tests only | unset | `1` makes the smoke test fail instead of skip when no stack is up |
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | shell only | none | Inputs to `scripts/bootstrap_admin.py`; never put in a file |
 | `POSTGRES_USER/PASSWORD/DB`, `RABBITMQ_DEFAULT_USER/PASS`, `KAFKA_CLUSTER_ID`, `GF_SECURITY_ADMIN_PASSWORD`, `*_HOST_PORT` | `infra/.env` | unchanged | Phase 1 infrastructure variables |
+
+### Phase 3 settings
+
+Names and defaults from the settings classes (`libs/config.py`, `services/analytics/config.py`,
+`services/notification/config.py`, `services/visit/config.py`). Secrets are files, referenced by path only:
+`infra/secrets/infra/debezium.properties`, `infra/secrets/infra/grafana_ro.secret` and
+`infra/secrets/infra/notification_broker.secret` (written by `scripts/generate_infra_secrets.py`, gitignored,
+mode 0600, delivered as Compose secrets, never environment values).
+
+| Variable | File | Default | Purpose |
+|---|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `.env` (host runs; Compose sets `kafka:29092`) | `localhost:9092` | Kafka bootstrap for consumer processes |
+| `SCHEMA_REGISTRY_URL` | `.env` (host runs; Compose sets `http://schema-registry:8081`) | `http://localhost:8081` | Registry used by every serializer (`mock://` in unit tests) |
+| `ANALYTICS_DATABASE_URL` | `.env` (host runs) | `postgresql+asyncpg://analytics_svc:<password>@localhost:5433/analytics_db` | Analytics' own database (the host form uses port 5433) |
+| `ANALYTICS_SERVICE_URL` | `.env` (optional) | `http://analytics:8000` | Analytics base URL (container network) |
+| `ANALYTICS_CONSUMER_START` | Compose sets `latest` | code default `earliest` | Where a new `analytics-projection` group starts; `latest` makes the metrics count from go-live (D-13) |
+| `ANALYTICS_DEFAULT_WINDOW_DAYS` | `.env` (optional) | `30` | Default reporting window of the analytics API |
+| `ANALYTICS_CONSUMER_METRICS_PORT` / `ANALYTICS_CONSUMER_HEARTBEAT_PATH` | `.env` (optional) | `9100` / `/tmp/analytics-consumer.alive` | Consumer metrics port (internal only) and healthcheck file |
+| `VISIT_CONSUMER_METRICS_PORT` / `VISIT_CONSUMER_HEARTBEAT_PATH` | `.env` (optional) | `9100` / `/tmp/visit-consumer.alive` | Visit consumer metrics port (internal only) and healthcheck file |
+| `NOTIFICATION_BROKER_HOST` / `NOTIFICATION_BROKER_PORT` / `NOTIFICATION_BROKER_VHOST` | `.env` (optional) | `localhost` / `5672` / `smarthealth` | RabbitMQ address and vhost for Celery |
+| `NOTIFICATION_BROKER_USER` / `NOTIFICATION_BROKER_PASSWORD_FILE` | `.env` (optional) | `smarthealth_notification` / `infra/secrets/infra/notification_broker.secret` | Non-admin broker user and its password **file** |
+| `NOTIFICATION_RABBITMQ_MANAGEMENT_URL` | `.env` (optional) | `http://localhost:15672` | Read by `rabbitmq-init` to provision the broker user |
+| `NOTIFICATION_RETRY_BACKOFF_BASE_SECONDS` / `NOTIFICATION_MAX_RETRIES` | `.env` (optional) | `2.0` / `5` | Exponential retry of a transient provider failure before dead-lettering |
+| `NOTIFICATION_REMINDER_LEADS_MINUTES` | `.env` (optional) | `1440,120` | Reminder leads before the slot (24 h and 2 h), a comma list of positive integers |
+| `NOTIFICATION_FOLLOWUP_DELAY_MINUTES` | `.env` (optional) | `4320` | Follow-up delay after a completed visit (3 days) |
+| `NOTIFICATION_MAX_EVENT_AGE_MINUTES` | `.env` (optional) | `1440` | Booking, cancellation and reschedule events older than this are recorded `skipped_stale`, not sent |
+| `NOTIFICATION_CONSUMER_START` | Compose sets `latest` | code default `earliest` | Where a new `notification-trigger` group starts (D-13) |
+| `NOTIFICATION_FAKE_FAIL_PREFIX` | `.env` (optional) | `FAIL-` | A dedupe key starting with it makes the fake provider fail (a demo and test lever, like `DENY-` for billing) |
+| `NOTIFICATION_FAKE_CRASH_ENABLED` | tests only | `false` | Test-only crash switch for the worker-kill proof; **never set in Compose** (a test asserts it) |
+| `NOTIFICATION_METRICS_PORT` / `NOTIFICATION_CONSUMER_HEARTBEAT_PATH` / `NOTIFICATION_TEMPORAL_HEARTBEAT_PATH` | `.env` (optional) | `9100` / `/tmp/notification-consumer.alive` / `/tmp/notification-temporal-worker.alive` | Metrics port (internal only) and healthcheck files |
+| `WORKER_METRICS_PORT` / `TEMPORAL_SDK_METRICS_BIND` | `.env` (optional) | `9100` / `0.0.0.0:9464` | Application and Temporal SDK metrics of each Temporal worker (internal only; Prometheus scrapes both) |
 
 Retired in Phase 1.1 and no longer read by any service: a shared `DATABASE_URL`, any shared
 JWT secret (`JWT_SECRET_KEY`), `JWT_ALGORITHM`, and the old single-API host port
@@ -396,8 +480,9 @@ Prometheus 9090, Grafana 3000.
 Python 3.12 · FastAPI · SQLAlchemy 2.0 async + asyncpg · Alembic (per service) · PostgreSQL ·
 MongoDB (async PyMongo) · Redis · python-jose (RS256) · httpx · structlog · Temporal
 (`temporalio` 1.34.0 SDK, `auto-setup` server for local dev) · OpenTelemetry → Jaeger (OTLP) ·
-Prometheus + Grafana · Docker Compose · k6 for the load test (pinned Docker image, nothing installed). Present as scaffolding for Phase 3: Kafka + Schema
-Registry, Celery + RabbitMQ.
+Prometheus + Grafana · Docker Compose · k6 for the load test (pinned Docker image, nothing installed). Phase 3:
+Kafka (KRaft) + Schema Registry with Avro (`confluent-kafka`, `fastavro`), Debezium on Kafka Connect
+(`quay.io/debezium/connect:3.7.1.Final`), Celery 5.6.3 on RabbitMQ 4.3 and Temporal reminder timers.
 
 ## Known limitations
 
@@ -406,15 +491,17 @@ Logout, PHI log-safety and database isolation are implemented but **not fully ha
 
 Phase 2 (scheduling, visits, billing):
 
-- **Interim mechanisms that Phase 3 replaces:** the pending-booking starter and the visit
-  downstream sweeper (Temporal Schedules) recover a workflow start lost between a commit and
-  `start_workflow` — Phase 3 replaces them with a transactional outbox. Notification,
-  follow-up and analytics steps are **stubs** (a PHI-free log line plus an audit entry) — Phase
-  3 replaces them with Celery jobs and Kafka events. Status is **polling only**.
+- **Interim mechanisms, after Phase 3:** the visit downstream sweeper is **retired** (the `visit.completed`
+  outbox event is the only trigger). The pending-booking starter, the hold reaper and both reconcilers
+  **stay** as safety nets because events do not subsume them (the accept path writes no outbox row; an
+  expired hold emits nothing). The notification, follow-up and analytics steps inside the Phase 2 workflows
+  are still **intent records** (a PHI-free log line plus an audit entry) that send nothing; real
+  notifications come from the event consumers. Client status is **polling only**.
 - Temporal runs from the `auto-setup` image, which is **not a production topology**
   (production would use `temporalio/server` with a separate schema job). Workflow histories
   are kept for the namespace's 24 h retention only.
-- The two workers expose **no metrics** endpoint (no HTTP listener); only the APIs are scraped.
+- In Phase 2 only the APIs were scraped; since Phase 3 every worker, consumer and the Celery worker serves
+  metrics on an internal port that Prometheus scrapes (none is published to the host).
 - Waitlist: matching is FIFO per provider with an optional window; at most 5 entries are
   tried per freed slot, there is no priority or notification to the matched patient, and an
   entry's `coverage_ref` is reused as stored.
@@ -435,13 +522,18 @@ Phase 2 (scheduling, visits, billing):
   nothing for a confirmed, checked_in, completed or no_show appointment, and an audit write
   that fails after a committed confirm, cancel, swap, check-in or complete is logged
   (`audit.write_failed`) instead of changing the outcome. The transition stays durable in
-  `appointment_status_history`; the lost audit entry is the known gap until Phase 3's
-  transactional outbox.
+  `appointment_status_history`; the lost audit entry is the known gap. Carrying audit in the outbox is the
+  natural fix and was deferred in Phase 3.
 - **Load and NFRs are targets, not results.** The quantified requirements (NFR-01 to NFR-08)
   and a runnable k6 load test exist (`docs/nfr.md`, `loadtest/README.md`), but the targets are
-  **not yet measured**: the `smoke` profile (5 requests per second for 30 s) was run against the real stack twice in plan 02.1-13 and **crossed its latency thresholds both times** (booking accept p95 2.0 to 6.0 s against a 300 ms target, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking confirmed and none timed out, but 2 of 151 accepts failed in the second run) on a developer laptop under heavy load with no Jaeger collector, so that is two uncontrolled observations, not a measurement; `sustained` and `burst` have not been run. The local single-instance stack is not claimed to meet NFR-01 or
-  NFR-02. Measuring them is Phase 3 observability work. The concurrency suites and the live demo remain
-  the only correctness-under-load evidence.
+  **not yet measured**. The `smoke` profile (5 requests per second for 30 s) crossed its latency thresholds twice
+  in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms; two uncontrolled runs on a heavily loaded
+  laptop), then **passed every threshold in three runs** (2026-11-10 pre-Phase 3 baseline: accept p95 21.8 ms,
+  p99 78.9 ms; after the producers: 29.3 and 170 ms; on the finished Phase 3 stack: 49.1 and 200.8 ms; saga
+  completion p95 about 0.52 s each time; the host load differed between runs). Accept latency crept up across
+  the three and is the number to watch. `sustained`, `burst` and `contention` were **not run**: the user
+  deferred them until after Phase 3. The local single-instance stack is not claimed to meet NFR-01 or NFR-02.
+  The concurrency suites and the live demo remain the only correctness-under-load evidence.
 
 Phase 2.1 (mentor review remediation) — what is interim, what is open:
 
@@ -449,12 +541,14 @@ Phase 2.1 (mentor review remediation) — what is interim, what is open:
   committed confirm, cancel, swap, check-in, complete or schedule-change apply is logged
   (`audit.write_failed`) and the outcome stands. If Mongo is down at that moment the audit entry
   can be lost for good (the transition itself is durable in `appointment_status_history`, but
-  nothing backfills the audit entry). The general fix is Phase 3's transactional outbox.
+  nothing backfills the audit entry). The general fix is to carry audit in the outbox, which Phase 3 built
+  but did not do (deferred).
 - **Schedule changes and reconciliation are polled, not event-driven.** Provider writes each
   schedule-affecting change as a row in `schedule_change_events` in the same transaction; a
   Schedule polls it (default every 15 s), starts one workflow per event and acknowledges after the
-  start (delivered rows are never purged). The reconcilers run every 60 s. Phase 3 can publish the
-  same rows to Kafka. Waiting waitlist entries of a deactivated provider are not cleaned up.
+  start (delivered rows are never purged). The reconcilers run every 60 s. Phase 3 also publishes the
+  change as `provider.schedule_changed`, which nothing consumes; the poller Schedule is kept paused (user
+  decision). Waiting waitlist entries of a deactivated provider are not cleaned up.
 - **Schedule-change gap at the second pass.** A slot still `held` by an in-flight booking is
   skipped in pass 1 and re-checked after the hold TTL; if the hold reaper has not freed it by
   then, no third pass follows and the stale slot stays bookable until the next change event or a
@@ -490,6 +584,42 @@ Phase 2.1 (mentor review remediation) — what is interim, what is open:
   rows (a slot that ended a minute ago, a pending row reconciled with threshold 0) and keep the
   schedule-change poller paused for the feed tests.
 
+Phase 3 (event backbone, notifications, analytics, observability) — what is honest to say:
+
+- **At-least-once on the wire, effect-level exactly-once.** Debezium re-emits after a hard kill of Connect
+  (measured: 5 duplicates of 11 messages in plan 03-05; 2 copies of one event id in plan 03-17). Consumers
+  are idempotent (a processed-event claim in the effect's transaction, deterministic workflow ids, a dedupe key
+  at the send), so each effect happens once; forced redelivery and offset rewinds were tested.
+- **A real SMS or email provider must accept an idempotency key** for the one-send-per-dedupe-key guarantee.
+  The fake provider demonstrates the pattern (proven by killing a real worker between the provider call and
+  `mark_sent`); without a provider-side idempotency key, each crash at exactly that point can cause one
+  duplicate send.
+- **EVENT-04 deviation.** The analytics projections run on the `analytics-projection` Kafka consumer, not on
+  Celery, because a projection needs the processed-event claim in the same database transaction as its upsert.
+  Celery covers notifications and follow-up sends. The user accepted this at plan 03-01; the wording of
+  EVENT-04 in `REQUIREMENTS.md` is the user's decision and was not edited.
+- **Analytics start at go-live (D-13).** `ANALYTICS_CONSUMER_START` and `NOTIFICATION_CONSUMER_START` are `latest`
+  in Compose with pinned go-live offsets, so metrics count from go-live and `total_patients` counts only patients
+  registered after it. A rebuild (`python -m services.analytics.rebuild`: stop the consumer, dry run, `--apply`,
+  start it) replays everything still retained, including throwaway test events. `processed_events` has no
+  retention. Metric definitions: UTC days; cancellation rate = cancelled / booked in the window; wait = check-in
+  to visit start; an empty denominator is no data.
+- **"Every state change" means the ten event types.** Billing transitions, waitlist changes, a visit moving to
+  in-progress and reconciler or hold-reaper actions are not evented. `provider.schedule_changed` is published but
+  not consumed, and the schedule-change poller stays paused (user decision). Audit-via-outbox is deferred.
+- **Operations.** Replication slots retain WAL while Connect is down (`max_slot_wal_keep_size=2GB`); a heartbeat
+  action query keeps quiet databases confirming WAL; the outbox and every topic are insert-only or unbounded
+  (nothing prunes them). Kafka, Schema Registry and Connect have no authentication on the dev network
+  (production: SASL/TLS, ACLs, Connect REST auth). Schema Registry is a cached dependency of the write path: a
+  cold start during a registry outage cannot become ready. `temporalio/auto-setup` is non-production.
+- **Observability limits.** The HTTP latency buckets put an edge on every NFR threshold, which makes a panel
+  reliable for above or below a threshold, not for the quantile's exact value; only `scheduling` was rebuilt with
+  them. A reminder's later firing was not shown to continue the booking's trace. The dashboards were checked
+  through Grafana's API, not in a browser. The gateway rate budgets used for tests and load runs are a test-time
+  setting (Compose defaults 20 and 300 per minute).
+- **The backfill.** `.venv/bin/python scripts/backfill_visit_completed_events.py` (a dry run) writes nothing; its
+  dry run found 0 candidates on the live database, so `--apply` was never needed.
+
 Carried from Phase 1.1 (details in
 `.planning/phases/01.1-microservice-re-architecture/deferred-items.md`):
 
@@ -499,9 +629,10 @@ Carried from Phase 1.1 (details in
   the limiter open and token verification closed (`503`); a flush would drop revocations.
 - Service tokens now carry `aud` and an explicit allowed-caller list per internal route
   (fixed in Phase 2, plan 02-01).
-- Application containers **run as root**.
-- Synchronous reference checks make a write depend on the owning service being up (removed by
-  event-fed local copies in Phase 3). Real-socket outage behaviour, a cold start from an empty
+- Application containers **run as root** (the notification and Celery containers too; Celery warns). The
+  Semgrep `missing-user` Dockerfile findings are accepted for now by the user; production hardening is deferred.
+- Synchronous reference checks make a write depend on the owning service being up. Phase 3 did **not**
+  replace them with event-fed local copies (the outbox exists; the copies were not built). Real-socket outage behaviour, a cold start from an empty
   volume, and a person viewing the connected trace in the Jaeger UI have **not been verified**.
 - Assumptions awaiting mentor confirmation: the provider → department → clinic scope chain
   holds only through write-time validation (ORG-03); overlapping availability templates remain

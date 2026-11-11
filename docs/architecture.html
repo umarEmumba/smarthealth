@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SmartHealth — Architecture (Phase 2.1)</title>
+<title>SmartHealth — Architecture (Phase 3)</title>
 <style>
   :root{
     --bg:#0f1720; --panel:#16212e; --ink:#e7edf3; --muted:#9fb0c0;
@@ -62,13 +62,13 @@
 <div class="wrap">
   <header>
     <h1>SmartHealth — System Architecture</h1>
-    <p>Part A · Phase 2.1 — Scheduling, visits and billing on Temporal, plus the mentor-review remediation: appointment state machine, schedule-change propagation, reconcilers, single-use refresh tokens, pagination, NFR targets and a load test (gateway + eight services + two workers, database per service, RS256/JWKS, aud-scoped service tokens)</p>
+    <p>Part A · Phase 3 — the event backbone on top of Phase 2.1's scheduling, visits and billing (Temporal sagas, state machine, reconcilers): a transactional outbox per producing service relayed by Debezium to Kafka (Avro), idempotent consumers for notifications, reminders, visit downstream work and analytics, Prometheus on every process, Grafana dashboards as code and one connected trace per booking (gateway + eight services + analytics, database per service, RS256/JWKS, aud-scoped service tokens)</p>
   </header>
 
   <div class="legend">
     <span><i class="dot w"></i> Wired &amp; serving</span>
     <span><i class="dot s"></i> Data store</span>
-    <span><i class="dot p"></i> Scaffolding only — wired in Phase 3</span>
+    <span><i class="dot p"></i> Interim or retired mechanism</span>
   </div>
 
   <!-- Clients -->
@@ -119,26 +119,27 @@
     <div class="row">
       <div class="box store"><b>identity_db</b><small><code>users</code></small></div>
       <div class="box store"><b>organization_db</b><small><code>clinics</code> · <code>departments</code></small></div>
-      <div class="box store"><b>provider_db</b><small><code>providers</code> · <code>specialties</code> · <code>provider_specialties</code> · <code>availability_templates</code> · <code>schedule_change_events</code></small></div>
-      <div class="box store"><b>patient_db</b><small><code>patients</code> (PHI)</small></div>
-      <div class="box store"><b>scheduling_db</b><small><code>provider_slots</code> · <code>appointments</code> · <code>appointment_status_history</code> · <code>idempotency_keys</code> · <code>waitlist_entries</code></small></div>
-      <div class="box store"><b>visit_db</b><small><code>visits</code> · <code>visit_state_history</code></small></div>
+      <div class="box store"><b>provider_db</b><small><code>providers</code> · <code>specialties</code> · <code>provider_specialties</code> · <code>availability_templates</code> · <code>schedule_change_events</code> · <code>outbox</code></small></div>
+      <div class="box store"><b>patient_db</b><small><code>patients</code> (PHI) · <code>outbox</code></small></div>
+      <div class="box store"><b>scheduling_db</b><small><code>provider_slots</code> · <code>appointments</code> · <code>appointment_status_history</code> · <code>idempotency_keys</code> · <code>waitlist_entries</code> · <code>outbox</code></small></div>
+      <div class="box store"><b>visit_db</b><small><code>visits</code> · <code>visit_state_history</code> · <code>outbox</code></small></div>
       <div class="box store"><b>billing_db</b><small><code>billing_records</code> · <code>billing_status_history</code></small></div>
+      <div class="box store"><b>analytics_db</b><small><code>processed_events</code> · <code>patients</code> · <code>appointments</code> · <code>visits_completed</code> · five metric views (Phase 3)</small></div>
     </div>
     <p class="note">One Postgres container locally; each role can connect only to its own database (PUBLIC revoked); created by the idempotent <code>db-init</code> job. No foreign key crosses a service.</p>
     <div class="row" style="margin-top:12px">
-      <div class="box store"><b>MongoDB — shared audit sink</b><small>one append-only <code>audit_log</code>, written by every service through the shared library · field names only, never PHI values</small></div>
+      <div class="box store"><b>MongoDB — audit sink and notification log</b><small>one append-only <code>audit_log</code>, written by every service through the shared library · field names only, never PHI values · Phase 3: <code>notification_deliveries</code>, <code>notification_provider_calls</code>, <code>notification_appointment_state</code></small></div>
       <div class="box store"><b>Redis — shared</b><small>JWT <code>jti</code> denylist (Identity writes, all read) + gateway rate-limit counters · one instance, a recorded risk</small></div>
     </div>
   </div>
 
   <!-- Observability -->
   <div class="layer">
-    <h2>Observability <span class="tag w">tracing + metrics wired</span></h2>
+    <h2>Observability <span class="tag w">traces, metrics and dashboards wired</span></h2>
     <div class="row">
-      <div class="box wired"><b>Jaeger</b><small>connected traces across services via OTLP :4317 · UI :16686</small></div>
-      <div class="box wired"><b>Prometheus</b><small>one scrape job per service · gateway <code>/metrics</code> only on an internal listener · :9090</small></div>
-      <div class="box"><b>Grafana</b><small>container runs; dashboards not built yet (Phase 3)</small></div>
+      <div class="box wired"><b>Jaeger</b><small>connected traces via OTLP :4317 · UI :16686 · one booking is one trace across HTTP, Temporal, Kafka and Celery (57 spans over 12 services measured)</small></div>
+      <div class="box wired"><b>Prometheus</b><small>20 targets across 17 jobs: APIs, Temporal workers (application port 9100 and Temporal SDK port 9464), the three Kafka consumers, Celery, RabbitMQ · every metrics port internal only · :9090</small></div>
+      <div class="box wired"><b>Grafana</b><small>four dashboards provisioned from files (booking/NFR, events, notifications, operations) · datasources Prometheus, <code>analytics-pg</code> (SELECT-only <code>grafana_ro</code>), Jaeger · :3000</small></div>
     </div>
   </div>
 
@@ -146,20 +147,25 @@
   <div class="layer">
     <h2>Workflows — Temporal <span class="tag w">wired in Phase 2</span></h2>
     <div class="row">
-      <div class="box wired"><b>Temporal (+ UI :8080)</b><small><code>auto-setup</code> image, local dev only · task queues <code>scheduling-tq</code> and <code>visit-tq</code> · Schedules: hold reaper, pending-booking starter, schedule-change poller, Scheduling reconciler, visit downstream sweeper, visit reconciler</small></div>
+      <div class="box wired"><b>Temporal (+ UI :8080)</b><small><code>auto-setup</code> image, local dev only · task queues <code>scheduling-tq</code>, <code>visit-tq</code> and <code>notification-tq</code> · Schedules: hold reaper, pending-booking starter, schedule-change poller (kept paused), Scheduling reconciler, visit reconciler. The visit downstream sweeper Schedule is retired (Phase 3)</small></div>
       <div class="box wired"><b>scheduling-worker</b><small>same image as Scheduling, separate container · Booking, Cancel, Reschedule, WaitlistAdvance, ScheduleChange + maintenance and reconciler workflows · heartbeat healthcheck · never runs migrations</small></div>
-      <div class="box wired"><b>visit-worker</b><small>same image as Visit · VisitCompleted (billing finalize, appointment completion, follow-up and analytics intents) + sweeper and reconciler · heartbeat healthcheck</small></div>
+      <div class="box wired"><b>visit-worker</b><small>same image as Visit · VisitCompleted (billing finalize, appointment completion, follow-up and analytics intent records) + the reconciler and a no-op sweeper tombstone · heartbeat healthcheck</small></div>
+      <div class="box wired"><b>notification-temporal-worker</b><small>Phase 3 · <code>ReminderWorkflow</code> and <code>FollowUpReminderWorkflow</code> on <code>notification-tq</code>: durable timers, delivery through the Celery send task</small></div>
     </div>
-    <p class="note">Workflow ids: <code>booking-&lt;appointment&gt;</code>, <code>cancel-&lt;appointment&gt;-&lt;version&gt;</code>, <code>reschedule-&lt;appointment&gt;-&lt;version&gt;</code>, <code>waitlist-advance-&lt;source workflow&gt;</code>, <code>schedule-change-&lt;event&gt;</code>, <code>visit-completed-&lt;visit&gt;</code>. Inputs and results carry ids and status strings only.</p>
+    <p class="note">Workflow ids: <code>booking-&lt;appointment&gt;</code>, <code>cancel-&lt;appointment&gt;-&lt;version&gt;</code>, <code>reschedule-&lt;appointment&gt;-&lt;version&gt;</code>, <code>waitlist-advance-&lt;source workflow&gt;</code>, <code>schedule-change-&lt;event&gt;</code>, <code>visit-completed-&lt;visit&gt;</code>, <code>reminder-&lt;appointment&gt;</code>, <code>followup-&lt;visit&gt;</code>. Inputs and results carry ids and status strings only.</p>
   </div>
 
-  <!-- Scaffolding -->
+  <!-- Phase 3: event backbone -->
   <div class="layer">
-    <h2>Event backbone &amp; background jobs — scaffolding only <span class="tag p">Phase 3</span></h2>
+    <h2>Event backbone &amp; background work <span class="tag w">wired in Phase 3</span></h2>
     <div class="row">
-      <div class="box pending"><b>Kafka + Schema Registry</b><small>KRaft · event backbone, outbox, event-fed local copies — <b>Phase 3</b></small></div>
-      <div class="box pending"><b>RabbitMQ</b><small>Celery broker · background jobs — <b>Phase 3</b></small></div>
+      <div class="box wired"><b>Outbox + Debezium (<code>connect</code>)</b><small>each producing service inserts one <code>outbox</code> row in the same transaction as its state change; one Debezium connector per database (<code>scheduling-outbox</code>, <code>patient-outbox</code>, <code>provider-outbox</code>, <code>visit-outbox</code>) reads the WAL through the publication <code>dbz_outbox</code> as the least-privilege <code>debezium</code> role. Image <code>quay.io/debezium/connect:3.7.1.Final</code> (deliberate deviation from the Confluent line; broker and registry stay <code>7.6.13</code>)</small></div>
+      <div class="box wired"><b>Kafka + Schema Registry</b><small>KRaft · topics <code>smarthealth.appointment.events</code>, <code>smarthealth.visit.events</code>, <code>smarthealth.patient.events</code>, <code>smarthealth.provider.events</code> (key = aggregate id, 3 partitions, unlimited retention) · dead-letter topics <code>smarthealth.dlq.visit-downstream</code>, <code>smarthealth.dlq.notification-trigger</code>, <code>smarthealth.dlq.analytics-projection</code> · ten Avro subjects, BACKWARD, registered only by <code>schema-init</code></small></div>
+      <div class="box wired"><b>Consumers (idempotent)</b><small><code>visit-consumer</code> (group <code>visit-downstream</code>) · <code>notification-consumer</code> (group <code>notification-trigger</code>) · <code>analytics-consumer</code> (group <code>analytics-projection</code>) · offset committed only after the effect or a confirmed DLQ write</small></div>
+      <div class="box wired"><b>RabbitMQ + <code>notification-celery</code></b><small>Celery 5.6.3 threads pool, queues <code>notifications.booking</code>, <code>notifications.reminder</code>, <code>notifications.followup</code>, dead letters to <code>notifications.dlq</code> through <code>smarthealth.dlx</code> · fake provider with an idempotency store · broker user <code>smarthealth_notification</code> provisioned by <code>rabbitmq-init</code></small></div>
+      <div class="box wired"><b>Analytics</b><small><code>analytics</code> API (<code>/api/analytics/summary</code>, <code>/timeseries</code>; admin and front desk) over <code>analytics_db</code> · the five operational metrics, also read by Grafana</small></div>
     </div>
+    <p class="note">One-shot jobs: <code>kafka-init</code> (topics), <code>schema-init</code> (subjects), <code>connect-init</code> (registers connectors and waits for their <b style="display:inline">tasks</b> to run), <code>rabbitmq-init</code>. Postgres runs with <code>wal_level=logical</code> and <code>max_slot_wal_keep_size=2GB</code>. Delivery is at-least-once on the wire; every effect happens once because each consumer is idempotent (effect-level exactly-once).</p>
   </div>
 
   <!-- Service breakdown -->
@@ -176,6 +182,9 @@
       <tr><td>Billing</td><td>Billing records + history, simulated pre-check</td><td><code>billing_db</code></td><td><code>POST /internal/billing/prechecks</code>, <code>…/transitions</code>, <code>…/relink</code></td><td>— (no client secret)</td></tr>
       <tr><td>Visit</td><td>Visits + history, downstream and settlement markers</td><td><code>visit_db</code></td><td>—</td><td>Scheduling (check-in, complete), Provider, Billing; Temporal</td></tr>
       <tr><td>scheduling-worker / visit-worker</td><td>Workflow + activity execution</td><td>as their API</td><td>—</td><td>as their API</td></tr>
+      <tr><td>Analytics (Phase 3)</td><td>Read-only metrics API over the event projections</td><td><code>analytics_db</code></td><td>—</td><td>none</td></tr>
+      <tr><td>visit-consumer, analytics-consumer, notification-consumer (Phase 3)</td><td>Kafka consumers: start visit downstream work, maintain projections, trigger sends and reminders</td><td>own database or Mongo</td><td>—</td><td>Kafka, Temporal, RabbitMQ</td></tr>
+      <tr><td>notification-celery, notification-temporal-worker (Phase 3)</td><td>Delivery through the fake provider; reminder and follow-up workflows</td><td>Mongo delivery log</td><td>—</td><td>RabbitMQ, Temporal</td></tr>
     </table>
     <p class="note">All services also fetch Identity's JWKS (cached) and use Redis and MongoDB. Workers and the Scheduling/Visit APIs call <code>/internal</code> routes with <b style="display:inline">service tokens</b> minted by Identity from a per-service client secret (Compose secret): short-lived, one <code>aud</code> per token, and every internal route names its allowed callers (Scheduling → patient, provider, organization, billing; Visit → scheduling, provider, billing).</p>
   </div>
@@ -205,7 +214,7 @@ Provider ──GET /internal/departments/{id} (caller's JWT forwarded)──▶ 
      200 active                   ──▶ INSERT provider (department_id is a plain UUID) ──▶ 201
      missing or inactive          ──▶ 422, nothing written
      owner unreachable / 401 / 403 / 5xx ──▶ 503, nothing written
-Deactivation never cascades (D-06). Kafka / outbox / event-fed copies: Phase 3 (D-08).</div>
+Deactivation never cascades (D-06). Phase 3 built Kafka and the outbox but not event-fed local copies, so these checks are unchanged (D-08 stays open).</div>
 
     <div class="seq-title">3 · Token verification via JWKS</div>
     <div class="seq">Identity: login ──▶ sign access + refresh JWT (RSA private key, kid smarthealth-identity-1)
@@ -240,16 +249,17 @@ Reschedule  : hold new slot ──▶ ONE tx: release old, book new, repoint app
 Waitlist    : FIFO claim (FOR UPDATE SKIP LOCKED) of the first matching waiting entry ──▶ child BookingWorkflow
               booked ──▶ entry booked · booking failed ──▶ entry failed, try next (cap 5) · lost race ──▶ entry back to waiting</div>
 
-    <div class="seq-title">7 · Visit completion — commit first, downstream after</div>
+    <div class="seq-title">7 · Visit completion — commit and outbox row first, downstream after (trigger changed in Phase 3)</div>
     <div class="seq">Provider ──POST /api/visits/{id}/complete──▶ Visit
-     commit: in_progress ──▶ completed, downstream_started_at = NULL
-     start visit-completed-&lt;id&gt; (errors are logged; the 200 is unaffected) ──▶ marker = now
+     ONE tx: in_progress ──▶ completed + history row + outbox row (visit.completed), downstream_started_at = NULL ──▶ 200 (no Temporal call)
+Debezium (visit-outbox) ──▶ smarthealth.visit.events ──▶ visit-consumer (group visit-downstream):
+     start visit-completed-&lt;id&gt; (REJECT_DUPLICATE) ──▶ marker = now      (the only trigger; the sweeper is retired)
 visit-worker (visit-tq), four independent branches:
      billing finalize (verified ──▶ finalized, open-ended retry) · complete the appointment (checked_in ──▶ completed)
-     · follow-up intent (stub) · analytics intent (stub)
+     · follow-up intent record · analytics intent record
      each step stamps a settlement marker on the visit once it landed or reached a terminal outcome (visit_0002)
-visit-downstream-sweeper (every 60 s): starts the workflow for completed visits whose marker is still NULL after 30 s.
-visit-reconciler (every 60 s): settles completed visits whose billing or appointment marker is still empty after 10 min.</div>
+visit-reconciler (every 60 s): settles started-but-unsettled visits (marker still empty after 10 min).
+Retired: the visit-downstream-sweeper Schedule is deleted at every visit-worker start; its workflow stays registered as a no-op tombstone.</div>
 
     <div class="seq-title">8 · Layered idempotency</div>
     <div class="seq">1 database arbiters: uq_appointments_active_slot · idempotency key row (caller, key, body hash)
@@ -312,6 +322,58 @@ bcrypt hash / verify run on a bounded thread pool (IDENTITY_BCRYPT_THREADS=4), n
 Email: normalized (strip, lowercase), looked up by lower(email), unique index uq_users_email_lower (identity_0002; no row is rewritten)
 Lists: patients, providers, clinics ──▶ plain array, limit 1..200 (default 50), offset &gt;= 0, X-Total-Count, order (created_at, id), 422 outside bounds
 GET /api/patients/me (own profile) · a provider reads only their own appointments (503 if Provider is down)</div>
+
+    <div class="seq-title">13 · Booking event flow (Phase 3)</div>
+    <div class="seq">Client ──POST /api/appointments──▶ Scheduling ──one tx: idempotency row + appointment pending (no outbox row)──▶ 202   (accept path unchanged)
+scheduling-worker, confirm step: ONE tx = appointment confirmed + slot booked + history row + outbox row (appointment.booked)
+Postgres WAL ──▶ Debezium scheduling-outbox ──▶ smarthealth.appointment.events (key = appointment id; headers id, eventType, traceparent, schemaVersion; Avro value)
+     ├─▶ notification-consumer (group notification-trigger): notifications.send on queue notifications.booking ──▶ notification-celery ──▶ fake provider (once per dedupe key)
+     │                                                       start reminder-&lt;appointment&gt; on notification-tq (durable timers)
+     └─▶ analytics-consumer (group analytics-projection): ONE tx in analytics_db = claim the event id in processed_events + upsert the projection
+Synchronous work added to booking: only the outbox insert inside confirm. Everything right of the commit is asynchronous.
+"Every state change" means the ten D-07 event types; billing transitions, waitlist changes, visit in-progress and reconciler or hold-reaper actions are not evented.</div>
+
+    <div class="seq-title">14 · Cancel and reschedule (Phase 3)</div>
+    <div class="seq">Cancel     : ONE tx = appointment cancelled + slot released + history row + outbox row (appointment.cancelled)
+Reschedule : ONE swap tx (release old slot, book new, repoint) + outbox row (appointment.rescheduled: old and new slot ids and starts)
+A repeat or a refused change emits nothing; the event id is derived from the post-transition version.
+notification-consumer: cancelled ──▶ record the appointment closed, signal cancel to reminder-&lt;id&gt;, one cancellation notice
+                       rescheduled ──▶ one notice, signal-with-start moves the reminder to the new slot (its dedupe key carries the slot epoch)
+                       no_show ──▶ no notice, the reminder stops · checked_in ──▶ the reminder stops
+analytics-consumer: cancelled ──▶ cancelled_at on the projection row · rescheduled ──▶ count + 1, slot_start replaced only by a newer event</div>
+
+    <div class="seq-title">15 · Notifications and reminders (Phase 3)</div>
+    <div class="seq">Delivery  : Celery task notifications.send (acks_late, prefetch 1, JSON) ──▶ delivery log (notification_deliveries, unique dedupe_key)
+             ──▶ fake provider (notification_provider_calls, unique dedupe_key; the insert is the delivery)
+Retries   : exponential backoff (base 2 s, up to 5); permanent failures, malformed messages and unexpected errors ──▶ notifications.dlq (never silently acknowledged)
+Guards    : a reminder for a closed appointment is skipped_closed; booking-type events older than NOTIFICATION_MAX_EVENT_AGE_MINUTES (1440) are skipped_stale
+Reminders : Temporal ReminderWorkflow reminder-&lt;appointment&gt;: leads 1440,120 minutes before the slot, signal-interruptible timers; a fired timer enqueues the same send task
+Honest    : one send per dedupe key holds at the delivery log and at the fake provider; proven by killing a real worker between the provider call and mark_sent.
+            A real SMS or email provider must accept an idempotency key for the same guarantee; without it each crash at that point can cause one duplicate.
+            The Phase 2 notification activities in the workflows are intent records and send nothing.</div>
+
+    <div class="seq-title">16 · Analytics (Phase 3)</div>
+    <div class="seq">patient, appointment, visit topics ──▶ analytics-consumer ──▶ analytics_db (processed_events, patients, appointments, visits_completed, five views)
+Definitions: total patients = registered and not deactivated (current count) · booked and completed per UTC day · cancellation rate = cancelled / booked in the window
+             · average wait = visit start minus check-in · an empty denominator is no data (null), never 0
+Start     : ANALYTICS_CONSUMER_START=latest with pinned go-live offsets: metrics count from go-live; total patients counts only patients registered after it
+Rebuild   : stop analytics-consumer, dry run, --apply, start it; replays everything still retained, including throwaway test events. processed_events has no retention.
+Served by : GET /api/analytics/summary and /timeseries (admin, front desk) and Grafana as the SELECT-only grafana_ro role.</div>
+
+    <div class="seq-title">17 · Delivery semantics (Phase 3)</div>
+    <div class="seq">No loss        : the event exists exactly when the state change committed; the replication slot keeps WAL until Connect confirms it
+At-least-once : a hard kill of Connect re-emits events (measured: 5 duplicates of 11 messages; 2 copies of one event id with 1 distinct id)
+Effect level  : every consumer is idempotent: processed_events claim in the effect's tx · deterministic workflow id (REJECT_DUPLICATE) · dedupe key at the send
+               ──▶ forced redelivery and offset rewinds of all three groups left every effect at one (effect-level exactly-once)
+Ordering      : per aggregate (key = aggregate id, one partition); none across topics; the projections tolerate any order</div>
+
+    <div class="seq-title">18 · Observability chain (Phase 3)</div>
+    <div class="seq">traceparent: producing span ──▶ outbox row ──▶ Debezium header ──▶ consumer span (parent, extracted by our own ~30 lines; the OTel Kafka instrumentation only links) ──▶ Celery headers
+One booking: trace e839d1a9ec7d48e435d09abb68881b00, 57 spans, 12 services, in Jaeger within 7 s (read by an automated test through Jaeger's HTTP API).
+The reminder's timer starts inside the booking trace and fires later: the later firing was not exercised, so that trace is long-lived and the claim covers the booking path.
+Metrics : 20 Prometheus targets; HTTP buckets 0.025 ... 5 s with an edge on every NFR threshold (reliable for above or below a threshold, not for an exact quantile;
+          only scheduling was rebuilt with them); booking_saga_seconds, outbox_insert_seconds, consumer and notification metrics.
+Logs    : structlog JSON with trace_id for booking, availability, billing, Celery and the consumers, PHI-free (the booking's trace id was found in six containers' logs).</div>
   </div>
 
   <!-- Limitations -->
@@ -320,12 +382,16 @@ GET /api/patients/me (own profile) · a provider reads only their own appointmen
     <ul>
       <li>Gateway buffers whole request bodies with <b>no size cap</b> (the limiter bounds request count, not size).</li>
       <li>One <b>shared Redis</b> holds the denylist and rate-limit counters: an outage fails the limiter open and token verification closed (503); a flush would drop revocations.</li>
-      <li>Application containers <b>run as root</b>. (Service tokens gained <code>aud</code> in Phase 2.)</li>
-      <li><b>Phase 3 replaces</b> the interim mechanisms: pending-booking starter and visit sweeper → transactional outbox; notification / follow-up / analytics stubs → Celery and Kafka; polling → events. Temporal <code>auto-setup</code> is not the production topology.</li>
-      <li>Workers expose no metrics. Waitlist: FIFO per provider, cap 5 tries per freed slot, no priority, no patient notification. Mongo audit is not atomic with the Postgres commit (WR-04).</li>
-      <li><b>Load and NFRs are targets, not results (Phase 2.1):</b> NFR-01..08 and a runnable k6 load test exist (<code>docs/nfr.md</code>, <code>loadtest/README.md</code>) but are <b>not yet measured</b>: <code>sustained</code> and <code>burst</code> have never run, and <code>smoke</code> crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop). The local stack is not claimed to meet NFR-01 or NFR-02. Phase 3 measures them.</li>
-      <li><b>Audit after a committed step is best effort (S3):</b> a failed Mongo write is logged as <code>audit.write_failed</code> and the outcome stands; the entry can be lost if Mongo is down at that instant (the transition is durable in <code>appointment_status_history</code>). Phase 3's transactional outbox is the general fix.</li>
-      <li><b>Polled, not event-driven:</b> schedule changes (15 s) and reconcilers (60 s). Delivered change events are never purged; waitlist entries of a deactivated provider are untouched; a slot still held at the schedule-change second pass gets no third pass.</li>
+      <li>Application containers <b>run as root</b> (the notification and Celery containers too; Celery warns). The Semgrep <code>missing-user</code> Dockerfile findings are accepted for now by the user; production hardening is deferred. (Service tokens gained <code>aud</code> in Phase 2.)</li>
+      <li><b>Interim mechanisms after Phase 3:</b> the visit sweeper is <b>retired</b> (the <code>visit.completed</code> outbox event is the only downstream trigger); the pending-booking starter, hold reaper and both reconcilers <b>stay</b> as safety nets because events do not subsume them (the accept path writes no outbox row; an expired hold emits nothing). The workflow notification, follow-up and analytics activities are intent records that send nothing. Temporal <code>auto-setup</code> is not the production topology.</li>
+      <li>Waitlist: FIFO per provider, cap 5 tries per freed slot, no priority, no patient notification. Mongo audit is not atomic with the Postgres commit (WR-04); moving it into the outbox is deferred. Workers and consumers are now scraped on internal ports.</li>
+      <li><b>Delivery:</b> at-least-once on the wire (5 duplicates of 11 messages after a hard Connect kill; 2 copies of one event id), effect-level exactly-once through idempotent consumers. <b>A real SMS or email provider must accept an idempotency key</b> for the one-send-per-dedupe-key guarantee; otherwise each crash between the provider call and <code>mark_sent</code> can cause one duplicate.</li>
+      <li><b>EVENT-04 deviation:</b> the analytics projections run on the <code>analytics-projection</code> Kafka consumer, not on Celery (they need the processed-event claim in the effect's own transaction); Celery covers notifications and follow-ups. The user accepted this at plan 03-01; the wording of EVENT-04 in <code>REQUIREMENTS.md</code> is the user's decision.</li>
+      <li><b>Analytics start at go-live (D-13):</b> <code>ANALYTICS_CONSUMER_START</code> and <code>NOTIFICATION_CONSUMER_START</code> are <code>latest</code> with pinned offsets; <code>total_patients</code> counts only patients registered after go-live; a rebuild replays everything still retained, including throwaway test events; <code>processed_events</code> has no retention. "Every state change" means the ten D-07 event types.</li>
+      <li><b>Operations:</b> replication slots retain WAL while Connect is down (<code>max_slot_wal_keep_size=2GB</code>; a heartbeat action query keeps quiet databases confirming WAL; deleting a connector does not drop its slot); the outbox and topics are never pruned; Kafka, Schema Registry and Connect have no authentication on the dev network (production: SASL/TLS, ACLs, Connect REST auth); Schema Registry is a cached write-path dependency (a cold start during an outage cannot become ready); <code>provider.schedule_changed</code> is published but not consumed and the schedule-change poller stays paused (user decision); the gateway rate budgets used for tests are a test-time setting.</li>
+      <li><b>Load and NFRs are targets, not results (Phase 2.1):</b> NFR-01..08 and a runnable k6 load test exist (<code>docs/nfr.md</code>, <code>loadtest/README.md</code>) but are <b>not yet measured</b>: <code>sustained</code>, <code>burst</code> and <code>contention</code> were not run (deferred by the user until after Phase 3). <code>smoke</code> crossed its thresholds twice in plan 02.1-13 (heavily loaded laptop), then passed every threshold in three runs (accept p95 21.8, 29.3 and 49.1 ms; saga p95 about 0.52 s; the host load differed, and accept latency crept up, so it is the number to watch). The local stack is not claimed to meet NFR-01 or NFR-02.</li>
+      <li><b>Audit after a committed step is best effort (S3):</b> a failed Mongo write is logged as <code>audit.write_failed</code> and the outcome stands; the entry can be lost if Mongo is down at that instant (the transition is durable in <code>appointment_status_history</code>). Carrying audit in the outbox is the natural fix; Phase 3 built the outbox and deferred that.</li>
+      <li><b>Still polled:</b> schedule changes (15 s, and that poller is paused) and reconcilers (60 s). Delivered change events are never purged; waitlist entries of a deactivated provider are untouched; a slot still held at the schedule-change second pass gets no third pass.</li>
       <li><b>Cancel and reschedule billing is still bounded</b> (<code>*_incomplete:billing_pending</code>, for an operator); only visit billing retries open-endedly. Reconcilers are oldest first with a batch cap (50 / 100) and no per-row backoff.</li>
       <li><code>no_show</code> is set by the sweep only; visits created before Phase 2.1 settle their appointment as <code>not_checked_in</code> (no backfill); a <code>checked_in</code> appointment with no visit is not reconciled.</li>
       <li>Refresh tokens are single-use (store the rotated token); tokens issued before the change have no <code>rjti</code>; legacy mixed-case emails are matched, not rewritten. Appointment lists have no <code>X-Total-Count</code>; provider reads need Provider up (503 otherwise).</li>
@@ -343,25 +409,34 @@ GET /api/patients/me (own profile) · a provider reads only their own appointmen
       <tr><td>Service cut</td><td>Six services, database each (D-01)</td><td>Mentor review asked for true microservices; clear bounded contexts; PHI confined to Patient. Costs: network hops, availability coupling, no distributed transactions</td></tr>
       <tr><td>Token model</td><td>RS256 + JWKS; Redis jti-denylist</td><td>Only Identity can mint tokens; services verify without calling Identity; real logout</td></tr>
       <tr><td>Gateway</td><td>Thin FastAPI proxy, per-IP Redis limits, fail-open, no JWT check at the edge</td><td>Most reviewable; defence in depth; availability over rate protection</td></tr>
-      <tr><td>Cross-service integrity</td><td>Synchronous owner check at write time, 422/503, no cascade</td><td>No Kafka/outbox until Phase 3 (D-08); simplest correct option</td></tr>
+      <tr><td>Cross-service integrity</td><td>Synchronous owner check at write time, 422/503, no cascade</td><td>Kept in Phase 3: the outbox and Kafka exist but event-fed local copies were not built (D-08 stays open); simplest correct option</td></tr>
       <tr><td>Slot model</td><td>Templates in Provider; empty <code>provider_slots</code> with live GiST constraint in Scheduling (D-03)</td><td>Phase 2 inherits a proven double-booking invariant without moving a table</td></tr>
       <tr><td>Identity vs profile</td><td>Accounts in Identity; profiles in Patient/Provider by plain <code>user_id</code> (D-04)</td><td>Self-registration and no-login staff-created profiles; PHI out of Identity</td></tr>
-      <tr><td>Audit</td><td>Shared library, one shared <code>audit_log</code> (D-02)</td><td>Dedicated Audit service is Phase 3; call signature kept stable</td></tr>
+      <tr><td>Audit</td><td>Shared library, one shared <code>audit_log</code> (D-02)</td><td>No dedicated Audit service was built; call signature kept stable; audit-via-outbox deferred</td></tr>
       <tr><td>Deletion</td><td>Soft-delete (is_active / deactivated_at)</td><td>Records stay auditable &amp; retained — no hard deletes</td></tr>
       <tr><td>PHI safety</td><td>Field-name-only audit; structlog redaction</td><td>No PHI in logs or traces</td></tr>
       <tr><td>Orchestration (Phase 2)</td><td>Temporal for sagas, not Celery</td><td>Durable execution and replay, retries, compensation, Schedules instead of cron; Celery keeps single-step jobs (Phase 3)</td></tr>
       <tr><td>Workflow placement</td><td>Workflow with the aggregate owner; one queue + one worker container per service (D-05)</td><td>Activities touch only their own database; workers scale and fail independently</td></tr>
       <tr><td>Booking API</td><td>202 + <code>Idempotency-Key</code> in Postgres (D-07/D-08)</td><td>Survives a Redis flush; replays the original answer</td></tr>
       <tr><td>Double-booking</td><td>Partial unique index on active appointments + slot hold (D-02/D-03)</td><td>The database is the final arbiter under concurrency</td></tr>
-      <tr><td>Visit completion</td><td>Commit first, then start downstream; sweeper for lost starts (D-16)</td><td>The transition never waits on billing or analytics</td></tr>
-      <tr><td>Audit after commit (2.1)</td><td>Non-fatal, logged; outbox in Phase 3</td><td>Transition already durable in history; failing after commit would mislead the caller. Cost: an entry can be lost if Mongo is down</td></tr>
-      <tr><td>Schedule-change feed (2.1)</td><td>Provider outbox table pulled by a polling Schedule</td><td>A push is lost if Scheduling or Temporal is down; the pending-until-acknowledged table has no such window; Phase 3 can publish the same rows to Kafka</td></tr>
+      <tr><td>Visit completion (D-16, changed by D-03)</td><td>Commit the transition and a <code>visit.completed</code> outbox row; a consumer starts the downstream workflow; the sweeper is retired</td><td>The transition never waits on billing or analytics; the outbox replaces commit-then-start plus a sweeper. Proven by kill-between-commit-and-publish and outage tests</td></tr>
+      <tr><td>Audit after commit (2.1)</td><td>Non-fatal, logged; outbox carriage deferred</td><td>Transition already durable in history; failing after commit would mislead the caller. Cost: an entry can be lost if Mongo is down</td></tr>
+      <tr><td>Schedule-change feed (2.1)</td><td>Provider outbox table pulled by a polling Schedule</td><td>A push is lost if Scheduling or Temporal is down; the pending-until-acknowledged table has no such window. Phase 3 also publishes <code>provider.schedule_changed</code>; nothing consumes it</td></tr>
       <tr><td>Stale slots (2.1)</td><td>Set difference against re-expanded current templates</td><td>Idempotent, no slot-to-template link, reuses the tested generator</td></tr>
       <tr><td>Stuck states (2.1)</td><td>One reconciler Schedule per service, idempotent, batch-capped</td><td>Same pattern as the reaper and starter; re-derives from the database, never guesses</td></tr>
       <tr><td>Check-in window (2.1)</td><td>60 min before to slot end; no-show grace 30 min; database clock</td><td>No clock skew between services; decision atomic with the transition</td></tr>
       <tr><td>Refresh tokens (2.1)</td><td>Single-use rotation, atomic Redis claim, <code>rjti</code> on the access token</td><td>One winner under reuse; logout revokes both. Clients must store the rotated token</td></tr>
       <tr><td>bcrypt, email, pagination (2.1)</td><td>Bounded thread pool; <code>lower(email)</code> unique index, no row rewrite; plain array + <code>X-Total-Count</code></td><td>Event loop never stalls; cheap reversible migration; backward-compatible lists</td></tr>
-      <tr><td>NFRs and load test (2.1)</td><td>k6 from a pinned image; targets single-sourced in <code>loadtest/nfr.json</code></td><td>No new package; targets cannot drift between documents and thresholds; not yet measured</td></tr>
+      <tr><td>NFRs and load test (2.1)</td><td>k6 from a pinned image; targets single-sourced in <code>loadtest/nfr.json</code></td><td>No new package; targets cannot drift between documents and thresholds; not yet measured (sustained, burst, contention deferred past Phase 3)</td></tr>
+      <tr><td>Outbox relay (Phase 3, D-01)</td><td>CDC (Debezium on the WAL), not a polling publisher</td><td>No relay code in any service, ordering from the WAL, no polling load. Cost accepted: Connect and logical replication to operate (replication slots retain WAL while Connect is down), at-least-once on the wire</td></tr>
+      <tr><td>Connect image (Phase 3)</td><td><code>quay.io/debezium/connect:3.7.1.Final</code>; broker and registry stay <code>7.6.13</code></td><td><code>cp-kafka-connect:7.6.13</code> runs Java 11 and cannot load Debezium 3.x (needs Java 17). A deliberate deviation from the same-Confluent-line rule, which concerns broker versus registry; the user accepted it at plan 03-01</td></tr>
+      <tr><td>Event format (Phase 3)</td><td>Avro + Schema Registry, one subject per event type, serialized by the service (strict), one topic per aggregate keyed by aggregate id</td><td>Debezium cannot produce controlled, evolvable Avro from JSON; per-type topics would lose per-aggregate order. Cost: the registry is a cached write-path dependency</td></tr>
+      <tr><td>Projections (Phase 3, EVENT-04 deviation)</td><td>On the <code>analytics-projection</code> Kafka consumer, not Celery</td><td>A stateful upsert needs the processed-event claim in the same database transaction, which a Celery task cannot give. Celery covers notifications and follow-ups; EVENT-04's wording is the user's decision</td></tr>
+      <tr><td>Idempotency (Phase 3)</td><td>Three flavours: processed-event claim (database effect), deterministic workflow id (Temporal), dedupe key at the send (Celery)</td><td>The claim is transactional only for database effects</td></tr>
+      <tr><td>Reminders (Phase 3, D-02)</td><td>Temporal durable timers; delivery through Celery</td><td>A timer is a durable, cancellable, replay-tested workflow; a Celery ETA message lives in the broker and beat is a cron. Cost: one idle workflow per active appointment</td></tr>
+      <tr><td>Celery on RabbitMQ (Phase 3)</td><td>Threads pool, <code>acks_late</code>, classic queues, RabbitMQ 4.3 feature flags off, dead-letter exchange, dedicated broker user</td><td>Required for Celery 5.6.3 on RabbitMQ 4.3; quorum queues are the production path</td></tr>
+      <tr><td>Visit sweeper (Phase 3, D-03)</td><td>Retired; the hold reaper, pending-starter and both reconcilers stay</td><td>The outbox replaces the sweeper; each remaining net recovers something no event carries (an expired hold, a start lost before any outbox row, a stuck pending booking, a started but unsettled visit)</td></tr>
+      <tr><td>Analytics (Phase 3, D-13)</td><td>Count from go-live; wait = check-in to visit start; UTC days</td><td>Events exist only for new activity; appointment start minus check-in is zero or negative for on-time arrivals</td></tr>
     </table>
   </div>
 
