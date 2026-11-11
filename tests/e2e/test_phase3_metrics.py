@@ -364,10 +364,7 @@ def test_grafana_provisioning_clean() -> None:
     """Grafana is healthy and the log since its last (re)creation has no provisioning
     error or warning, the dashboards provider loaded, and the analytics datasource did
     not fail to provision."""
-    with urllib.request.urlopen(  # noqa: S310 - fixed local URL
-        f"{grafana_url()}/api/health", timeout=10
-    ) as response:
-        assert response.status == 200
+    assert httpx.get(f"{grafana_url()}/api/health", timeout=10).status_code == 200
     logs = stack.compose("logs", "--no-color", "grafana").stdout.splitlines()
     provisioning = [line for line in logs if "provisioning" in line or "provision" in line]
     assert any("provision dashboards" in line for line in provisioning), "dashboards provider not loaded"

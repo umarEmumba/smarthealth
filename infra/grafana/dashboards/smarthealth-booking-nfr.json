@@ -28,7 +28,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "NFR-03 booking accept latency p95",
-      "description": "POST /api/appointments handler (scheduling), p95. Threshold line: book_p95_ms from loadtest/nfr.json. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "description": "POST /api/appointments handler (scheduling), p95. Threshold line: book_p95_ms from loadtest/nfr.json. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -93,7 +93,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "NFR-03 booking accept latency p99",
-      "description": "POST /api/appointments handler (scheduling), p99. Threshold line: book_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "description": "POST /api/appointments handler (scheduling), p99. Threshold line: book_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -158,7 +158,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "NFR-04 read latency p95",
-      "description": "GET /api/appointments, /api/appointments/{id} and /api/slots (scheduling), p95. Threshold line: read_p95_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "description": "GET /api/appointments, /api/appointments/{id} and /api/slots (scheduling), p95. Threshold line: read_p95_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -223,7 +223,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "NFR-04 read latency p99",
-      "description": "Same handlers, p99. Threshold line: read_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "description": "Same handlers, p99. Threshold line: read_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
