@@ -28,5 +28,7 @@
   "transforms.outbox.route.by.field": "aggregatetype",
   "transforms.outbox.route.topic.replacement": "smarthealth.${routedByValue}.events",
   "transforms.outbox.table.fields.additional.placement": "type:header:eventType,traceparent:header:traceparent,schema_version:header:schemaVersion",
-  "heartbeat.interval.ms": "10000"
+  "heartbeat.interval.ms": "10000",
+  "heartbeat.action.query": "SELECT pg_logical_emit_message(true, 'smarthealth-heartbeat', clock_timestamp()::text)",
+  "message.prefix.exclude.list": "smarthealth-heartbeat"
 }

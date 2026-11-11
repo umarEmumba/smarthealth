@@ -47,6 +47,15 @@ REQUIRED_CONNECTOR_VALUES = {
         "type:header:eventType,traceparent:header:traceparent,schema_version:header:schemaVersion"
     ),
     "heartbeat.interval.ms": "10000",
+    # A heartbeat alone does not move a quiet database's slot: the action query writes a
+    # logical-decoding message INTO the monitored database every interval, so the slot has
+    # something to confirm and the cluster's other databases cannot pin its WAL (the
+    # 2GB max_slot_wal_keep_size would otherwise invalidate it and silently stop events).
+    "heartbeat.action.query": (
+        "SELECT pg_logical_emit_message(true, 'smarthealth-heartbeat', clock_timestamp()::text)"
+    ),
+    # The message is only a WAL position carrier: never routed as an event.
+    "message.prefix.exclude.list": "smarthealth-heartbeat",
 }
 
 
@@ -171,3 +180,17 @@ def test_topic_script_covers_every_catalogue_topic() -> None:
         assert topic in script, topic
     assert "retention.ms=-1" in script
     assert "--partitions" in script
+
+
+@pytest.mark.parametrize("path", CONNECTOR_FILES, ids=lambda p: p.stem)
+def test_heartbeat_keeps_a_quiet_slot_acknowledging_wal(path: Path) -> None:
+    """A quiet database must still move its slot (WAL retention guard, plan 03-17)."""
+    config = _load(path)
+    interval = int(config["heartbeat.interval.ms"])
+    assert 0 < interval <= 30_000, f"{path.name}: heartbeat interval must be short and positive"
+    query = config["heartbeat.action.query"]
+    assert "pg_logical_emit_message" in query
+    # Read-only to the application schema: no table write, no outbox row, no DDL.
+    assert all(word not in query.upper() for word in ("INSERT", "UPDATE", "DELETE", "DROP"))
+    prefix = config["message.prefix.exclude.list"]
+    assert f"'{prefix}'" in query, "the excluded prefix must be the one the query emits"
