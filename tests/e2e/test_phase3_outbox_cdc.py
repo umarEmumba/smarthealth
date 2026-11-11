@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+import uuid
 from urllib.parse import urlparse
 
 import pytest
@@ -44,6 +46,10 @@ def _scheduling_db_url() -> str:
     from services.scheduling.config import settings  # noqa: PLC0415
 
     return settings.database_url
+
+
+def _ids(messages: list[dict]) -> list[str]:
+    return [m["headers"]["id"] for m in messages]
 
 
 # --- Task 1: tracer ------------------------------------------------------------------
@@ -140,6 +146,154 @@ def test_debezium_role_least_privilege(name: str) -> None:
 
     _count, denied = asyncio.run(check())
     assert denied, f"debezium could read {non_outbox} in {database} (permission denied expected)"
+
+
+# --- Task 3: durability --------------------------------------------------------------
+
+
+def test_connect_stopped_delivers_in_commit_order_after_start() -> None:
+    """With Connect stopped, three committed events for one aggregate produce no
+    message; after it starts they arrive on one partition in commit order."""
+    stack.wait_connectors_running()
+    rows = stack.make_probe_rows(count=3)
+    try:
+        stack.stop_service("connect")
+        stack.insert_probe_rows(_scheduling_db_url(), rows)
+
+        while_stopped = stack.consume_matching(
+            CDC_PROBE_TOPIC, lambda m: m["key"] == rows[0].aggregate_id, timeout=10, decode=False
+        )
+        assert while_stopped == [], "a message was delivered while Connect was stopped"
+    finally:
+        stack.start_service("connect")
+        stack.wait_service_healthy("connect")
+        stack.wait_connectors_running()
+
+    expected = [str(row.event_id) for row in rows]
+    delivered = stack.consume_matching(
+        CDC_PROBE_TOPIC,
+        lambda m: m["key"] == rows[0].aggregate_id,
+        timeout=90,
+        done=lambda found: _ids(found) == expected or set(_ids(found)) >= set(expected),
+    )
+    first_seen: list[str] = []
+    for entry in delivered:
+        if entry["headers"]["id"] not in first_seen:
+            first_seen.append(entry["headers"]["id"])
+    assert first_seen == expected, f"delivery order {first_seen} != commit order {expected}"
+    assert len({entry["partition"] for entry in delivered}) == 1, "one aggregate, one partition"
+    offsets = [entry["offset"] for entry in delivered]
+    assert offsets == sorted(offsets)
+
+
+def test_connect_hard_kill_loses_nothing() -> None:
+    """Five events delivered, Connect SIGKILLed within seconds, restarted, one more
+    event: all six event ids are on the topic. Extra copies are expected (at-least-once
+    on the wire, research F4) and are counted and logged, not asserted to be zero."""
+    stack.wait_connectors_running()
+    aggregate = str(uuid.uuid4())
+    first = stack.make_probe_rows(aggregate, count=5)
+    stack.insert_probe_rows(_scheduling_db_url(), first)
+    first_ids = {str(row.event_id) for row in first}
+
+    delivered_before = stack.consume_matching(
+        CDC_PROBE_TOPIC,
+        lambda m: m["key"] == aggregate,
+        timeout=60,
+        done=lambda found: set(_ids(found)) >= first_ids,
+        decode=False,
+    )
+    assert set(_ids(delivered_before)) >= first_ids, "first five were not delivered"
+
+    killed_at = time.monotonic()
+    try:
+        stack.kill_service("connect")
+        assert time.monotonic() - killed_at < 5
+        (extra,) = stack.make_probe_rows(aggregate, count=1)
+        # Committed while Connect is down (or being restarted by its restart policy).
+        stack.insert_probe_rows(_scheduling_db_url(), [extra])
+    finally:
+        # `restart: unless-stopped` normally restarts a killed container; `start` is a
+        # no-op when it already runs and revives it otherwise.
+        stack.start_service("connect")
+        stack.wait_service_healthy("connect")
+        stack.wait_connectors_running()
+
+    all_ids = first_ids | {str(extra.event_id)}
+    after = stack.consume_matching(
+        CDC_PROBE_TOPIC,
+        lambda m: m["key"] == aggregate,
+        timeout=90,
+        done=lambda found: set(_ids(found)) >= all_ids,
+        decode=False,
+    )
+    seen = _ids(after)
+    assert set(seen) >= all_ids, f"lost events: {sorted(all_ids - set(seen))}"
+    duplicates = len(seen) - len(set(seen))
+    print(f"HARD-KILL DUPLICATE COUNT: {duplicates} (messages {len(seen)}, distinct {len(set(seen))})")
+    # The aggregate is one partition: per-aggregate order of first occurrences holds.
+    order = [event_id for index, event_id in enumerate(seen) if event_id not in seen[:index]]
+    assert order[-1] == str(extra.event_id), "the post-kill event must come last"
+
+
+def test_snapshot_delivers_row_committed_before_connector_first_start() -> None:
+    """`snapshot.mode=initial`: a row committed BEFORE a connector first registers is
+    delivered by its initial snapshot. Uses a disposable connector with its own slot,
+    prefix and topic, restricted to the one probe row, and removes the connector, its
+    slot and its topics afterwards (an orphaned slot would retain WAL, Pitfall 4)."""
+    name, slot = "scheduling-outbox-snapshot-probe", "dbz_snapshot_probe"
+    prefix = "smarthealth-snapshot-probe"
+    topic = "smarthealth.snapshotprobe.events"
+    (row,) = stack.make_probe_rows(count=1)
+    stack.insert_probe_rows(_scheduling_db_url(), [row])  # committed first
+
+    config = dict(stack.connector_config("scheduling-outbox"))
+    config.update(
+        {
+            "slot.name": slot,
+            "topic.prefix": prefix,
+            "snapshot.mode": "initial",
+            "snapshot.select.statement.overrides": "public.outbox",
+            "snapshot.select.statement.overrides.public.outbox": (
+                "SELECT * FROM public.outbox "
+                f"WHERE aggregatetype = 'cdcprobe' AND aggregateid = '{row.aggregate_id}'"
+            ),
+            # Whatever the snapshot reads goes to the disposable topic, never a real one.
+            "transforms.outbox.route.topic.replacement": topic,
+        }
+    )
+    try:
+        stack.put_connector(name, config)
+        stack.wait_connectors_running([name])
+        delivered = stack.consume_matching(
+            topic, lambda m: m["key"] == row.aggregate_id, timeout=60
+        )
+        assert [m["headers"]["id"] for m in delivered] == [str(row.event_id)]
+        assert str(delivered[0]["value"]["event_id"]) == str(row.event_id)
+    finally:
+        stack.delete_connector(name)
+        stack.drop_replication_slot(slot)
+        stack.delete_topics(topic, f"__debezium-heartbeat.{prefix}")
+
+    left = stack.psql_superuser(
+        f"SELECT count(*) FROM pg_replication_slots WHERE slot_name = '{slot}'"
+    )
+    assert left == "0"
+    stack.wait_connectors_running()
+
+
+def test_everything_running_after_durability_tests() -> None:
+    """Runs last (file order): every registered connector is RUNNING again."""
+    stack.wait_connectors_running()
+    for name in stack.connector_names():
+        assert stack.connector_running(name), name
+
+
+def test_probe_run_leaves_no_orphan_slot() -> None:
+    left = stack.psql_superuser(
+        "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'dbz_snapshot_probe'"
+    )
+    assert left == "0"
 
 
 def test_connect_rest_port_is_not_published() -> None:
