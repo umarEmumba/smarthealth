@@ -243,7 +243,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 2/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
+**Plans:** 3/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
 
 **Wave 1**
 
@@ -253,7 +253,7 @@ Success criterion 1 is defined honestly (research F4): no loss, at-least-once on
 
 - [ ] 03-02-notification-delivery-PLAN.md — Celery on RabbitMQ 4.3, one send task, idempotent fake provider (one call per dedupe key even after a worker kill), retry, DLX dead-lettering, closed-appointment guard (EVENT-04, EVENT-05, NOTIF-04, OBS-02)
 - [x] 03-03-event-schemas-PLAN.md — nine more PHI-free Avro schemas, deploy-time BACKWARD registration CLI, infra secret files (EVENT-01)
-- [ ] 03-04-consumer-base-PLAN.md — shared consumer: child-span tracing, commit after effect, DLQ, outage retry, metrics, processed-event claims (EVENT-03, EVENT-05, OBS-02)
+- [x] 03-04-consumer-base-PLAN.md — shared consumer: child-span tracing, commit after effect, DLQ, outage retry, metrics, processed-event claims (EVENT-03, EVENT-05, OBS-02)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -314,4 +314,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 2/20 | In Progress|  |
+| 3. Event-Driven System + Observability | 3/20 | In Progress|  |

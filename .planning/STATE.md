@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-03-event-schemas-PLAN.md
-last_updated: "2026-11-11T01:18:14.663Z"
+stopped_at: Completed 03-04-consumer-base-PLAN.md
+last_updated: "2026-11-11T05:19:01.273Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 8ebff3f3974638bf4fca4cfa2cbc7f617abdc183
+state_head: 537ca01b84d67000f36dc59235cf71d8eb935406
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 44
+  completed_plans: 45
   percent: 60
 ---
 
@@ -96,6 +96,7 @@ Progress: [██████░░░░] 60%
 | Phase 02.1 P13 | 78 min | 3 tasks | 13 files |
 | Phase 03 P01 | 21min | 3 tasks | 10 files |
 | Phase 03 P03 | n/a (interrupted) | 3 tasks | 14 files |
+| Phase 3 P04 | not measured | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -184,6 +185,7 @@ Recent decisions affecting current work:
 - [Phase 02.1]: First real-stack k6 smoke runs crossed latency thresholds, so the docs say NFRs are unmeasured and the smoke result is unfavourable; DASH-04 left unticked for Phase 3
 - [Phase 02.1]: Audit dedupe index is restored by test_audit_indexes and ensured by the concurrent-finalize test, so test order no longer decides
 - [Phase 03]: 03-01: Event contract D-05 confirmed as Avro, one subject per event type by record name, one topic per aggregate; all six veto items accepted; Connect image quay.io/debezium/connect:3.7.1.Final approved
+- [Phase 3]: 03-04: EventEnvelope.payload is the full decoded Avro record; registry outage during decode is transient (retry), not poison
 
 ### Pending Todos
 
@@ -224,6 +226,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T01:18:14.590Z
-Stopped at: Completed 03-03-event-schemas-PLAN.md
+Last session: 2026-11-11T05:19:01.201Z
+Stopped at: Completed 03-04-consumer-base-PLAN.md
 Resume file: None
