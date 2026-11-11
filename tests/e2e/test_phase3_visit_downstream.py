@@ -388,3 +388,147 @@ async def test_sweeper_schedule_retired_on_live_server(temporal: Client) -> None
         await asyncio.sleep(2)
         running = [wf async for wf in temporal.list_workflows(query)]
     assert not running, "a VisitDownstreamSweeperWorkflow execution is still running"
+
+
+# --- Plan 03-22: a lost visit.completed trigger is recovered by the visit-reconciler (CR-01) --
+# The consumer is stopped, a visit is completed, and the `visit-downstream` group's offset on
+# the event's partition is moved ONE past the event (what the consumer does after a
+# dead-letter): the event is consumed and dropped, the marker stays NULL. After the visit is
+# backdated beyond the reconcile grace, the live `visit-reconciler` Schedule must restart the
+# downstream workflow: one `visit-completed-{id}` execution, the marker set, billing finalized,
+# the appointment completed, and the visit-worker (not the consumer) logged the restart.
+
+VISIT_DOWNSTREAM_GROUP = "visit-downstream"
+RECONCILER_SCHEDULE = "visit-reconciler"
+RECOVERY_DEADLINE_SECONDS = 120.0
+LOST_TRIGGER_QUIET_SECONDS = 10
+
+
+def _kafka_groups(*args: str, retry_seconds: float = 90) -> str:
+    """`kafka-consumer-groups ...` inside the broker container, retried while the (just
+    stopped) group is still being expired; returns stdout."""
+    argv = [
+        "exec", "-T", "kafka", "kafka-consumer-groups", "--bootstrap-server", "kafka:29092", *args,
+    ]  # fmt: skip
+    deadline = time.monotonic() + retry_seconds
+    last = ""
+    while time.monotonic() < deadline:
+        result = stack.compose(*argv, check=False, timeout=60)
+        last = (result.stdout + result.stderr).strip()
+        if result.returncode == 0 and "Error" not in last:
+            return result.stdout
+        time.sleep(3)
+    raise AssertionError(f"kafka-consumer-groups {' '.join(args[:2])} failed: {last[-300:]}")
+
+
+def _committed_offset(group: str, topic: str, partition: int) -> int | None:
+    out = _kafka_groups("--describe", "--group", group)
+    for line in out.splitlines():
+        parts = line.split()
+        if (
+            len(parts) >= 4
+            and parts[0] == group
+            and parts[1] == topic
+            and parts[2] == str(partition)
+            and parts[3].isdigit()
+        ):
+            return int(parts[3])
+    return None
+
+
+def _service_log_lines(
+    service: str, since: datetime.datetime, event: str, visit_id: str
+) -> list[dict[str, Any]]:
+    """The service's structured log records named `event` for `visit_id` since `since`."""
+    out = stack.compose(
+        "logs", "--no-color", "--since", since.strftime("%Y-%m-%dT%H:%M:%SZ"), service
+    ).stdout
+    found: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        _, _, payload = line.partition("| ")
+        try:
+            record = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if record.get("event") == event and record.get("visit_id") == visit_id:
+            found.append(record)
+    return found
+
+
+async def _age_visit(visit_id: str, minutes: int) -> None:
+    """Move the test's OWN visit's three timestamps `minutes` into the past (one UPDATE)."""
+    engine = create_async_engine(visit_settings.database_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE visits SET checked_in_at = checked_in_at - make_interval(mins => :m),"
+                    " started_at = started_at - make_interval(mins => :m),"
+                    " completed_at = completed_at - make_interval(mins => :m) WHERE id = :v"
+                ),
+                {"m": minutes, "v": visit_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_lost_visit_trigger_is_recovered_by_the_reconciler(
+    gateway: httpx.AsyncClient, ew: E2EWorld, temporal: Client
+) -> None:
+    since = await _start_window()
+    with _restored("visit-consumer"):
+        await asyncio.to_thread(stack.stop_service, "visit-consumer")
+        visit_id, appointment_id, _ = await _complete_visit_through_gateway(gateway, ew)
+
+        found = await asyncio.to_thread(
+            stack.consume_matching,
+            VISIT_TOPIC,
+            lambda m: m["key"] == visit_id and m["headers"].get("eventType") == "visit.completed",
+            60,
+            1,
+            decode=False,
+        )
+        assert found, f"no visit.completed message for {visit_id} within 60 s"
+        partition, offset = found[0]["partition"], found[0]["offset"]
+
+        # Only move the group's offset when it sits exactly on this event: never skip others.
+        committed = await asyncio.to_thread(_committed_offset, VISIT_DOWNSTREAM_GROUP, VISIT_TOPIC, partition)
+        assert committed == offset, (
+            f"{VISIT_DOWNSTREAM_GROUP} committed offset on {VISIT_TOPIC}:{partition} is "
+            f"{committed}, expected {offset}: refusing to skip other events"
+        )
+        await asyncio.to_thread(
+            _kafka_groups,
+            "--group", VISIT_DOWNSTREAM_GROUP,
+            "--topic", f"{VISIT_TOPIC}:{partition}",
+            "--reset-offsets", "--to-offset", str(offset + 1), "--execute",
+        )  # fmt: skip
+
+        await asyncio.to_thread(stack.start_service, "visit-consumer")
+        await asyncio.to_thread(stack.wait_service_healthy, "visit-consumer")
+
+    # The event was consumed and dropped: nothing starts the visit.
+    await asyncio.sleep(LOST_TRIGGER_QUIET_SECONDS)
+    assert await _downstream_marker(visit_id) is None, "the consumer started a dropped trigger"
+    assert await _executions(temporal, visit_id) == 0, "a workflow exists for a dropped trigger"
+
+    # Recovery: past the reconcile grace, the live visit-reconciler Schedule restarts it.
+    await _age_visit(visit_id, 30)
+    await temporal.get_schedule_handle(RECONCILER_SCHEDULE).trigger()
+    marker = await _wait_for(
+        lambda: _downstream_marker(visit_id), time.monotonic() + RECOVERY_DEADLINE_SECONDS
+    )
+    assert marker is not None, (
+        f"marker still NULL {RECOVERY_DEADLINE_SECONDS:.0f} s after the visit-reconciler "
+        "Schedule was triggered: the lost trigger was not restarted"
+    )
+    await _wait_one_execution(temporal, visit_id)
+
+    restarted = _service_log_lines(
+        "visit-worker", since, "visit.lost_trigger_restarted", visit_id
+    )
+    assert restarted, "the visit-worker did not log visit.lost_trigger_restarted for the visit"
+    assert not _service_log_lines("visit-consumer", since, "visit.downstream_started", visit_id), (
+        "the consumer started the visit: it was not the reconciler"
+    )
+    await _downstream_finishes(gateway, ew, appointment_id)

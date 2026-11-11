@@ -221,17 +221,51 @@ async def list_completed_without_downstream(
     first, at most `limit`.
     Served by the partial index `ix_visits_downstream_pending`. No row lock.
 
-    Since plan 03-12 (D-03) no worker start-up or Schedule uses this: the outbox
-    consumer is the only trigger. It remains for the one-shot cutover backfill
-    (`scripts/backfill_visit_completed_events.py`), which selects the visits that
-    completed before the outbox trigger existed. (It also lists a visit whose
-    event is committed but not consumed yet; the backfill is idempotent for those,
-    the outbox primary key is the uuid5 event id.)"""
+    A never-started visit is the outbox consumer's job first and the reconciler's after
+    the grace (`list_lost_triggers`, plan 03-22); this ungraced list is for the manual
+    route, `scripts/backfill_visit_completed_events.py`, which selects the visits that
+    completed before the outbox trigger existed or whose event was dead-lettered. (It
+    also lists a visit whose event is committed but not consumed yet; the backfill is
+    idempotent for those, the outbox primary key is the uuid5 event id.)"""
     query = (
         select(Visit)
         .where(
             Visit.status == VisitStatus.COMPLETED,
             Visit.downstream_started_at.is_(None),
+        )
+        .order_by(Visit.completed_at, Visit.id)
+        .limit(limit)
+    )
+    if clinic_id is not None:
+        query = query.where(Visit.clinic_id == clinic_id)
+    return list((await db.scalars(query)).all())
+
+
+async def list_lost_triggers(
+    db: AsyncSession,
+    *,
+    older_than_minutes: int,
+    limit: int = 100,
+    clinic_id: uuid.UUID | None = None,
+) -> list[Visit]:
+    """Completed visits whose downstream trigger was lost (plan 03-22, CR-01): `status =
+    'completed' AND downstream_started_at IS NULL AND completed_at < now() - older_than`
+    (optionally of one clinic), oldest first, at most `limit`. Served by the partial
+    index `ix_visits_downstream_pending`. No row lock.
+
+    The outbox consumer starts the workflow within seconds of the completion; a visit
+    still unmarked after the grace had its `visit.completed` event dead-lettered or
+    consumed and dropped (or never relayed), and the reconciler restarts it through the
+    same idempotent `ensure_downstream_started`."""
+    query = (
+        select(Visit)
+        .where(
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.downstream_started_at.is_(None),
+            Visit.completed_at
+            < text("now() - make_interval(secs => :grace)").bindparams(
+                grace=float(older_than_minutes) * 60.0
+            ),
         )
         .order_by(Visit.completed_at, Visit.id)
         .limit(limit)
@@ -292,7 +326,8 @@ async def list_unsettled(
 
     `downstream_started_at IS NOT NULL` leaves visits whose trigger was never
     started to the outbox consumer, which starts the workflow (and the workflow
-    then settles them); the reconciler covers workflows that already ran or were
+    then settles them), and, after the grace, to the lost-trigger pass
+    (`list_lost_triggers`); this list covers workflows that already ran or were
     started and did not settle. No row lock: the reconciler re-checks each row
     through the conditional marker functions and the idempotent step bodies."""
     query = (

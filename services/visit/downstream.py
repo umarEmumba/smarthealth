@@ -1,22 +1,30 @@
 """Starting a completed visit's downstream workflow, exactly once (plan 02-11;
 VISIT-04, D-06, D-16, research Pattern 2 / Pattern 8).
 
-Outbox trigger (plan 03-09, D-03; the only trigger since plan 03-12): the API commits
-the `completed` transition with `downstream_started_at IS NULL` and a `visit.completed`
-outbox row; the visit-downstream consumer (`services.visit.consumer`) calls
-`ensure_downstream_started`, which starts `visit-completed-{visit_id}` with
-`start_once` (deterministic id, USE_EXISTING + REJECT_DUPLICATE) and only then sets the
-marker with a conditional UPDATE. A Temporal outage leaves the marker NULL and the
-event is retried by the consumer, so an outage delays a trigger and never drops it. The
-Phase 2 sweeper (a Temporal Schedule plus a run-on-start sweep) that used to find such
-visits was retired in plan 03-12 once the kill-between-commit-and-publish tests (plan
-03-11) proved the outbox path; visits that completed before the outbox existed are
-covered once by `scripts/backfill_visit_completed_events.py`. Every path is idempotent:
-a repeated or concurrent start attaches to the running execution or is refused once it
-closed, and the marker update is conditional.
+Outbox trigger (plan 03-09, D-03): the API commits the `completed` transition with
+`downstream_started_at IS NULL` and a `visit.completed` outbox row; the visit-downstream
+consumer (`services.visit.consumer`) calls `ensure_downstream_started`, which starts
+`visit-completed-{visit_id}` with `start_once` (deterministic id, USE_EXISTING +
+REJECT_DUPLICATE) and only then sets the marker with a conditional UPDATE. A Temporal
+outage leaves the marker NULL and the event is retried by the consumer, so an outage
+delays a trigger and never drops it. The Phase 2 sweeper (a Temporal Schedule plus a
+run-on-start sweep) that used to find such visits was retired in plan 03-12 once the
+kill-between-commit-and-publish tests (plan 03-11) proved the outbox path and it stays
+retired.
 
-Shared by the visit-downstream consumer only (the start is the same function the Phase 2
-paths used). No execution/run timeout is ever passed (see `libs.temporal`). Logs carry
+Lost triggers (plan 03-22, CR-01): the consumer can still lose an event, because a
+record that is dead-lettered (a poison record, or a transient failure that hit the
+`TransientExhausted` cap) or consumed and dropped leaves the visit with a NULL marker for
+ever. `restart_lost_triggers` is the safety net: the reconcile activity (the existing
+`visit-reconciler` Schedule, and once at worker start) restarts every completed visit
+whose marker is still NULL after `VISIT_RECONCILE_GRACE_MINUTES` through the same
+idempotent `ensure_downstream_started`. `scripts/backfill_visit_completed_events.py` is
+the manual route (visits that completed before the outbox existed, or when the worker is
+down). Every path is idempotent: a repeated or concurrent start attaches to the running
+execution or is refused once it closed, and the marker update is conditional.
+
+Shared by the visit-downstream consumer, the reconciler's lost-trigger pass and the
+backfill (the start is the same function the Phase 2 paths used). No execution/run timeout is ever passed (see `libs.temporal`). Logs carry
 ids only.
 
 Reconciling (plan 02.1-10, S4): `reconcile_unsettled` is the safety net behind
@@ -52,7 +60,7 @@ from services.visit.domain.contracts import (
 from services.visit.repository import visit_repo
 from services.visit.repository.models import Visit
 
-__all__ = ["ensure_downstream_started", "reconcile_unsettled"]
+__all__ = ["ensure_downstream_started", "reconcile_unsettled", "restart_lost_triggers"]
 
 log = get_logger(__name__)
 
@@ -182,3 +190,54 @@ async def reconcile_unsettled(
             settled += 1
     log.info("visit.reconcile", scanned=len(candidates), settled=settled)
     return settled
+
+
+async def restart_lost_triggers(
+    session_factory: Callable[[], AsyncSession],
+    client: Client,
+    *,
+    grace_minutes: int,
+    limit: int = RECONCILE_LIMIT,
+    clinic_id: uuid.UUID | None = None,
+) -> int:
+    """Restart the downstream workflow of every completed visit whose marker is still NULL
+    more than `grace_minutes` after its completion (oldest first, at most `limit` per
+    pass; only visits of `clinic_id` when given). The ids are read in one short
+    transaction; each visit then gets its own short session: it is re-read, skipped
+    unless it is still completed with a NULL marker (the consumer or another pass may
+    have got there first), and started with `ensure_downstream_started` (`start_once` on
+    the deterministic id, then the conditional marker), so a pass racing the consumer, a
+    second pass or the backfill produces one execution. A failure of one visit is logged
+    (id and exception class name only) and the pass continues; its marker stays NULL, so
+    the next pass retries. Returns how many visits were restarted."""
+    async with session_factory() as db:
+        ids = [
+            v.id
+            for v in await visit_repo.list_lost_triggers(
+                db, older_than_minutes=grace_minutes, limit=limit, clinic_id=clinic_id
+            )
+        ]
+
+    restarted = 0
+    for visit_id in ids:
+        try:
+            async with session_factory() as db:
+                visit = await visit_repo.get_visit(db, visit_id)
+                if (
+                    visit is None
+                    or visit.status != "completed"
+                    or visit.downstream_started_at is not None
+                ):
+                    continue
+                await ensure_downstream_started(client, db, visit)
+        except Exception as exc:  # noqa: BLE001 - one bad visit never stops the pass
+            log.warning(
+                "visit.lost_trigger_restart_failed",
+                visit_id=str(visit_id),
+                error=type(exc).__name__,
+            )
+            continue
+        restarted += 1
+        log.info("visit.lost_trigger_restarted", visit_id=str(visit_id))
+    log.info("visit.lost_triggers", scanned=len(ids), restarted=restarted)
+    return restarted

@@ -15,7 +15,9 @@ orchestrator restarts it. Then `ensure_visit_schedules(client)` registers the
 `visit-reconciler` Schedule and `retire_sweeper_schedule(client)` deletes the retired
 `visit-downstream-sweeper` Schedule (D-03; both idempotent; a failure exits 1),
 followed by one reconcile pass (a failure is logged, never fatal: the Schedule
-retries). There is no start-up sweep: the outbox consumer is the only trigger.
+retries), which also restarts completed visits whose `visit.completed` trigger was lost
+(marker still NULL after the grace, plan 03-22). There is no start-up sweep: the outbox
+consumer is the trigger and the reconcile pass is its safety net.
 It never runs database migrations: the API container owns them.
 
 Shutdown: SIGTERM/SIGINT set a stop event; the worker stops polling and gives
@@ -97,8 +99,8 @@ async def _heartbeat(stop: asyncio.Event) -> None:
 def build_activities(client: Client) -> VisitActivities:
     """Production wiring: visit_db sessions, the process-default
     timeout-bounded HTTP client, Visit's service tokens, Mongo and the
-    worker's own Temporal client (kept for the constructor; unused since the
-    sweeper retired)."""
+    worker's own Temporal client (used by the reconciler's lost-trigger pass,
+    plan 03-22)."""
     http = _get_default_client()
     tokens = ServiceTokenProvider(
         "visit",

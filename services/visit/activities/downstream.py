@@ -2,7 +2,7 @@
 
 `VisitActivities` receives its dependencies through the constructor (a session
 factory for visit_db, an httpx client, Visit's `ServiceTokenProvider`, a Mongo
-client and a Temporal client, unused since the sweeper retired), so the worker wires
+client and a Temporal client, used by the reconciler's lost-trigger pass), so the worker wires
 production clients and the test harness wires the in-process mesh. Each bound method is
 registered under its `ACT_*` name; the workflows call them by name.
 
@@ -34,6 +34,12 @@ registered under its `ACT_*` name; the workflows call them by name.
   `visit-completed-{visit_id}`: Billing's Idempotency-Key and the audit dedupe
   key are therefore identical whether the workflow or the reconciler runs the
   step, and the two can race without a double effect.
+* `reconcile_unsettled`'s activity body also runs the lost-trigger pass (plan 03-22,
+  CR-01): after the settle pass it restarts, with the worker's Temporal client, every
+  completed visit whose `downstream_started_at` is still NULL after the reconcile grace
+  (its `visit.completed` event was dead-lettered or dropped) through the same idempotent
+  `ensure_downstream_started` the outbox consumer calls. No workflow or activity name
+  changes; the retired sweeper Schedule is not involved.
 * `record_followup_intent` / `record_analytics_intent` - Phase 2 stubs (D-11):
   a log line and an audit entry, ids only. They are the single Phase 3 seams
   (Celery follow-up job, Kafka `visit.completed` event).
@@ -276,14 +282,24 @@ class VisitActivities:
 
     async def reconcile(self) -> int:
         """One reconciler pass (also run once by the worker at start-up): settle
-        completed visits whose markers are still empty after the grace period.
-        Returns how many visits ended with both markers set."""
-        return await downstream.reconcile_unsettled(
+        completed visits whose markers are still empty after the grace period, then
+        restart the downstream workflow of completed visits whose trigger was lost
+        (marker still NULL after the grace). The settle pass runs first so a pass never
+        races a workflow it just started. Without a Temporal client the lost-trigger pass
+        is skipped and logged. Returns settled plus restarted."""
+        settled = await downstream.reconcile_unsettled(
             self._session_factory,
             finalize_billing=self._finalize_billing,
             complete_appointment=self._complete_appointment,
             grace_minutes=self._reconcile_grace,
         )
+        if self._client is None:
+            log.warning("visit.lost_trigger_pass_skipped")
+            return settled
+        restarted = await downstream.restart_lost_triggers(
+            self._session_factory, self._client, grace_minutes=self._reconcile_grace
+        )
+        return settled + restarted
 
     @activity.defn(name=ACT_RECONCILE)
     async def reconcile_unsettled(self) -> SweepResult:
