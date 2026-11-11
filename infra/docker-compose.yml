@@ -5,7 +5,10 @@ name: smarthealth
 # Temporal/Jaeger/Prometheus/Grafana were scaffolding in Phase 1. From Phase 2
 # Temporal is live: the scheduling and visit APIs start workflows on it and the
 # scheduling-worker / visit-worker containers execute them. Kafka/RabbitMQ stay
-# scaffolding until Phase 3.
+# scaffolding until Phase 3. Phase 3 (plan 03-05) adds the CDC relay: Postgres
+# logical decoding, Kafka Connect with Debezium (`connect`, registered by
+# `connect-init`), pre-created topics (`kafka-init`) and deploy-time schema
+# registration (`schema-init`).
 
 # --- Shared building blocks for the application services (YAML anchors) ------
 # Every application container gets the same container-network URLs for the
@@ -18,6 +21,11 @@ x-app-env: &app-env
   MONGO_DB_NAME: ${MONGO_DB_NAME:-smarthealth}
   REDIS_URL: redis://redis:6379/0
   OTLP_ENDPOINT: http://jaeger:4317
+  # Phase 3 (plan 03-05): container-network Kafka and Schema Registry. Services
+  # never produce to Kafka (they write an outbox row, Debezium relays it); the
+  # registry URL is read by every strict serializer and the broker by consumers.
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  SCHEMA_REGISTRY_URL: http://schema-registry:8081
 
 x-app-healthcheck: &app-healthcheck
   test:
@@ -32,6 +40,10 @@ x-app-healthcheck: &app-healthcheck
 
 x-app-depends-on: &app-depends-on
   db-init:
+    condition: service_completed_successfully
+  # Schemas are registered by this job and nowhere else (D-05, T-3-10): the
+  # producing services' serializers are strict and fail on an unknown schema.
+  schema-init:
     condition: service_completed_successfully
   postgres:
     condition: service_healthy
@@ -48,7 +60,20 @@ services:
     # own SQLAlchemy pool (default 5 + 10 overflow), so the stock limit of 100 is
     # exhausted by a normal local run (TooManyConnectionsError). 300 leaves
     # headroom without changing any data.
-    command: ["postgres", "-c", "max_connections=300"]
+    #
+    # Phase 3 (plan 03-05, D-01): wal_level=logical lets Debezium decode the WAL
+    # (it keeps the data volume; only a restart is needed). An inactive
+    # replication slot retains WAL (research Pitfall 4; deleting a connector does
+    # NOT drop its slot), so max_slot_wal_keep_size caps what a stopped Connect
+    # can pin on disk.
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - wal_level=logical
+      - -c
+      - max_slot_wal_keep_size=2GB
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-smarthealth}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-local-dev-only}
@@ -86,8 +111,16 @@ services:
       SCHEDULING_DB_PASSWORD: ${SCHEDULING_DB_PASSWORD:-changeme-scheduling-local-dev-only}
       VISIT_DB_PASSWORD: ${VISIT_DB_PASSWORD:-changeme-visit-local-dev-only}
       BILLING_DB_PASSWORD: ${BILLING_DB_PASSWORD:-changeme-billing-local-dev-only}
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD:-changeme-analytics-local-dev-only}
     volumes:
       - ./postgres-init:/postgres-init:ro
+    # The Debezium and Grafana read-only role passwords arrive as Compose
+    # secrets (files), never as env values (T-3-06).
+    secrets:
+      - source: debezium_db_password
+        target: debezium.properties
+      - source: grafana_ro_password
+        target: grafana_ro.secret
     entrypoint: ["bash", "/postgres-init/create-service-databases.sh"]
     restart: "no"
 
@@ -192,6 +225,104 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  # One-shot, idempotent topic creation (plan 03-05, Pitfall 17): auto-created
+  # topics get one partition and default retention, so every topic is created
+  # here with explicit partitions and unlimited retention.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.13
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./kafka:/kafka-init:ro
+    entrypoint: ["bash", "/kafka-init/create-topics.sh"]
+    restart: "no"
+
+  # One-shot deploy-time schema registration (plan 03-05, D-05): the ONLY writer
+  # of the Schema Registry. Registers every catalogue schema (BACKWARD checked
+  # per subject; an incompatible schema fails the job and blocks the producing
+  # services via x-app-depends-on). Uses the scheduling image only because it
+  # carries the shared `libs` package; it needs no database or secret.
+  schema-init:
+    build:
+      context: ..
+      dockerfile: services/scheduling/Dockerfile
+    command: ["python", "-m", "libs.events.register"]
+    environment:
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+    restart: "no"
+
+  # Kafka Connect + Debezium: the CDC relay (D-01). DOCUMENTED DEVIATION from the
+  # "same Confluent Platform line" rule: cp-kafka-connect:7.6.13 runs Java 11 and
+  # cannot load Debezium 3.x (class-file 61 needs Java 17), so Connect alone runs
+  # the Debezium image; the broker and Schema Registry stay on 7.6.13 and Connect
+  # is only a Kafka client of them. No host port: the REST API (:8083) can create
+  # a connector that reads any database it can log in to, so it stays on the
+  # Compose network (T-3-05). The database password is a Compose secret read by
+  # the FileConfigProvider; no connector JSON, env value or image contains it
+  # (T-3-06). Heap capped: the idle JVM otherwise takes ~950 MiB.
+  connect:
+    image: quay.io/debezium/connect:3.7.1.Final
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: smarthealth-connect
+      CONFIG_STORAGE_TOPIC: smarthealth_connect_configs
+      OFFSET_STORAGE_TOPIC: smarthealth_connect_offsets
+      STATUS_STORAGE_TOPIC: smarthealth_connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx768m
+      CONNECT_CONFIG_PROVIDERS: file
+      CONNECT_CONFIG_PROVIDERS_FILE_CLASS: org.apache.kafka.common.config.provider.FileConfigProvider
+    secrets:
+      - source: debezium_db_password
+        target: debezium.properties
+    # Read-only so a later plan can register ITS connector by name inside this
+    # container: `exec connect bash /connect-init/register-connectors.sh <name>`.
+    volumes:
+      - ./connect:/connect-init:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8083/connectors > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+    restart: unless-stopped
+
+  # One-shot connector registration: PUTs every connector file present and waits
+  # until the connector AND its tasks are RUNNING (Pitfall 2). It starts after the
+  # four producing APIs are healthy because each one's Alembic run creates its
+  # outbox table and publication; only the files present are registered, so later
+  # plans add a connector file without touching Compose.
+  connect-init:
+    image: quay.io/debezium/connect:3.7.1.Final
+    depends_on:
+      connect:
+        condition: service_healthy
+      scheduling:
+        condition: service_healthy
+      visit:
+        condition: service_healthy
+      provider:
+        condition: service_healthy
+      patient:
+        condition: service_healthy
+    environment:
+      CONNECT_URL: http://connect:8083
+    volumes:
+      - ./connect:/connect-init:ro
+    entrypoint: ["bash", "/connect-init/register-connectors.sh"]
+    restart: "no"
 
   # NON-PRODUCTION convenience image per CLAUDE.md's "What NOT to Use" table —
   # auto-provisions Temporal's schema on first boot. Production would use
@@ -520,3 +651,11 @@ secrets:
     file: ./secrets/service-clients/scheduling.secret
   visit_client_secret:
     file: ./secrets/service-clients/visit.secret
+  # Phase 3 infrastructure secrets (plan 03-03 generates them under the
+  # gitignored infra/secrets/infra/). debezium.properties holds `password=<value>`
+  # (read by db-init and, via FileConfigProvider, by Connect); grafana_ro.secret
+  # holds the Grafana read-only role password (read by db-init).
+  debezium_db_password:
+    file: ./secrets/infra/debezium.properties
+  grafana_ro_password:
+    file: ./secrets/infra/grafana_ro.secret
