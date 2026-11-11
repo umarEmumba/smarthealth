@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: verifying
-stopped_at: Completed 03-21-consumer-reliability-PLAN.md
-last_updated: "2026-11-11T17:26:26.007Z"
+stopped_at: Completed 03-22-visit-trigger-recovery-PLAN.md
+last_updated: "2026-11-11T18:03:22.620Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 8dab269374a852de00a271c12cc74ae9e8b113c8
+state_head: 0da83f647a0243399a8bb848a702fdb2086ffb54
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 68
-  completed_plans: 63
+  completed_plans: 64
   percent: 60
 ---
 
@@ -115,6 +115,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P19 | not measured | 2 tasks | 3 files |
 | Phase 03 P20 | about 4h | 3 tasks | 5 files |
 | Phase 03 P21 | ~65min | 3 tasks | 11 files |
+| Phase 03 P22 | 40min | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -232,6 +233,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-20: the two new root-user Dockerfiles (services/analytics, services/notification) accepted for now, same class as the eight accepted at Phase 2 closeout
 - [Phase 03]: 03-21 W3: WR-03 closed by bounding (10 attempts AND 900 s then TransientExhausted), not narrowing; seven Temporal statuses, RuntimeError, OSError stay transient
 - [Phase 03]: 03-21: one classifier libs/events/classify.py (SQLSTATE 08/53/57/40 first); AST guard with structural detectors forbids a second copy
+- [Phase 03]: 03-22: lost visit.completed triggers are recovered by the existing visit-reconciler lost-trigger pass (no sweeper); DLQ records by scripts/replay_dlq.py (dry run by default)
 
 ### Pending Todos
 
@@ -281,6 +283,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T17:26:25.933Z
-Stopped at: Completed 03-21-consumer-reliability-PLAN.md
+Last session: 2026-11-11T18:03:22.549Z
+Stopped at: Completed 03-22-visit-trigger-recovery-PLAN.md
 Resume file: None
