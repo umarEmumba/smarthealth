@@ -563,3 +563,27 @@ def test_http_request_counters_have_no_resets_and_never_decrease(job: str) -> No
     assert len(values) >= window // 15 // 2, report
     assert not decreases, report
 
+
+# --- Plan 03-25: pid 1 environment of API and single-process roles -------------------
+
+MULTIPROC_ENV = "PROMETHEUS_MULTIPROC_DIR"
+
+
+def _pid1_has_variable(service: str, name: str) -> bool:
+    """Whether the container's pid 1 environment has the variable. The environment is read
+    in the container and matched here; only presence is reported, never a value."""
+    result = stack.compose(
+        "exec", "-T", service, "sh", "-c", "tr '\\0' '\\n' < /proc/1/environ", timeout=60
+    )
+    names = {line.partition("=")[0] for line in result.stdout.splitlines() if "=" in line}
+    return name in names
+
+
+@pytest.mark.parametrize("service", sorted(MULTIPROCESS_API_JOBS.values()))
+def test_api_pid1_has_the_multiprocess_directory(service: str) -> None:
+    assert _pid1_has_variable(service, MULTIPROC_ENV), service
+
+
+@pytest.mark.parametrize("service", SINGLE_PROCESS_ROLES)
+def test_single_process_role_pid1_has_no_multiprocess_directory(service: str) -> None:
+    assert not _pid1_has_variable(service, MULTIPROC_ENV), service
