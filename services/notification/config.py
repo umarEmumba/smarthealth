@@ -13,6 +13,7 @@ Mongo (`shared_settings.mongo_db_name`, D-02), not in a per-service Postgres.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from pydantic import Field, SecretStr, field_validator
@@ -61,6 +62,22 @@ class NotificationSettings(SharedSettings):
     temporal_heartbeat_path: str = Field(
         default="/tmp/notification-temporal-worker.alive",  # noqa: S108 - liveness file, no secret
         validation_alias="NOTIFICATION_TEMPORAL_HEARTBEAT_PATH",
+    )
+
+    # notification-trigger consumer (plan 03-14).
+    consumer_heartbeat_path: str = Field(
+        default="/tmp/notification-consumer.alive",  # noqa: S108 - liveness file, no secret
+        validation_alias="NOTIFICATION_CONSUMER_HEARTBEAT_PATH",
+    )
+    # Booking-type events (booked, cancelled, rescheduled) older than this are recorded
+    # `skipped_stale` instead of sent, so a replay of history never sends day-old mail.
+    max_event_age_minutes: int = Field(
+        default=1440, gt=0, validation_alias="NOTIFICATION_MAX_EVENT_AGE_MINUTES"
+    )
+    # Where a NEW consumer group starts (D-13): `latest` in Compose so the group counts
+    # from go-live, `earliest` as the code default (tests and replays read history).
+    consumer_start: Literal["earliest", "latest"] = Field(
+        default="earliest", validation_alias="NOTIFICATION_CONSUMER_START"
     )
 
     @field_validator("reminder_leads_minutes")

@@ -175,6 +175,31 @@ def mark_skipped(db: Database, request: SendRequest, reason: str) -> None:
         )
 
 
+def record_skipped(db: Database, request: SendRequest, reason: str) -> None:
+    """Record a send that was never published (`reason` is `stale` or `closed`), without a
+    provider call. Insert-only: a key that already has a document is left as it is, so a
+    redelivered event can never overwrite a `sent` delivery."""
+    status = STATUS_SKIPPED_CLOSED if reason == "closed" else STATUS_SKIPPED_STALE
+    now = _now()
+    try:
+        db[DELIVERIES].insert_one(
+            {
+                "dedupe_key": request.dedupe_key,
+                "notification_type": request.notification_type,
+                "patient_id": request.patient_id,
+                "appointment_id": request.appointment_id,
+                "visit_id": request.visit_id,
+                "event_id": request.event_id,
+                "status": status,
+                "attempts": 0,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    except DuplicateKeyError:
+        pass
+
+
 def mark_appointment_closed(db: Database, appointment_id: str, reason: str) -> None:
     """Record that an appointment is cancelled or a no-show (idempotent)."""
     db[APPOINTMENT_STATE].update_one(

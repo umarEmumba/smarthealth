@@ -722,6 +722,136 @@ services:
       retries: 6
       start_period: 40s
 
+  # --- Notification (plan 03-14): delivery, event triggers, reminders -------------------
+  # One image (services/notification/Dockerfile), four roles. None publishes a host port:
+  # the Celery worker and the consumer serve Prometheus /metrics on 9100 inside the
+  # Compose network only. Broker credentials never travel in environment variables: the
+  # dedicated broker user's password is the Compose secret notification_broker_password
+  # (mounted as /run/secrets/notification_broker.secret), and the administrator
+  # credentials exist in exactly one place, the one-shot rabbitmq-init below. The
+  # crash-injection switch of plan 03-02 is deliberately not set anywhere in this file.
+  # No env_file: nothing here needs a host-oriented .env value.
+
+  # One-shot broker provisioning through the RabbitMQ management API: the dedicated vhost
+  # `smarthealth`, the tag-less user `smarthealth_notification` and its permissions on
+  # that vhost only. Idempotent (PUTs), so a re-run changes nothing.
+  rabbitmq-init:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    command: ["python", "-m", "services.notification.broker_setup"]
+    environment:
+      NOTIFICATION_BROKER_PASSWORD_FILE: /run/secrets/notification_broker.secret
+      NOTIFICATION_RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_DEFAULT_USER:-smarthealth}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-changeme-local-dev-only}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    secrets:
+      - source: notification_broker_password
+        target: notification_broker.secret
+    restart: "no"
+
+  # The Celery delivery worker (threads pool, acks_late, the three notification queues and
+  # the dead-letter queue notifications.dlq). Declares its topology at start. Healthcheck:
+  # its own internal /metrics.
+  notification-celery:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    environment: &notification-env
+      <<: *app-env
+      NOTIFICATION_BROKER_HOST: rabbitmq
+      NOTIFICATION_BROKER_PASSWORD_FILE: /run/secrets/notification_broker.secret
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      rabbitmq-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+    secrets: &notification-secrets
+      - source: notification_broker_password
+        target: notification_broker.secret
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/metrics', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # The notification-trigger Kafka consumer (group notification-trigger, DLQ
+  # smarthealth.dlq.notification-trigger): booking, cancellation and reschedule events
+  # become Celery sends, lifecycle events control the Temporal reminders. A NEW group starts
+  # at the end of the topics (D-13): the retained throw-away events are not turned into
+  # reminders; the start offset is pinned at container start.
+  notification-consumer:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    command: ["python", "-m", "services.notification.consumer"]
+    environment:
+      <<: *notification-env
+      NOTIFICATION_CONSUMER_START: ${NOTIFICATION_CONSUMER_START:-latest}
+    depends_on:
+      rabbitmq-init:
+        condition: service_completed_successfully
+      schema-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    secrets: *notification-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/notification-consumer.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # The notification Temporal worker: polls notification-tq, runs ReminderWorkflow and
+  # FollowUpReminderWorkflow; a fired timer publishes the same Celery send as the consumer.
+  notification-temporal-worker:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    command: ["python", "-m", "services.notification.temporal_worker"]
+    environment: *notification-env
+    depends_on:
+      rabbitmq-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    secrets: *notification-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/notification-temporal-worker.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
 volumes:
   postgres_data:
   mongo_data:
@@ -752,3 +882,7 @@ secrets:
     file: ./secrets/infra/debezium.properties
   grafana_ro_password:
     file: ./secrets/infra/grafana_ro.secret
+  # Phase 3 (plan 03-14): the dedicated broker user's password, generated by
+  # scripts/generate_infra_secrets.py. Mounted in the four notification services.
+  notification_broker_password:
+    file: ./secrets/infra/notification_broker.secret
