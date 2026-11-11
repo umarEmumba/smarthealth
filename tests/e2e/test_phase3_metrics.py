@@ -368,3 +368,25 @@ def test_grafana_provisioning_clean() -> None:
     errors = [line for line in logs if ("level=error" in line or "level=warn" in line) and "provision" in line]
     assert not errors, errors
     assert not [line for line in logs if "grafana_ro.secret" in line and "level=" in line], "secret file problem"
+
+
+# --- Plan 03-16 Task 2: the replication-slot panel as grafana_ro ---------------------
+
+
+async def test_replication_slot_query_as_grafana_ro() -> None:
+    """The events dashboard's slot panel query runs as grafana_ro (no pg_monitor needed) and
+    lists the four `dbz_*` slots with an active flag and non-negative retained WAL."""
+    dashboard = json.loads((GRAFANA_DIR / "dashboards" / "smarthealth-events.json").read_text())
+    panels = [p for p in dashboard["panels"] if p["datasource"]["uid"] == "analytics-pg"]
+    assert len(panels) == 1
+    sql = panels[0]["targets"][0]["rawSql"]
+    connection = await _connect_as_grafana_ro()
+    try:
+        rows = await connection.fetch(sql)
+    finally:
+        await connection.close()
+    slots = {row["slot_name"]: row for row in rows if row["slot_name"].startswith("dbz_")}
+    assert set(slots) == {"dbz_scheduling", "dbz_patient", "dbz_provider", "dbz_visit"}, sorted(slots)
+    for name, row in slots.items():
+        assert row["active"] is True, name
+        assert row["retained_wal_bytes"] is not None and row["retained_wal_bytes"] >= 0, name

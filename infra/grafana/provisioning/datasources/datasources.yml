@@ -35,3 +35,12 @@ datasources:
       maxIdleConns: 2
     secureJsonData:
       password: $__file{/run/secrets/grafana_ro.secret}
+
+  # Traces (plan 03-16, D-11): Jaeger's query API on the Compose network, so a trace id
+  # from a log line can be opened from Grafana. Nothing is written to Jaeger from here.
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: false
