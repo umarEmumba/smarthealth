@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-14-notification-trigger-PLAN.md
-last_updated: "2026-11-11T10:37:37.500Z"
+stopped_at: Completed 03-15-metrics-scrape-PLAN.md
+last_updated: "2026-11-11T10:58:22.676Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: ce8a1ceb390c39a19f78c30f6f47b93497cab19e
+state_head: a40cd40ee5af3b8115a973d8c3876a0e4e0c9ec7
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 56
+  completed_plans: 57
   percent: 60
 ---
 
@@ -108,6 +108,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P12 | 1h | 3 tasks | 14 files |
 | Phase 03 P13 | 1h15m | 3 tasks | 17 files |
 | Phase 03 P14 | about 1h50 | 3 tasks | 14 files |
+| Phase 03 P15 | 1h20m | 2 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -212,6 +213,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-12: backfill_visit_completed_events.py is dry run by default with an optional --clinic-id scope; live dry run found 0 candidates, no apply was run
 - [Phase 03]: 03-13: live analytics consumer group starts at LATEST (ANALYTICS_CONSUMER_START, offsets pinned at container start); rebuild replays retained history and is tested on a throw-away database
 - [Phase 03]: 03-14: notification-trigger consumer starts a new group at latest with a pinned go-live offset (D-13); pin_start_offsets shared via libs/events/start_offsets.py
+- [Phase 03]: 03-15: Temporal workers serve application metrics on :9100 and Temporal SDK metrics on :9464, both scraped under one Prometheus job per worker; no metrics port is published
+- [Phase 03]: 03-15: booking_saga_seconds uses the database clock (now() - appointments.created_at) and labels outcome only
 
 ### Pending Todos
 
@@ -252,6 +255,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T10:37:37.429Z
-Stopped at: Completed 03-14-notification-trigger-PLAN.md
+Last session: 2026-11-11T10:58:22.610Z
+Stopped at: Completed 03-15-metrics-scrape-PLAN.md
 Resume file: None
