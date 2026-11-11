@@ -249,15 +249,24 @@ Recent decisions affecting current work:
 - Temporal Schedule `scheduling-schedule-change-poller` is intentionally left paused (user decision 2026-11-10); unpause before any demo or Phase 3 work that relies on schedule-change propagation.
 - Phase 2.1 human checks resolved 2026-11-10: dashboard accepted, k6 smoke passes on a quiet host, DASH-04 ticked. k6 `sustained`/`burst`/`contention` deferred until after Phase 3 (NFR-01..08 stay unmeasured targets).
 - Production hardening deferred: add a non-root `USER` to the service Dockerfiles (Semgrep missing-user x8).
-- Phase 3 follow-ups (from the 03-20 phase gate, 2026-11-11):
-  - Raise the dev Postgres `max_connections` (now 300, peaked at 304 in the full non-e2e run), cap Jaeger memory (OOM-killed once in the 7.65 GiB Docker VM), and dispose test engines per test. Not done; recorded in docs/architecture.md 10.9.
+- Phase 3 follow-ups (from the 03-20 phase gate, 2026-11-11, updated by the 03-26 gap closeout, 2026-11-12):
+  - DONE in the gap closure: the engine registry no longer orphans closed-loop engines (WR-05; 03-23: suite peak 108 of 300 against 304 before) and the gateway rate limits are back on 20 / 300 (03-26, last automated step). CR-01 (03-21, 03-22) and CR-02 (03-24, 03-25) are closed with live evidence.
+  - Raising the dev Postgres `max_connections` (300) is now less urgent after WR-05; not done. Cap Jaeger memory (OOM-killed once in the 7.65 GiB Docker VM): not done. Set a memory limit on Kafka in Compose (it was OOM-killed while seven images were rebuilt at once in 03-25; rebuild fewer images at a time).
+  - `scripts/compose_healthcheck.sh` printed OK while Kafka was down because it checks only running services: make it flag a stopped required container (not changed in 03-26).
+  - Temporal's connection count (40 in the budget) is observed, not derived: set `SQL_MAX_CONNS` / `SQL_VIS_MAX_CONNS` on the temporal service to make it derivable.
+  - WR-01: the reminder workflow drops a `reschedule` signal that arrives while the last lead's enqueue activity runs (needs `workflow.patched` plus a replay test).
+  - WR-04: the debezium role's privileges, the unauthenticated Connect REST API and an unrestricted FileConfigProvider (PHI-relevant; local-dev scope).
+  - WR-06: a backfill or replay can send follow-up notifications for old visits (a replay keeps the event id and is absorbed).
+  - IN-02..IN-06 of 03-REVIEW.md (notification duplicate code, consumer metric cardinality, Compose / RabbitMQ hygiene, metrics servers that record "started" when the bind failed, slot invalidation and Grafana scoping).
+  - The head-of-line effect of the transient cap: during an outage longer than 15 minutes each message gets its own 900 s cap, so healthy events are dead-lettered one per 15 minutes per partition; a `scripts/replay_dlq.py` run is a required operational step afterwards (docs/architecture.md 10.2).
   - The flaky SIGTRAP class: subprocess tests that fork from the threaded pytest process on macOS crash with exit -5 (identity/visit tests, tests/visit/test_backfill.py); each passes alone.
   - The identity migration test (tests/identity/test_email_migration.py) runs alembic on the live identity_db; give it its own database.
-  - The leftover provider specialty-ordering failure in tests/provider/test_provider_tracer.py::test_admin_registers_provider_through_gateway (known since 03-01, deferred-items.md).
+  - The leftover provider specialty-ordering failure in tests/provider/test_provider_tracer.py::test_admin_registers_provider_through_gateway (known since 03-01, deferred-items.md); deselected by node id in the 03-26 gate.
   - Add a non-root `USER` to all ten Dockerfiles (the eight above plus services/analytics and services/notification, accepted for now at the gate).
-  - Run k6 `sustained`, `burst` and `contention` after Phase 3 (NFR-01..08 are still unmeasured targets).
-  - Decide whether to reword EVENT-04 in REQUIREMENTS.md (the user accepted the Debezium/Kafka-consumer design in 03-01; projections are not Celery tasks).
-  - The gateway rate limits restore (raised for the test runs) is being done by the orchestrator.
+  - Run k6 `sustained`, `burst` and `contention` after Phase 3 (NFR-01..08 are still unmeasured targets); accept-path overhead of the multiprocess metrics was not isolated by an A/B run.
+  - Decide whether to reword EVENT-04 in REQUIREMENTS.md (the user accepted the Debezium/Kafka-consumer design in 03-01; projections are not Celery tasks). REQUIREMENTS.md is not edited.
+  - The dashboard's Q&A sentence "Not verified: the consumer's decode-time registry-outage path has no automated test ..." now understates the coverage (unit tests since 03-21; still no live registry outage); left unchanged under the three-sentence limit, the user decides at the 03-26 checkpoint.
+  - Provider specialty-ordering test (above) and the dev-data DLQ: the live `visit-downstream` DLQ holds 100+ `NonRetryableEventError` records for deleted test visits; do not `--apply` an unfiltered replay of it.
 
 ### Blockers/Concerns
 
