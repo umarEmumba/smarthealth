@@ -243,7 +243,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 8/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
+**Plans:** 9/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
 
 **Wave 1**
 
@@ -264,7 +264,7 @@ Success criterion 1 is defined honestly (research F4): no loss, at-least-once on
 
 - [x] 03-07-scheduling-producer-PLAN.md — six appointment events through the outbox, accept path untouched, one event per booking/cancel/reschedule (EVENT-01, EVENT-02, NOTIF-01, ANLY-02, ANLY-04)
 - [x] 03-08-patient-provider-producer-PLAN.md — patient and provider outboxes and connectors, patient.registered/deactivated and provider.schedule_changed, PHI-free (EVENT-01, EVENT-02, ANLY-01)
-- [ ] 03-09-visit-outbox-downstream-PLAN.md — visit outbox and connector, visit.completed, visit-downstream consumer replacing the API trigger (EVENT-01, EVENT-02, EVENT-03, ANLY-03, ANLY-05)
+- [x] 03-09-visit-outbox-downstream-PLAN.md — visit outbox and connector, visit.completed, visit-downstream consumer replacing the API trigger (EVENT-01, EVENT-02, EVENT-03, ANLY-03, ANLY-05)
 - [ ] 03-10-analytics-projections-PLAN.md — analytics_db projections and five metric views from Kafka events, idempotent and order-tolerant (ANLY-01..06, EVENT-03)
 
 **Wave 5** *(blocked on Wave 4 completion)*
@@ -314,4 +314,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 8/20 | In Progress|  |
+| 3. Event-Driven System + Observability | 9/20 | In Progress|  |

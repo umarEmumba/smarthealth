@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-08-patient-provider-producer-PLAN.md
-last_updated: "2026-11-11T08:40:47.512Z"
+stopped_at: Completed 03-09-visit-outbox-downstream-PLAN.md
+last_updated: "2026-11-11T09:03:20.628Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 392fea8826035e3e9956f36f6c84eed64fcc8f1a
+state_head: 1fc848fa188b82dbb5879ac31a87661c1548bf20
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 50
+  completed_plans: 51
   percent: 60
 ---
 
@@ -102,6 +102,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P05 | 14min | 3 tasks | 12 files |
 | Phase 03 P07 | 75min | 3 tasks | 6 files |
 | Phase 03 P08 | 35min | 3 tasks | 13 files |
+| Phase 03 P09 | 110min | 2 tasks | 19 files |
 
 ## Accumulated Context
 
@@ -199,6 +200,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-05: Kafka Connect runs on quay.io/debezium/connect:3.7.1.Final; connector password via Compose secret + FileConfigProvider; connector tests parametrized over connector JSON files present
 - [Phase 03]: 03-07: appointment event occurred_at is the row's updated_at (DB transaction time); event id discriminator is the post-transition version
 - [Phase 03]: 03-08: Patient and Provider are outbox producers (patient-outbox, provider-outbox connectors); only registration/deactivation and schedule-affecting changes emit; events PHI-free, proven at table and Kafka bytes
+- [Phase 03]: 03-09: Temporal client in the visit consumer is connected lazily on the consumer's persistent loop (not eagerly in main); unknown or not-completed visit events are non-retryable, Temporal/DB outages transient
 
 ### Pending Todos
 
@@ -239,6 +241,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T08:40:47.445Z
-Stopped at: Completed 03-08-patient-provider-producer-PLAN.md
+Last session: 2026-11-11T09:03:20.562Z
+Stopped at: Completed 03-09-visit-outbox-downstream-PLAN.md
 Resume file: None
