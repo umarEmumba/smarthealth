@@ -16,12 +16,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
-from prometheus_fastapi_instrumentator import Instrumentator
 
 from libs.audit.mongo_indexes import ensure_audit_indexes
 from libs.auth.jwks_client import JwksClient
 from libs.db.mongo import get_mongo_client
 from libs.health import build_health_router
+from libs.observability.http_metrics import instrument_http
 from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
 from services.billing.api import internal
@@ -52,7 +52,7 @@ def create_app() -> FastAPI:
     # No request/response body capture anywhere (see libs/observability/otel.py).
     setup_tracing(app, service_name="smarthealth-billing")
 
-    Instrumentator().instrument(app).expose(app)
+    instrument_http(app).expose(app)
 
     return app
 

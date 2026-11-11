@@ -10,7 +10,7 @@
   "editable": false,
   "graphTooltip": 1,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -28,7 +28,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "NFR-03 booking accept latency p95",
-      "description": "POST /api/appointments handler (scheduling), p95. Threshold line: book_p95_ms from loadtest/nfr.json.",
+      "description": "POST /api/appointments handler (scheduling), p95. Threshold line: book_p95_ms from loadtest/nfr.json. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -93,7 +93,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "NFR-03 booking accept latency p99",
-      "description": "POST /api/appointments handler (scheduling), p99. Threshold line: book_p99_ms.",
+      "description": "POST /api/appointments handler (scheduling), p99. Threshold line: book_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -158,7 +158,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "NFR-04 read latency p95",
-      "description": "GET /api/appointments, /api/appointments/{id} and /api/slots (scheduling), p95. Threshold line: read_p95_ms.",
+      "description": "GET /api/appointments, /api/appointments/{id} and /api/slots (scheduling), p95. Threshold line: read_p95_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -223,7 +223,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "NFR-04 read latency p99",
-      "description": "Same handlers, p99. Threshold line: read_p99_ms.",
+      "description": "Same handlers, p99. Threshold line: read_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py), so the quantile is exact around the threshold; samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -418,7 +418,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "NFR-02 gateway 5xx ratio",
-      "description": "Share of gateway responses with a 5xx status. Threshold line: error_rate_max.",
+      "description": "Share of gateway responses with a 5xx status. Threshold line: error_rate_max. Shows 0 while there are no 5xx responses (no series means no errors).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -435,7 +435,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_requests_total{job=\"smarthealth-gateway\",status=\"5xx\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"smarthealth-gateway\"}[5m])), 1e-9)",
+          "expr": "((sum(rate(http_requests_total{job=\"smarthealth-gateway\",status=\"5xx\"}[5m]))) or vector(0)) / clamp_min(sum(rate(http_requests_total{job=\"smarthealth-gateway\"}[5m])), 1e-9)",
           "legendFormat": "5xx ratio",
           "refId": "A",
           "range": true
