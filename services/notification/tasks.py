@@ -162,7 +162,9 @@ def _dead_letter(
         dedupe_key=request.dedupe_key if request is not None else None,
         error_type=error_type,
     )
-    return Reject(exc, requeue=False)
+    # The reason is the class name only: Celery logs it, and exception text (a validation
+    # error echoes the offending input) must never reach the logs.
+    return Reject(error_type, requeue=False)
 
 
 def _transient(
@@ -184,11 +186,11 @@ def _transient(
 def send(self: Any, *args: Any, **kwargs: Any) -> str:
     notification_type = _label_type(kwargs)
     if args:
-        raise _dead_letter(notification_type, TypeError("positional arguments"), None)
+        raise _dead_letter(notification_type, TypeError("positional arguments"), None) from None
     try:
         request = SendRequest(**kwargs)
     except ValidationError as exc:
-        raise _dead_letter(notification_type, exc, None) from exc
+        raise _dead_letter(notification_type, exc, None) from None
 
     db = get_db()
     try:
@@ -196,14 +198,14 @@ def send(self: Any, *args: Any, **kwargs: Any) -> str:
     except (Retry, Reject):
         raise
     except TransientDeliveryError as exc:
-        raise _transient(self, request, db, exc) from exc
+        raise _transient(self, request, db, exc) from None
     except PyMongoError as exc:
         # The delivery log is unreachable: retry rather than lose the message.
-        raise _transient(self, request, db, exc) from exc
+        raise _transient(self, request, db, exc) from None
     except PermanentDeliveryError as exc:
-        raise _dead_letter(request.notification_type, exc, request, db) from exc
+        raise _dead_letter(request.notification_type, exc, request, db) from None
     except Exception as exc:
-        raise _dead_letter(request.notification_type, exc, request, db) from exc
+        raise _dead_letter(request.notification_type, exc, request, db) from None
 
 
 def _deliver(task: Any, request: SendRequest, db: Any) -> str:
