@@ -93,8 +93,10 @@ SETTINGS = {
 }
 
 # Every deployable service package, including the gateway (which owns no data
-# but must still not import another service: it only ever speaks HTTP).
-ALL_SERVICE_PACKAGES = (*OWNED_TABLES, "gateway")
+# but must still not import another service: it only ever speaks HTTP) and the
+# notification service (plan 03-14: it owns no Postgres tables, its state is the shared
+# Mongo delivery log, so it is not in OWNED_TABLES but must still import no service).
+ALL_SERVICE_PACKAGES = (*OWNED_TABLES, "gateway", "notification")
 
 PHI_COLUMNS = {"date_of_birth", "phone", "address"}
 
