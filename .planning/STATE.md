@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-06-reminder-workflows-PLAN.md
-last_updated: "2026-11-11T07:49:47.041Z"
+stopped_at: Completed 03-05-cdc-pipeline-PLAN.md
+last_updated: "2026-11-11T08:05:37.324Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 4468e279b7db99db3b8f18209990cb8f44bd966f
+state_head: 52e13c3d506ea45704b8f1c7dabfa37279b702f5
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 47
+  completed_plans: 48
   percent: 60
 ---
 
@@ -99,6 +99,7 @@ Progress: [██████░░░░] 60%
 | Phase 3 P04 | not measured | 3 tasks | 7 files |
 | Phase 03 P02 | not measured | 3 tasks | 12 files |
 | Phase 03 P06 | not measured | 3 tasks | 13 files |
+| Phase 03 P05 | 14min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -193,6 +194,7 @@ Recent decisions affecting current work:
 - [Phase 03]: Dead-letter Reject reason is the exception class name only (no payload text in logs)
 - [Phase 03]: 03-06: a failed reminder enqueue is logged and the walk continues with the next lead; a failed follow-up enqueue fails its workflow
 - [Phase 03]: 03-06: reminder dedupe key includes slot epoch; sent_leads of a rescheduled reminder covers the final slot only
+- [Phase 03]: 03-05: Kafka Connect runs on quay.io/debezium/connect:3.7.1.Final; connector password via Compose secret + FileConfigProvider; connector tests parametrized over connector JSON files present
 
 ### Pending Todos
 
@@ -233,6 +235,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T07:49:46.969Z
-Stopped at: Completed 03-06-reminder-workflows-PLAN.md
+Last session: 2026-11-11T08:05:37.246Z
+Stopped at: Completed 03-05-cdc-pipeline-PLAN.md
 Resume file: None

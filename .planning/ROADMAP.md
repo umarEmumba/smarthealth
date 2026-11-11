@@ -243,7 +243,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 5/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
+**Plans:** 6/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
 
 **Wave 1**
 
@@ -257,7 +257,7 @@ Success criterion 1 is defined honestly (research F4): no loss, at-least-once on
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03-05-cdc-pipeline-PLAN.md — TRACER: wal_level=logical, Debezium Connect, topics, schema-init, scheduling outbox and connector, per-connector task-state checks, Connect stop/kill durability (EVENT-01, EVENT-02)
+- [x] 03-05-cdc-pipeline-PLAN.md — TRACER: wal_level=logical, Debezium Connect, topics, schema-init, scheduling outbox and connector, per-connector task-state checks, Connect stop/kill durability (EVENT-01, EVENT-02)
 - [x] 03-06-reminder-workflows-PLAN.md — Temporal ReminderWorkflow and FollowUpReminderWorkflow enqueueing the Celery send, recorded histories (NOTIF-02, NOTIF-03, EVENT-04)
 
 **Wave 4** *(blocked on Wave 3 completion)*
@@ -314,4 +314,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 5/20 | In Progress|  |
+| 3. Event-Driven System + Observability | 6/20 | In Progress|  |
