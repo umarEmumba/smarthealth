@@ -10,7 +10,9 @@ those values — callers (routers) are responsible for passing only field NAMES
 to `write_audit`, never PHI values.
 
 Behaviour is carried over unchanged from the Phase 1 monolith (reference commit
-7ce4490); only the import of `Patient` changed.
+7ce4490); only the import of `Patient` changed. Plan 03-08 adds one outbox row,
+in the same transaction, to `create_patient` (patient.registered); the event
+carries ids and timestamps only (see services/patient/events.py).
 """
 
 from __future__ import annotations
@@ -18,9 +20,10 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone as dt_timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.patient.events import emit_patient_registered
 from services.patient.repository.models import Patient
 
 
@@ -48,6 +51,12 @@ async def create_patient(
         user_id=user_id,
     )
     db.add(patient)
+    # Flush first: it assigns the id and the server defaults (`created_at`) the
+    # event needs, and the outbox row then commits with the patient (D-06).
+    await db.flush()
+    if "created_at" in inspect(patient).unloaded:
+        await db.refresh(patient, ["created_at"])
+    await emit_patient_registered(db, patient)
     await db.commit()
     await db.refresh(patient)
     return patient
