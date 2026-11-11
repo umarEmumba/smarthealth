@@ -1517,8 +1517,10 @@ each stays because events do not subsume it:
   pool 10 = 160, two Temporal workers 20, two consumers 8, Debezium 8, Temporal 40, Grafana 5 = **241 of 297**.
   Two terms are not derived from the repository: Debezium's 2 connections per connector is an assumption and
   Temporal's 40 is an **observed constant** (its config template caps 20 plus 10 per pool and Compose sets
-  neither, so the true bound is not established). Measured: the same suite that peaked at 304 (`tests/visit` plus
-  `tests/workflows`) peaked at **108 of 300** with the fix, and the k6 smoke on the nine-API stack peaked at 91.
+  neither, so the true bound is not established). Measured: the full non-e2e suite that peaked at **304** at the first gate peaked at **105**
+  in the final gap-closure gate (plan 03-26: the whole non-e2e suite, then the whole e2e suite, sampled every 15 s,
+  192 samples over 49 minutes, one sampler bound to the run); the `tests/visit` plus `tests/workflows` subset
+  peaked at 108 in plan 03-23, and the k6 smoke on the nine-API stack at 91.
   What is **not** done: raising the dev `max_connections` (less urgent now) and capping Jaeger memory. The Docker VM
   (7.65 GiB) has OOM-killed containers twice: Jaeger during the first full regression (Jaeger keeps traces in
   memory, so they were lost on restart) and **Kafka while seven images were rebuilt at once** (plan 03-25; exit
