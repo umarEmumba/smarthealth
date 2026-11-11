@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-16-dashboards-nfr-PLAN.md
-last_updated: "2026-11-11T11:33:38.111Z"
+stopped_at: Completed 03-17-e2e-guarantees-PLAN.md
+last_updated: "2026-11-11T12:42:00.558Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 5fffc95deda2204a5d8247a94b4d1c86bcad3381
+state_head: c2ead524c733b668a0fc592452f511c3c916bff0
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 58
+  completed_plans: 59
   percent: 60
 ---
 
@@ -110,6 +110,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P14 | about 1h50 | 3 tasks | 14 files |
 | Phase 03 P15 | 1h20m | 2 tasks | 17 files |
 | Phase 03 P16 | 2h | 3 tasks | 19 files |
+| Phase 03 P17 | 3h | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -217,6 +218,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-15: Temporal workers serve application metrics on :9100 and Temporal SDK metrics on :9464, both scraped under one Prometheus job per worker; no metrics port is published
 - [Phase 03]: 03-15: booking_saga_seconds uses the database clock (now() - appointments.created_at) and labels outcome only
 - [Phase 03]: 03-16: grafana_ro needs no pg_monitor grant (slot query works SELECT-only); HTTP latency buckets owned by libs.observability.http_metrics.instrument_http with an edge on every NFR threshold
+- [Phase 03]: 03-17: Debezium heartbeat needs heartbeat.action.query (logical-decoding message, excluded prefix) to move a quiet slot; heartbeat.interval.ms alone did not
+- [Phase 03]: 03-17: event.consumed is logged inside the consumer processing span so consumer logs carry trace_id
 
 ### Pending Todos
 
@@ -257,6 +260,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T11:33:38.045Z
-Stopped at: Completed 03-16-dashboards-nfr-PLAN.md
+Last session: 2026-11-11T12:42:00.480Z
+Stopped at: Completed 03-17-e2e-guarantees-PLAN.md
 Resume file: None
