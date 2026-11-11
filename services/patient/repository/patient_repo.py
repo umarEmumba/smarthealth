@@ -11,8 +11,9 @@ to `write_audit`, never PHI values.
 
 Behaviour is carried over unchanged from the Phase 1 monolith (reference commit
 7ce4490); only the import of `Patient` changed. Plan 03-08 adds one outbox row,
-in the same transaction, to `create_patient` (patient.registered); the event
-carries ids and timestamps only (see services/patient/events.py).
+in the same transaction, to `create_patient` (patient.registered) and to the
+branch of `deactivate_patient` that actually deactivates (patient.deactivated);
+the events carry ids and timestamps only (see services/patient/events.py).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from datetime import date, datetime, timezone as dt_timezone
 from sqlalchemy import func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.patient.events import emit_patient_registered
+from services.patient.events import emit_patient_deactivated, emit_patient_registered
 from services.patient.repository.models import Patient
 
 
@@ -170,6 +171,8 @@ async def deactivate_patient(
     if patient.is_active:
         patient.is_active = False
         patient.deactivated_at = datetime.now(dt_timezone.utc)
+        # Only the branch that actually deactivates emits: a repeat writes nothing.
+        await emit_patient_deactivated(db, patient)
         await db.commit()
         await db.refresh(patient)
     return patient

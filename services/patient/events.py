@@ -56,3 +56,23 @@ async def emit_patient_registered(db: AsyncSession, patient: Patient) -> uuid.UU
         occurred_at=created_at,
     )
 
+
+async def emit_patient_deactivated(db: AsyncSession, patient: Patient) -> uuid.UUID:
+    """Write the `patient.deactivated` outbox row (ids and the deactivation time only).
+
+    The discriminator is the deactivation timestamp, so the event id is stable for
+    that deactivation.
+    """
+    deactivated_at: datetime.datetime = patient.deactivated_at  # type: ignore[assignment]
+    return await enqueue_event(
+        db,
+        event_type=EventType.PATIENT_DEACTIVATED,
+        aggregate_id=str(patient.id),
+        payload={
+            "patient_id": str(patient.id),
+            "clinic_id": str(patient.clinic_id),
+            "deactivated_at": deactivated_at,
+        },
+        discriminator=deactivated_at.isoformat(),
+        occurred_at=deactivated_at,
+    )
