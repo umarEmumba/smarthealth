@@ -64,6 +64,16 @@ class SharedSettings(BaseSettings):
     temporal_address: str = "temporal:7233"
     temporal_namespace: str = "default"
 
+    # --- Postgres connection pool (plan 03-23, WR-05) ---
+    # Per-engine SQLAlchemy pool bounds, read from DB_POOL_SIZE / DB_MAX_OVERFLOW.
+    # The code defaults are SQLAlchemy's own (5 and 10) so host tests and scripts
+    # behave as before; the connection budget for the dev Postgres lives in
+    # infra/docker-compose.yml, where every container sets its own values and a
+    # static test (tests/libs/test_postgres_registry.py) checks the worst case
+    # fits under max_connections.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+
     # --- Worker metrics (plan 03-15, D-11) ---
     # Each Temporal worker serves its application metrics (prometheus_client) on
     # `worker_metrics_port` and the Temporal SDK's own metrics on

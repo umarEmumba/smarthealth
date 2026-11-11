@@ -26,6 +26,22 @@ x-app-env: &app-env
   # registry URL is read by every strict serializer and the broker by consumers.
   KAFKA_BOOTSTRAP_SERVERS: kafka:29092
   SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  # Postgres connection budget (plan 03-23, WR-05). Each process keeps one SQLAlchemy
+  # pool of DB_POOL_SIZE connections plus up to DB_MAX_OVERFLOW burst connections
+  # (libs/config.py defaults are 5 and 10, used by host tests and scripts).
+  # Worst case against the dev Postgres, every term derived by
+  # tests/libs/test_postgres_registry.py::test_compose_connection_budget:
+  #   8 DB-using APIs x 2 gunicorn workers x (5 + 5)               = 160
+  #   scheduling-worker + visit-worker, 1 process x (5 + 5) each   =  20
+  #   visit-consumer + analytics-consumer, 1 process x (2 + 2) each =   8
+  #   Temporal (default + visibility stores, observed)             =  40
+  #   Debezium, 4 connectors x 2 connections (assumed)             =   8
+  #   Grafana, one datasource, maxOpenConns 5                      =   5
+  # Worst-case connection total: 241 of 297 (max_connections 300 minus 3 reserved)
+  # Change a pool value or add a DB-using service and the test fails until this
+  # comment states the new total.
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "5"
 
 x-app-healthcheck: &app-healthcheck
   test:
@@ -659,7 +675,11 @@ services:
     env_file:
       - path: .env
         required: false
-    environment: *visit-env
+    environment:
+      <<: *visit-env
+      # one event at a time: a small pool is enough (connection budget at x-app-env)
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "2"
     depends_on:
       visit:
         condition: service_healthy
@@ -714,7 +734,11 @@ services:
     env_file:
       - path: .env
         required: false
-    environment: *analytics-env
+    environment:
+      <<: *analytics-env
+      # one event at a time: a small pool is enough (connection budget at x-app-env)
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "2"
     depends_on:
       analytics:
         condition: service_healthy

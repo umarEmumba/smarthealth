@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
+from libs.config import shared_settings
+
 
 @dataclass(slots=True)
 class _Entry:
@@ -106,7 +108,12 @@ def _entry_for(database_url: str) -> _Entry:
     key = (database_url, id(current_loop))
     entry = _registry.get(key)
     if entry is None or entry.loop is not current_loop:
-        engine = create_async_engine(database_url, pool_pre_ping=True)
+        engine = create_async_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_size=shared_settings.db_pool_size,
+            max_overflow=shared_settings.db_max_overflow,
+        )
         entry = _Entry(
             engine=engine,
             loop=current_loop,
