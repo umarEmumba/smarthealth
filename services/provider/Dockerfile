@@ -25,4 +25,11 @@ RUN pip install --no-cache-dir .
 # Migrations run before the server starts, so a container never serves traffic
 # against a schema that is behind its code. gunicorn with the uvicorn worker
 # class per CLAUDE.md; async workers, so the count is NOT the sync-WSGI formula.
-CMD ["sh", "-c", "alembic -c services/provider/migrations/alembic.ini upgrade head && exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 services.provider.app:app"]
+# Two workers stay (D-14). Prometheus multiprocess mode (CR-02): the directory
+# variable is exported here, in the default command only, before gunicorn starts
+# (prometheus_client picks its value class at import), so every /metrics scrape is
+# the SUM over both workers. Processes that reuse this image with a command
+# override (workers, consumers) never see the variable and keep their
+# single-process registry. The gunicorn hooks empty the directory at start and
+# mark dead workers.
+CMD ["sh", "-c", "alembic -c services/provider/migrations/alembic.ini upgrade head && export PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus-multiproc && mkdir -p \"$PROMETHEUS_MULTIPROC_DIR\" && exec gunicorn -c python:libs.observability.gunicorn_conf -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 services.provider.app:app"]

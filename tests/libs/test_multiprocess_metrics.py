@@ -3,7 +3,7 @@
 Hook behaviour of `libs.observability.gunicorn_conf`, the aggregation of the shared
 exposition helper, and a static check that each API image's default command keeps two
 workers, exports the directory variable (only there), and passes the gunicorn config.
-Plan 03-25 extends `API_DOCKERFILES` to all nine APIs.
+Plan 03-25 extends `API_DOCKERFILES` to all nine APIs and checks the whole Compose file.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import yaml
 from prometheus_client import REGISTRY
 from prometheus_client.mmap_dict import MmapedDict, mmap_key
 
@@ -26,6 +27,10 @@ ENV = "PROMETHEUS_MULTIPROC_DIR"
 API_DOCKERFILES: dict[str, tuple[bool, str, tuple[str, ...]]] = {
     "scheduling": (True, "services.scheduling.app:app", ("0.0.0.0:8000",)),
     "gateway": (False, "services.gateway.app:app", ("0.0.0.0:8000", "0.0.0.0:9100")),
+    **{
+        name: (True, f"services.{name}.app:app", ("0.0.0.0:8000",))
+        for name in ("billing", "analytics", "identity", "patient", "provider", "organization", "visit")
+    },
 }
 
 
@@ -123,6 +128,33 @@ def test_the_variable_is_exported_only_by_image_commands_never_in_compose() -> N
     the variable they would write mmap files nobody aggregates."""
     compose = (REPO_ROOT / "infra" / "docker-compose.yml").read_text()
     assert "PROMETHEUS_MULTIPROC_DIR" not in compose
+
+
+def _resolved_environments() -> dict[str, dict[str, str]]:
+    """Every Compose service's environment as a name -> value mapping (mapping or list form;
+    YAML merge keys and aliases are resolved by the loader)."""
+    document = yaml.safe_load((REPO_ROOT / "infra" / "docker-compose.yml").read_text())
+    resolved: dict[str, dict[str, str]] = {}
+    for name, service in document["services"].items():
+        environment = service.get("environment") or {}
+        if isinstance(environment, list):
+            environment = dict(item.partition("=")[::2] for item in environment)
+        resolved[name] = {str(key): str(value) for key, value in environment.items()}
+    return resolved
+
+
+def test_no_compose_service_carries_the_directory_or_a_worker_count_variable() -> None:
+    """The command-override roles (workers, consumers, Celery) share an API image and often an
+    environment alias with it: the directory variable would make them write mmap files nobody
+    aggregates, and a worker-count variable would silently change the two-worker decision (D-14)."""
+    environments = _resolved_environments()
+    assert environments, "no service environment resolved"
+    offenders = {
+        service: sorted(set(env) & {ENV, "WEB_CONCURRENCY", "GUNICORN_WORKERS"})
+        for service, env in environments.items()
+        if set(env) & {ENV, "WEB_CONCURRENCY", "GUNICORN_WORKERS"}
+    }
+    assert offenders == {}
 
 
 def _write_counter_file(directory: Path, pid: int, value: float) -> None:

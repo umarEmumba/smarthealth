@@ -457,12 +457,21 @@ async def test_nfr_histograms_present(gateway: httpx.AsyncClient) -> None:
 
 # --- Plan 03-24: multiprocess metrics (CR-02) ----------------------------------------
 
-# The APIs already running gunicorn in Prometheus multiprocess mode: scrape job -> Compose
-# service. Plan 03-25 adds the other seven.
+# The nine APIs running gunicorn in Prometheus multiprocess mode: scrape job -> Compose
+# service (plan 03-24 scheduling and gateway, plan 03-25 the other seven).
 MULTIPROCESS_API_JOBS: dict[str, str] = {
-    "smarthealth-scheduling": "scheduling",
-    "smarthealth-gateway": "gateway",
+    f"smarthealth-{name}": name
+    for name in (
+        "gateway", "identity", "organization", "provider", "patient",
+        "scheduling", "billing", "visit", "analytics",
+    )
 }
+# Roles that reuse an API image with a command override (or have their own image) and must
+# stay single-process: their pid 1 never has the directory variable.
+SINGLE_PROCESS_ROLES: tuple[str, ...] = (
+    "scheduling-worker", "visit-worker", "notification-temporal-worker", "visit-consumer",
+    "analytics-consumer", "notification-consumer", "notification-celery",
+)
 DRIVEN_REQUESTS = 40
 MIN_UPTIME_SECONDS = 135
 SCRAPE_FRESH_DEADLINE_SECONDS = 60
@@ -553,3 +562,4 @@ def test_http_request_counters_have_no_resets_and_never_decrease(job: str) -> No
     assert resets == 0, report
     assert len(values) >= window // 15 // 2, report
     assert not decreases, report
+
