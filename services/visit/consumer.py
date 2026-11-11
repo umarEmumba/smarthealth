@@ -18,10 +18,16 @@ Failure classification (the consumer base in `libs.events.consumer` acts on it):
 * an event for an unknown visit id, or for a visit that is not completed, can never
   succeed (forged, replayed from a wiped database, or a throw-away test event):
   `NonRetryableEventError`, dead-lettered after one attempt (T-3-27);
-* a Temporal or database outage (`RPCError` with an unavailable-class status,
-  `RuntimeError` from a lost connection, timeouts, connection errors):
-  `TransientEventError`, so the offset is NOT committed and the event is retried with
-  capped backoff; an outage delays a trigger and never drops it (T-3-28);
+* a Temporal or database outage is `TransientEventError`, decided by the one shared
+  classifier (`libs.events.classify`, plan 03-21): SQLSTATE classes 08, 53, 57 and 40
+  (so a Postgres `max_connections` ceiling, 53300, or a restart, 57P03, never
+  dead-letters a healthy event), SQLAlchemy connection errors and pool timeouts, the
+  Temporal outage statuses (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED,
+  ABORTED, CANCELLED, UNKNOWN, INTERNAL), the SDK's closed-client `RuntimeError`, and
+  network errors. The offset is NOT committed and the event is retried with capped
+  backoff; a transient failure is bounded by the consumer base's cap, after which the
+  event is dead-lettered as `TransientExhausted` (visible and replayable, never a
+  silent loss); the recovery routes are in docs/architecture.md section 10.2;
 * anything else is a handler bug and goes through the base's bounded retries.
 
 The Temporal client connects lazily on the consumer's persistent event loop (a client
@@ -41,12 +47,11 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-import sqlalchemy.exc
 from sqlalchemy.ext.asyncio import AsyncSession
 from temporalio.client import Client
-from temporalio.service import RPCError, RPCStatusCode
 
 from libs.db.postgres import get_session_factory
+from libs.events import classify
 from libs.events.catalog import DLQ_TOPICS, EventType, topic_for
 from libs.events.consumer import (
     EventConsumer,
@@ -73,20 +78,6 @@ SERVICE_NAME = "smarthealth-visit-consumer"
 
 SessionFactory = Callable[[], AsyncSession]
 
-# Temporal statuses that mean "the server is not serving right now", not "this request
-# is wrong": the event is kept and retried.
-_TRANSIENT_RPC_STATUSES = frozenset(
-    {
-        RPCStatusCode.UNAVAILABLE,
-        RPCStatusCode.DEADLINE_EXCEEDED,
-        RPCStatusCode.RESOURCE_EXHAUSTED,
-        RPCStatusCode.ABORTED,
-        RPCStatusCode.CANCELLED,
-        RPCStatusCode.UNKNOWN,
-        RPCStatusCode.INTERNAL,
-    }
-)
-
 _client: Client | None = None
 
 
@@ -96,17 +87,6 @@ async def _temporal_client() -> Client:
     if _client is None:
         _client = await connect_client(lazy=True)
     return _client
-
-
-def _is_transient(exc: BaseException) -> bool:
-    if isinstance(exc, RPCError):
-        return exc.status in _TRANSIENT_RPC_STATUSES
-    if isinstance(exc, sqlalchemy.exc.DBAPIError):
-        return exc.connection_invalidated or isinstance(
-            exc, (sqlalchemy.exc.OperationalError, sqlalchemy.exc.InterfaceError)
-        )
-    # RuntimeError: the Temporal SDK's lost-connection / closed-client signal.
-    return isinstance(exc, (RuntimeError, TimeoutError, ConnectionError, OSError))
 
 
 async def handle_visit_completed(
@@ -140,7 +120,7 @@ async def handle_visit_completed(
     except NonRetryableEventError:
         raise
     except Exception as exc:  # noqa: BLE001 - classified below, re-raised if not transient
-        if _is_transient(exc):
+        if classify.is_transient(exc, temporal=True):
             log.warning(
                 "visit.consumer_transient_failure",
                 event_id=str(envelope.event_id),

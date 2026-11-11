@@ -21,9 +21,11 @@ the suite was run.
 from __future__ import annotations
 
 import datetime
+import functools
 import uuid
 from typing import Any
 
+import asyncpg.exceptions as pg_exc
 import httpx
 import pytest
 import sqlalchemy.exc
@@ -34,11 +36,23 @@ from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import WorkflowEnvironment
 
 from libs.events.catalog import DLQ_TOPICS, EventType, topic_for
-from libs.events.consumer import EventEnvelope, NonRetryableEventError, TransientEventError
+from libs.events.consumer import (
+    EventEnvelope,
+    NonRetryableEventError,
+    Outcome,
+    TransientEventError,
+)
 from services.visit import downstream as downstream_module
 from services.visit.config import settings as visit_settings
 from services.visit.consumer import GROUP_ID, build_consumer, handle_visit_completed
 from services.visit.domain.contracts import VisitCompletedResult, visit_completed_workflow_id
+from tests.events.standins import (
+    FakeMessage,
+    StandInKafkaConsumer,
+    event_record,
+    install,
+    stub_decoder,
+)
 from tests.scheduling.seed import auth
 from tests.visit.conftest import (
     VisitWorld,
@@ -278,6 +292,88 @@ async def test_a_database_outage_is_transient(temporal_env: WorkflowEnvironment)
             client=temporal_env.client,
             session_factory=lambda: _BrokenSession(),  # type: ignore[arg-type,return-value]
         )
+
+
+class _DialectError(Exception):
+    """What the SQLAlchemy asyncpg dialect puts in `DBAPIError.orig`."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__("db error")
+        self.sqlstate = code
+        self.pgcode = code
+
+
+_RESOURCE_ERRORS = [
+    pytest.param(lambda: pg_exc.TooManyConnectionsError("too many"), id="raw-53300"),
+    pytest.param(
+        lambda: sqlalchemy.exc.DBAPIError("SELECT 1", {}, _DialectError("53300")), id="dbapi-53300"
+    ),
+    pytest.param(lambda: pg_exc.CannotConnectNowError("starting"), id="raw-57P03"),
+    pytest.param(lambda: pg_exc.DeadlockDetectedError("deadlock"), id="raw-40P01"),
+]
+
+
+class _RaisingSession:
+    """A session factory product whose `__aenter__` raises (a connection that cannot open)."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    async def __aenter__(self) -> Any:
+        raise self._error
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+@pytest.mark.parametrize("make_error", _RESOURCE_ERRORS)
+async def test_a_database_resource_error_is_transient(make_error: Any) -> None:
+    """CR-01: Postgres at max_connections (53300), restarting (57P03) or deadlocking
+    (40P01) is an outage to wait out, never a poison event, raw or wrapped by SQLAlchemy."""
+    with pytest.raises(TransientEventError):
+        await handle_visit_completed(
+            _envelope(str(uuid.uuid4())),
+            session_factory=lambda: _RaisingSession(make_error()),  # type: ignore[arg-type,return-value]
+        )
+
+
+async def test_a_unique_violation_is_not_classified_as_an_outage() -> None:
+    with pytest.raises(sqlalchemy.exc.DBAPIError):
+        await handle_visit_completed(
+            _envelope(str(uuid.uuid4())),
+            session_factory=lambda: _RaisingSession(  # type: ignore[arg-type,return-value]
+                sqlalchemy.exc.DBAPIError("INSERT", {}, _DialectError("23505"))
+            ),
+        )
+
+
+@pytest.mark.parametrize("make_error", _RESOURCE_ERRORS)
+def test_the_consumer_base_holds_the_event_on_a_database_resource_error(make_error: Any) -> None:
+    """CR-01 at the real `_handle_message`: a 53300 / 57P03 / 40P01 in the handler is
+    RETRY_LATER (one seek back to the message, no commit), and nothing is dead-lettered."""
+    visit_id = str(uuid.uuid4())
+    handler = functools.partial(
+        handle_visit_completed, session_factory=lambda: _RaisingSession(make_error())
+    )
+    consumer = build_consumer(
+        handlers={EventType.VISIT_COMPLETED: handler},
+        metrics_port=None,
+        heartbeat_path=None,
+        backoff_seconds=0.01,
+    )
+    stand_in = StandInKafkaConsumer()
+    install(consumer, stand_in)
+    consumer._deserializer = stub_decoder(  # type: ignore[assignment]  # noqa: SLF001
+        event_record(EventType.VISIT_COMPLETED, visit_id=visit_id)
+    )
+    try:
+        outcome = consumer._handle_message(FakeMessage(offset=41))  # noqa: SLF001
+        assert outcome is Outcome.RETRY_LATER
+        assert stand_in.seeks == [(FakeMessage().topic(), 0, 41)]
+        assert stand_in.commits == []
+        assert consumer._dlq_producer is None  # noqa: SLF001
+    finally:
+        consumer.close()
 
 
 def test_build_consumer_is_wired_for_the_visit_downstream_group() -> None:
