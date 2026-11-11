@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
-status: executing
-stopped_at: Completed 03-19-dashboard-closeout-PLAN.md
-last_updated: "2026-11-11T13:16:54.360Z"
+status: verifying
+stopped_at: Completed 03-20-phase-gate-PLAN.md
+last_updated: "2026-11-11T15:18:01.155Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: f9e100c2668df364fffcf80e823d76d3aabb474e
+state_head: 46767f9322a32b2343a6176af5d87faeeff4f49b
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 61
+  completed_plans: 62
   percent: 60
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 
 Phase: 3 (Event-Driven System + Observability) — READY TO EXECUTE
 Plan: 13 of 13
-Status: Ready to execute
+Status: All 20 plans summarized — awaiting phase verification
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
 human visual check of the dashboard/docs.
@@ -113,6 +113,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P17 | 3h | 3 tasks | 12 files |
 | Phase 03 P18 | not measured | 3 tasks | 16 files |
 | Phase 03 P19 | not measured | 2 tasks | 3 files |
+| Phase 03 P20 | about 4h | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -226,6 +227,8 @@ Recent decisions affecting current work:
 - [Phase 03]: Phase 3 docs: EVENT-04 deviation (projections on a Kafka consumer, not Celery) recorded with the user's answer; REQUIREMENTS.md wording left to the user
 - [Phase 03]: Phase 3 docs test (tests/docs/test_phase3_docs.py) ties every topic, group, Compose service, event type, queue, setting, migration and metric name to the code
 - [Phase 03]: 03-19: dashboard v4 states only what the code does or a SUMMARY measured; roadmap shows Phase 3 active with phase gate and visual checks pending; tests reject wire-level exactly-once claims and tie topic and event names to the catalog
+- [Phase 03]: 03-20: Phase gate not clean (known provider failure, Postgres max_connections=300 ceiling, macOS fork SIGTRAP, one Jaeger OOM) accepted and recorded as known test-environment limitations; follow-up not done
+- [Phase 03]: 03-20: the two new root-user Dockerfiles (services/analytics, services/notification) accepted for now, same class as the eight accepted at Phase 2 closeout
 
 ### Pending Todos
 
@@ -235,6 +238,15 @@ Recent decisions affecting current work:
 - Temporal Schedule `scheduling-schedule-change-poller` is intentionally left paused (user decision 2026-11-10); unpause before any demo or Phase 3 work that relies on schedule-change propagation.
 - Phase 2.1 human checks resolved 2026-11-10: dashboard accepted, k6 smoke passes on a quiet host, DASH-04 ticked. k6 `sustained`/`burst`/`contention` deferred until after Phase 3 (NFR-01..08 stay unmeasured targets).
 - Production hardening deferred: add a non-root `USER` to the service Dockerfiles (Semgrep missing-user x8).
+- Phase 3 follow-ups (from the 03-20 phase gate, 2026-11-11):
+  - Raise the dev Postgres `max_connections` (now 300, peaked at 304 in the full non-e2e run), cap Jaeger memory (OOM-killed once in the 7.65 GiB Docker VM), and dispose test engines per test. Not done; recorded in docs/architecture.md 10.9.
+  - The flaky SIGTRAP class: subprocess tests that fork from the threaded pytest process on macOS crash with exit -5 (identity/visit tests, tests/visit/test_backfill.py); each passes alone.
+  - The identity migration test (tests/identity/test_email_migration.py) runs alembic on the live identity_db; give it its own database.
+  - The leftover provider specialty-ordering failure in tests/provider/test_provider_tracer.py::test_admin_registers_provider_through_gateway (known since 03-01, deferred-items.md).
+  - Add a non-root `USER` to all ten Dockerfiles (the eight above plus services/analytics and services/notification, accepted for now at the gate).
+  - Run k6 `sustained`, `burst` and `contention` after Phase 3 (NFR-01..08 are still unmeasured targets).
+  - Decide whether to reword EVENT-04 in REQUIREMENTS.md (the user accepted the Debezium/Kafka-consumer design in 03-01; projections are not Celery tasks).
+  - The gateway rate limits restore (raised for the test runs) is being done by the orchestrator.
 
 ### Blockers/Concerns
 
@@ -266,6 +278,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T13:16:54.288Z
-Stopped at: Completed 03-19-dashboard-closeout-PLAN.md
+Last session: 2026-11-11T15:18:01.050Z
+Stopped at: Completed 03-20-phase-gate-PLAN.md
 Resume file: None

@@ -1319,7 +1319,8 @@ time, RabbitMQ depth, Temporal workflow and activity rates) and `smarthealth-ope
 metrics per clinic, read from the analytics views). The datasources are Prometheus, `analytics-pg` (the
 SELECT-only `grafana_ro` role, password from a Compose secret file) and Jaeger. A static test checks every
 dashboard's uids, datasources and PromQL metric names against what the code emits. The panels were exercised
-through Grafana's query API; nobody has looked at them in a browser.
+through Grafana's query API, and at the phase gate (11 November 2026) the user opened all four in a browser and
+checked them; nobody had looked at them in a browser before that.
 
 **One booking is one trace.** The W3C `traceparent` of the producing span is stored in the outbox row, carried
 by Debezium into the Kafka header, extracted by the consumer base (about 30 lines of our own code; the
@@ -1328,8 +1329,12 @@ producer rather than a parent, which would make two traces) and passed to Celery
 instrumentation. A booking sent with a known trace id produced one trace in Jaeger spanning gateway, Scheduling,
 the Scheduling worker, Billing, the notification consumer, the Celery worker, the notification Temporal worker
 and the analytics consumer: trace id `e839d1a9ec7d48e435d09abb68881b00`, 57 spans across 12 services, visible
-in Jaeger within 7 s of the booking and read through Jaeger's HTTP API by an automated test. The consumer spans
-are `CHILD_OF` a span in the same trace, not links. Viewing it in the Jaeger UI is the phase gate's manual check.
+in Jaeger within 7 s of the booking and read through Jaeger's HTTP API by an automated test. That trace id was
+lost: Jaeger keeps traces in memory and its container was OOM-killed and restarted during the phase-gate
+regression (10.9), so the id above no longer resolves. The evidence from the gate run is a fresh trace,
+`8132991350448d3158960a29412aa965`, 61 spans across 12 services, printed by the end-to-end trace test and opened
+in the Jaeger UI by the user on 11 November 2026. The consumer spans are `CHILD_OF` a span in the same trace,
+not links.
 
 **The reminder's trace is long-lived.** The notification consumer starts the reminder workflow inside the
 booking's trace, so the Temporal worker already contributes a span to it. The timer then fires hours or days
@@ -1413,6 +1418,19 @@ each stays because events do not subsume it:
 - **`temporalio/auto-setup` is non-production** (see 10.8).
 - **Containers run as root.** The notification and Celery containers included (Celery warns about it). The
   Semgrep `missing-user` Dockerfile findings are accepted for now by the user; production hardening is deferred.
+  That is ten Dockerfiles: the eight accepted at the Phase 2 closeout and the two added in Phase 3
+  (`services/analytics` and `services/notification`), which the user accepted for now at the phase gate.
+- **Test-environment capacity (measured at the Phase 3 gate).** The dev Postgres runs with `max_connections=300`.
+  The full non-e2e suite run against the live stack reaches that ceiling: the containers hold about 110 idle
+  connections and the pytest process grows from about 50 to about 200 as fixtures open engines, peaking at 304
+  in the last part of a 26 minute run. Some tests then fail with `TooManyConnectionsError` in the full run
+  and pass when run alone (two such cases in two runs). The Docker VM (7.65 GiB) OOM-killed the Jaeger container
+  once during the full regression; Jaeger keeps traces in memory, so the traces it held were lost on restart.
+  Subprocess tests that fork from the threaded pytest process on macOS can crash with SIGTRAP (exit -5, a
+  fork-in-a-multithreaded-process crash on the child side); they passed when rerun alone. The two non-e2e runs
+  each had failures (2 and 5), so the full non-e2e suite did not finish clean on any run; the e2e suite passed
+  71 of 71 on its second run. The follow-up (raise the dev `max_connections`, cap Jaeger memory, dispose engines
+  per test) is **not done**.
 - **S3 audit-via-outbox is deferred.** Post-commit audit writes to Mongo remain best effort and can be lost if
   Mongo is down at that instant; moving them into the outbox is the natural fix and was deferred (accepted),
   because it must not widen the booking accept path.
@@ -1433,7 +1451,7 @@ each stays because events do not subsume it:
   2026; see `docs/nfr.md`), and accept latency crept up between them, so it is the number to watch.
   `sustained`, `burst` and `contention` were **not run**: the user deferred them until after Phase 3, so
   NFR-01..08 remain targets that are not yet measured.
-- **Not verified:** the reminder's later firing inside the same trace (10.7), the dashboards in a browser,
+- **Not verified:** the reminder's later firing inside the same trace (10.7),
   the decode-time Schema Registry outage path of the consumer base (implemented, no automated test), and the
   connector after the slot cap is exceeded.
 
