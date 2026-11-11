@@ -47,7 +47,8 @@ from libs.events.registry import warm_up
 from libs.http import _get_default_client
 from libs.observability.logging import configure_logging, get_logger
 from libs.observability.otel import configure_tracer_provider
-from libs.temporal import connect_client
+from libs.config import shared_settings
+from libs.temporal import connect_client, metrics_runtime, start_worker_metrics_server
 from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.activities.booking import SchedulingActivities
 from services.scheduling.activities.changes import AppointmentChangeActivities
@@ -99,7 +100,9 @@ async def _connect_with_retry() -> Client:
     while True:
         attempt += 1
         try:
-            return await connect_client(lazy=False)
+            return await connect_client(
+                lazy=False, runtime=metrics_runtime(shared_settings.temporal_sdk_metrics_bind)
+            )
         except Exception as exc:  # noqa: BLE001 - any connect failure is retried, then fatal
             if time.monotonic() >= deadline:
                 log.error("worker.temporal_connect_failed", attempts=attempt, error=type(exc).__name__)
@@ -151,6 +154,9 @@ def build_activities(
 async def main() -> int:
     configure_logging()
     configure_tracer_provider("smarthealth-scheduling-worker")
+    # Application metrics on WORKER_METRICS_PORT; the Temporal SDK's own metrics are
+    # served by the client runtime on TEMPORAL_SDK_METRICS_BIND (plan 03-15).
+    start_worker_metrics_server()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

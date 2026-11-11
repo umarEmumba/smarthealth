@@ -64,6 +64,15 @@ class SharedSettings(BaseSettings):
     temporal_address: str = "temporal:7233"
     temporal_namespace: str = "default"
 
+    # --- Worker metrics (plan 03-15, D-11) ---
+    # Each Temporal worker serves its application metrics (prometheus_client) on
+    # `worker_metrics_port` and the Temporal SDK's own metrics on
+    # `temporal_sdk_metrics_bind`. Both bind inside the container and are never
+    # published to the host; Prometheus scrapes them over the Compose network.
+    # Env: WORKER_METRICS_PORT, TEMPORAL_SDK_METRICS_BIND.
+    worker_metrics_port: int = 9100
+    temporal_sdk_metrics_bind: str = "0.0.0.0:9464"  # noqa: S104 - container-internal, never published
+
     # --- Kafka + Schema Registry (plan 03-01, D-05/D-06) ---
     # Services never talk to Kafka on the request path: they write an outbox
     # row and Debezium relays it. The bootstrap servers are read by the

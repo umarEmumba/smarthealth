@@ -1,0 +1,15 @@
+# Grafana datasources, provisioned from this file (plan 03-15, D-11: dashboards as code).
+# Stable uids: dashboards reference datasources by uid, never by display name.
+# Plan 03-16 adds the read-only analytics Postgres datasource and Jaeger.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

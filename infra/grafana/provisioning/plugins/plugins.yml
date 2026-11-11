@@ -1,0 +1,3 @@
+# No plugins are provisioned; this file exists so Grafana finds the directory (it logs
+# an error for a missing one). Plan 03-15.
+apiVersion: 1
