@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-15-metrics-scrape-PLAN.md
-last_updated: "2026-11-11T10:58:22.676Z"
+stopped_at: Completed 03-16-dashboards-nfr-PLAN.md
+last_updated: "2026-11-11T11:33:38.111Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: a40cd40ee5af3b8115a973d8c3876a0e4e0c9ec7
+state_head: 5fffc95deda2204a5d8247a94b4d1c86bcad3381
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 57
+  completed_plans: 58
   percent: 60
 ---
 
@@ -109,6 +109,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P13 | 1h15m | 3 tasks | 17 files |
 | Phase 03 P14 | about 1h50 | 3 tasks | 14 files |
 | Phase 03 P15 | 1h20m | 2 tasks | 17 files |
+| Phase 03 P16 | 2h | 3 tasks | 19 files |
 
 ## Accumulated Context
 
@@ -215,6 +216,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-14: notification-trigger consumer starts a new group at latest with a pinned go-live offset (D-13); pin_start_offsets shared via libs/events/start_offsets.py
 - [Phase 03]: 03-15: Temporal workers serve application metrics on :9100 and Temporal SDK metrics on :9464, both scraped under one Prometheus job per worker; no metrics port is published
 - [Phase 03]: 03-15: booking_saga_seconds uses the database clock (now() - appointments.created_at) and labels outcome only
+- [Phase 03]: 03-16: grafana_ro needs no pg_monitor grant (slot query works SELECT-only); HTTP latency buckets owned by libs.observability.http_metrics.instrument_http with an edge on every NFR threshold
 
 ### Pending Todos
 
@@ -255,6 +257,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T10:58:22.610Z
-Stopped at: Completed 03-15-metrics-scrape-PLAN.md
+Last session: 2026-11-11T11:33:38.045Z
+Stopped at: Completed 03-16-dashboards-nfr-PLAN.md
 Resume file: None
