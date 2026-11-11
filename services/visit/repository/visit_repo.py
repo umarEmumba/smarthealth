@@ -201,7 +201,7 @@ async def list_visits(
 async def mark_downstream_started(db: AsyncSession, *, visit_id: uuid.UUID) -> bool:
     """Record that the visit's downstream workflow has been started (plan 02-11,
     D-16). Conditional (`WHERE downstream_started_at IS NULL`), so a repeat or
-    a race with the sweeper is harmless: True when this call set the marker.
+    a race between the consumer's redeliveries is harmless: True when this call set the marker.
     Flushes only; the caller commits."""
     marked = await db.execute(
         update(Visit)
@@ -213,27 +213,31 @@ async def mark_downstream_started(db: AsyncSession, *, visit_id: uuid.UUID) -> b
     return marked.first() is not None
 
 
-async def list_downstream_unstarted(
-    db: AsyncSession, *, older_than_seconds: int, limit: int = 100
+async def list_completed_without_downstream(
+    db: AsyncSession, *, limit: int = 100, clinic_id: uuid.UUID | None = None
 ) -> list[Visit]:
-    """Completed visits whose downstream workflow was never started (plan
-    02-11): `status = 'completed' AND downstream_started_at IS NULL AND
-    completed_at < now() - older_than_seconds`, oldest first, at most `limit`.
-    Served by the partial index `ix_visits_downstream_pending`. No row lock:
-    the sweeper calls Temporal per row, and a duplicate start is a no-op."""
+    """Completed visits whose downstream workflow was never started: `status =
+    'completed' AND downstream_started_at IS NULL` (optionally of one clinic), oldest
+    first, at most `limit`.
+    Served by the partial index `ix_visits_downstream_pending`. No row lock.
+
+    Since plan 03-12 (D-03) no worker start-up or Schedule uses this: the outbox
+    consumer is the only trigger. It remains for the one-shot cutover backfill
+    (`scripts/backfill_visit_completed_events.py`), which selects the visits that
+    completed before the outbox trigger existed. (It also lists a visit whose
+    event is committed but not consumed yet; the backfill is idempotent for those,
+    the outbox primary key is the uuid5 event id.)"""
     query = (
         select(Visit)
         .where(
             Visit.status == VisitStatus.COMPLETED,
             Visit.downstream_started_at.is_(None),
-            Visit.completed_at
-            < text("now() - make_interval(secs => :grace)").bindparams(
-                grace=float(older_than_seconds)
-            ),
         )
-        .order_by(Visit.completed_at)
+        .order_by(Visit.completed_at, Visit.id)
         .limit(limit)
     )
+    if clinic_id is not None:
+        query = query.where(Visit.clinic_id == clinic_id)
     return list((await db.scalars(query)).all())
 
 
@@ -287,8 +291,8 @@ async def list_unsettled(
     first, at most `limit`. Served by the partial index `ix_visits_unsettled`.
 
     `downstream_started_at IS NOT NULL` leaves visits whose trigger was never
-    started to the sweeper, which starts the workflow (and the workflow then
-    settles them); the reconciler covers workflows that already ran or were
+    started to the outbox consumer, which starts the workflow (and the workflow
+    then settles them); the reconciler covers workflows that already ran or were
     started and did not settle. No row lock: the reconciler re-checks each row
     through the conditional marker functions and the idempotent step bodies."""
     query = (

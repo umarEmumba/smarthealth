@@ -94,7 +94,8 @@ async def _heartbeat(stop: asyncio.Event) -> None:
 def build_activities(client: Client) -> VisitActivities:
     """Production wiring: visit_db sessions, the process-default
     timeout-bounded HTTP client, Visit's service tokens, Mongo and the
-    worker's own Temporal client (for the sweep)."""
+    worker's own Temporal client (kept for the constructor; unused since the
+    sweeper retired)."""
     http = _get_default_client()
     tokens = ServiceTokenProvider(
         "visit",

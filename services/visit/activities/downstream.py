@@ -2,8 +2,8 @@
 
 `VisitActivities` receives its dependencies through the constructor (a session
 factory for visit_db, an httpx client, Visit's `ServiceTokenProvider`, a Mongo
-client and a Temporal client for the sweep), so the worker wires production
-clients and the test harness wires the in-process mesh. Each bound method is
+client and a Temporal client, unused since the sweeper retired), so the worker wires
+production clients and the test harness wires the in-process mesh. Each bound method is
 registered under its `ACT_*` name; the workflows call them by name.
 
 * `finalize_billing` - Billing's state-targeted transition `verified ->
@@ -37,7 +37,9 @@ registered under its `ACT_*` name; the workflows call them by name.
 * `record_followup_intent` / `record_analytics_intent` - Phase 2 stubs (D-11):
   a log line and an audit entry, ids only. They are the single Phase 3 seams
   (Celery follow-up job, Kafka `visit.completed` event).
-* `sweep_unstarted` - the lost-trigger sweep (`services.visit.downstream`).
+* `sweep_unstarted` - a RETIRED tombstone (plan 03-12, D-03): the activity name stays
+  registered so a recorded history or an in-flight `VisitDownstreamSweeperWorkflow`
+  run still completes; it logs `visit.sweeper_retired`, starts nothing and returns zero.
 
 Audit is the LAST step of each activity, deduplicated by
 `{workflow_id}:{step}` (one entry per step despite retries). Error messages and
@@ -96,7 +98,7 @@ def _workflow_id() -> str:
 
 
 class VisitActivities:
-    """The downstream fan-out's steps and the sweep, bound to injected clients."""
+    """The downstream fan-out's steps, the reconciler and the retired sweep tombstone."""
 
     def __init__(
         self,
@@ -106,7 +108,6 @@ class VisitActivities:
         mongo: AsyncMongoClient,
         client: Client | None,
         *,
-        sweeper_grace_seconds: int | None = None,
         reconcile_grace_minutes: int | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -114,9 +115,6 @@ class VisitActivities:
         self._tokens = tokens
         self._mongo = mongo
         self._client = client
-        self._grace = (
-            settings.sweeper_grace_seconds if sweeper_grace_seconds is None else sweeper_grace_seconds
-        )
         self._reconcile_grace = (
             settings.reconcile_grace_minutes
             if reconcile_grace_minutes is None
@@ -271,12 +269,10 @@ class VisitActivities:
 
     @activity.defn(name=ACT_SWEEP)
     async def sweep_unstarted(self) -> SweepResult:
-        if self._client is None:  # pragma: no cover - wiring error
-            raise RuntimeError("VisitActivities needs a Temporal client to sweep")
-        processed = await downstream.sweep_unstarted(
-            self._session_factory, self._client, grace_seconds=self._grace
-        )
-        return SweepResult(processed=processed)
+        """Tombstone of the retired lost-trigger sweep (plan 03-12, D-03): starts
+        nothing, touches no row, returns zero processed."""
+        log.info("visit.sweeper_retired")
+        return SweepResult(processed=0)
 
     async def reconcile(self) -> int:
         """One reconciler pass (also run once by the worker at start-up): settle

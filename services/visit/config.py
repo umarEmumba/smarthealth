@@ -31,17 +31,6 @@ class VisitSettings(SharedSettings):
         default="infra/secrets/service-clients/visit.secret",
         validation_alias="VISIT_CLIENT_SECRET_PATH",
     )
-    # Downstream sweeper (plan 02-11, D-16): the Temporal Schedule's interval,
-    # and how old a completed visit with no started downstream workflow must be
-    # before the sweeper treats its trigger as lost (since plan 03-09 the
-    # visit-downstream consumer starts the workflow from the `visit.completed`
-    # event; the grace keeps the sweeper from racing it until plan 03-12 retires it).
-    sweeper_interval_seconds: int = Field(
-        default=60, ge=1, validation_alias="VISIT_SWEEPER_INTERVAL_SECONDS"
-    )
-    sweeper_grace_seconds: int = Field(
-        default=30, ge=0, validation_alias="VISIT_SWEEPER_GRACE_SECONDS"
-    )
     # Reconciler (plan 02.1-10, S4): the Schedule's interval, and how long after
     # a visit completed its billing/appointment markers may stay empty before the
     # reconciler steps in (the workflow normally settles them within seconds and,

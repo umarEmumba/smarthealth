@@ -65,7 +65,7 @@ pytestmark = pytest.mark.integration
 
 async def _started(visit_id: str) -> None:
     """What a workflow that started and then failed to settle leaves behind:
-    `downstream_started_at` set (the sweeper's job is done), markers empty."""
+    `downstream_started_at` set (the outbox consumer's job is done), markers empty."""
     engine = create_async_engine(visit_settings.database_url)
     try:
         async with engine.begin() as conn:
@@ -278,14 +278,17 @@ async def test_a_visit_inside_the_grace_period_is_not_touched(
     assert (await _markers(visit_id))["billing_outcome"] == "finalized"
 
 
-async def test_a_visit_whose_downstream_was_never_started_is_left_to_the_sweeper(
+async def test_a_visit_whose_downstream_was_never_started_is_left_to_the_outbox_consumer(
     client: AsyncClient,
     mesh: httpx.AsyncClient,
     visit_world: VisitWorld,
     mongo_client: AsyncMongoClient,
 ) -> None:
+    """Never-started visits (marker NULL) are the outbox consumer's job (plan 03-09,
+    D-03; the Phase 2 sweeper is retired): the reconciler only covers visits whose
+    workflow was started and did not settle, so it neither selects nor touches this one."""
     visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
-    assert completed.status_code == 200, completed.text  # temporal "down": marker NULL
+    assert completed.status_code == 200, completed.text  # no consumer ran: marker NULL
 
     assert visit["id"] not in await _unsettled_ids()
     await _reconcile(_activities(mesh, mongo_client))

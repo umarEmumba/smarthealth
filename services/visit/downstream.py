@@ -1,22 +1,23 @@
 """Starting a completed visit's downstream workflow, exactly once (plan 02-11;
 VISIT-04, D-06, D-16, research Pattern 2 / Pattern 8).
 
-Outbox trigger (plan 03-09, D-03): the API commits the `completed` transition
-with `downstream_started_at IS NULL` and a `visit.completed` outbox row; the
-visit-downstream consumer (`services.visit.consumer`) calls
+Outbox trigger (plan 03-09, D-03; the only trigger since plan 03-12): the API commits
+the `completed` transition with `downstream_started_at IS NULL` and a `visit.completed`
+outbox row; the visit-downstream consumer (`services.visit.consumer`) calls
 `ensure_downstream_started`, which starts `visit-completed-{visit_id}` with
-`start_once` (deterministic id, USE_EXISTING + REJECT_DUPLICATE) and only then
-sets the marker with a conditional UPDATE. A Temporal outage leaves the marker
-NULL and the event is retried by the consumer; until plan 03-12 retires it,
-`sweep_unstarted` (run once when the visit worker starts and then by the
-`visit-downstream-sweeper` Temporal Schedule) finds such visits and calls the
-same function. Every path is idempotent: a repeated
-or concurrent start attaches to the running execution or is refused once it
+`start_once` (deterministic id, USE_EXISTING + REJECT_DUPLICATE) and only then sets the
+marker with a conditional UPDATE. A Temporal outage leaves the marker NULL and the
+event is retried by the consumer, so an outage delays a trigger and never drops it. The
+Phase 2 sweeper (a Temporal Schedule plus a run-on-start sweep) that used to find such
+visits was retired in plan 03-12 once the kill-between-commit-and-publish tests (plan
+03-11) proved the outbox path; visits that completed before the outbox existed are
+covered once by `scripts/backfill_visit_completed_events.py`. Every path is idempotent:
+a repeated or concurrent start attaches to the running execution or is refused once it
 closed, and the marker update is conditional.
 
-Shared by the visit-downstream consumer, the sweep activity and the worker's start-up sweep.
-No execution/run timeout is ever passed (see `libs.temporal`). Logs carry ids
-only.
+Shared by the visit-downstream consumer only (the start is the same function the Phase 2
+paths used). No execution/run timeout is ever passed (see `libs.temporal`). Logs carry
+ids only.
 
 Reconciling (plan 02.1-10, S4): `reconcile_unsettled` is the safety net behind
 `VisitCompletedWorkflow`. A completed visit whose billing or appointment
@@ -51,11 +52,10 @@ from services.visit.domain.contracts import (
 from services.visit.repository import visit_repo
 from services.visit.repository.models import Visit
 
-__all__ = ["ensure_downstream_started", "reconcile_unsettled", "sweep_unstarted"]
+__all__ = ["ensure_downstream_started", "reconcile_unsettled"]
 
 log = get_logger(__name__)
 
-SWEEP_LIMIT = 100
 RECONCILE_LIMIT = 100
 
 # A settlement step body: (visit input, deterministic workflow id) -> outcome.
@@ -66,7 +66,7 @@ async def ensure_downstream_started(client: Client, db: AsyncSession, visit: Vis
     """Start the visit's downstream workflow (unless it already ran or runs),
     then set and COMMIT `downstream_started_at`. Returns True once the marker
     is set. Temporal RPC/connection errors propagate before anything is
-    written; the caller decides (the consumer retries the event, the sweeper skips the visit)."""
+    written; the caller decides (the consumer retries the event)."""
     inp = VisitCompletedInput(
         visit_id=str(visit.id),
         appointment_id=str(visit.appointment_id),
@@ -87,42 +87,6 @@ async def ensure_downstream_started(client: Client, db: AsyncSession, visit: Vis
         outcome="started" if fresh else "already_closed",
     )
     return True
-
-
-async def sweep_unstarted(
-    session_factory: Callable[[], AsyncSession],
-    client: Client,
-    *,
-    grace_seconds: int,
-    limit: int = SWEEP_LIMIT,
-) -> int:
-    """Start the downstream workflow for completed visits whose marker is
-    still NULL and that completed more than `grace_seconds` ago. Ids are read
-    in one short transaction; each visit is then started in its own short
-    transaction, so no row lock is held across a Temporal call. A failure on
-    one visit is logged and the sweep continues. Returns how many visits got
-    their marker set."""
-    async with session_factory() as db:
-        ids = [
-            v.id
-            for v in await visit_repo.list_downstream_unstarted(
-                db, older_than_seconds=grace_seconds, limit=limit
-            )
-        ]
-
-    processed = 0
-    for visit_id in ids:
-        try:
-            async with session_factory() as db:
-                visit = await visit_repo.get_visit(db, visit_id)
-                if visit is None or visit.downstream_started_at is not None:
-                    continue  # another sweeper or the API got there first
-                if await ensure_downstream_started(client, db, visit):
-                    processed += 1
-        except Exception as exc:  # noqa: BLE001 - one bad visit never stops the sweep
-            log.warning("visit.sweep_start_failed", visit_id=str(visit_id), error=type(exc).__name__)
-    log.info("visit.sweep", scanned=len(ids), processed=processed)
-    return processed
 
 
 async def _open_steps(

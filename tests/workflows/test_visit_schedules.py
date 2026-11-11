@@ -39,10 +39,10 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from libs.temporal_policies import VISIT_TASK_QUEUE
+from services.visit.activities.downstream import VisitActivities
 from services.visit.config import settings
 from services.visit.domain.contracts import (
     ACT_RECONCILE,
-    ACT_SWEEP,
     SWEEPER_WORKFLOW,
     VISIT_RECONCILER_WORKFLOW,
     SweepResult,
@@ -148,19 +148,18 @@ async def test_retire_sweeper_schedule_on_a_server_that_never_had_it_returns_fal
     assert await retire_sweeper_schedule(compose_temporal, id_prefix=id_prefix) is False
 
 
-async def test_sweeper_workflow_runs_the_sweep_activity_once(temporal_env: WorkflowEnvironment) -> None:
-    calls: list[int] = []
-
-    @activity.defn(name=ACT_SWEEP)
-    async def sweep_stub() -> SweepResult:
-        calls.append(1)
-        return SweepResult(processed=3)
+async def test_sweeper_tombstone_workflow_runs_the_retired_activity_once(
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """The retired workflow still runs under a worker with the REAL tombstone activity
+    (it touches no dependency, so none is wired): one activity, zero processed."""
+    acts = VisitActivities(None, None, None, None, None)  # type: ignore[arg-type]
 
     async with Worker(
         temporal_env.client,
         task_queue=VISIT_TASK_QUEUE,
         workflows=[VisitDownstreamSweeperWorkflow],
-        activities=[sweep_stub],
+        activities=[acts.sweep_unstarted],
     ):
         result = await temporal_env.client.execute_workflow(
             SWEEPER_WORKFLOW,
@@ -169,8 +168,7 @@ async def test_sweeper_workflow_runs_the_sweep_activity_once(temporal_env: Workf
             result_type=SweepResult,
         )
 
-    assert result == SweepResult(processed=3)
-    assert calls == [1]
+    assert result == SweepResult(processed=0)
 
 
 async def test_reconciler_workflow_runs_the_reconcile_activity_once(
