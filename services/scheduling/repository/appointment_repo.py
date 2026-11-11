@@ -26,7 +26,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.scheduling.domain.contracts import BILLING_VOID_CHECKED
 from services.scheduling.domain.enums import AppointmentStatus, SlotStatus
 from services.scheduling.domain.errors import IdempotencyKeyReused, PatientOverlap, SlotTaken
-from services.scheduling.events import APPOINTMENT_BOOKED, emit_appointment_event
+from services.scheduling.events import (
+    APPOINTMENT_BOOKED,
+    APPOINTMENT_CANCELLED,
+    APPOINTMENT_CHECKED_IN,
+    APPOINTMENT_COMPLETED,
+    APPOINTMENT_NO_SHOW,
+    APPOINTMENT_RESCHEDULED,
+    emit_appointment_event,
+)
 from services.scheduling.repository.idempotency_repo import (
     claim_idempotency_key,
     get_idempotency_record,
@@ -443,16 +451,22 @@ async def cancel_appointment(
     if row.status != AppointmentStatus.CONFIRMED:
         return "not_cancellable"
 
-    await db.execute(
-        text(
-            """
-            UPDATE appointments
-               SET status = 'cancelled', version = version + 1, updated_at = now()
-             WHERE id = :a AND status = 'confirmed'
-            """
-        ),
-        {"a": appointment_id},
-    )
+    cancelled = (
+        await db.execute(
+            text(
+                """
+                UPDATE appointments
+                   SET status = 'cancelled', version = version + 1, updated_at = now()
+                 WHERE id = :a AND status = 'confirmed'
+                RETURNING id, clinic_id, patient_id, provider_id, slot_id, slot_start,
+                         slot_end, version, updated_at
+                """
+            ),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
+    if cancelled is None:  # pragma: no cover - the row is locked as confirmed above
+        return "not_cancellable"
     # A slot the schedule no longer offers (the appointment was flagged by a
     # schedule change, M2) is WITHDRAWN when its booking goes away, not freed:
     # freeing it would make a slot the provider no longer works bookable again.
@@ -477,6 +491,7 @@ async def cancel_appointment(
         to_status=AppointmentStatus.CANCELLED,
         actor=actor,
     )
+    await emit_appointment_event(db, APPOINTMENT_CANCELLED, cancelled)
     return "cancelled"
 
 
@@ -513,7 +528,8 @@ async def swap_slot(
     row = (
         await db.execute(
             text(
-                "SELECT status, slot_id, (schedule_change_flagged_at IS NOT NULL) AS flagged "
+                "SELECT status, slot_id, slot_start, "
+                "(schedule_change_flagged_at IS NOT NULL) AS flagged "
                 "FROM appointments WHERE id = :a FOR UPDATE"
             ),
             {"a": appointment_id},
@@ -543,25 +559,28 @@ async def swap_slot(
         return "rejected"
 
     try:
-        moved = await db.scalar(
-            text(
-                """
-                UPDATE appointments
-                   SET slot_id = :new, slot_start = :st, slot_end = :en,
-                       schedule_change_flagged_at = NULL, schedule_change_reason = NULL,
-                       version = version + 1, updated_at = now()
-                 WHERE id = :a AND slot_id = :old AND status = 'confirmed'
-                RETURNING id
-                """
-            ),
-            {
-                "a": appointment_id,
-                "old": old_slot_id,
-                "new": new_slot_id,
-                "st": new_slot.start_time,
-                "en": new_slot.end_time,
-            },
-        )
+        moved = (
+            await db.execute(
+                text(
+                    """
+                    UPDATE appointments
+                       SET slot_id = :new, slot_start = :st, slot_end = :en,
+                           schedule_change_flagged_at = NULL, schedule_change_reason = NULL,
+                           version = version + 1, updated_at = now()
+                     WHERE id = :a AND slot_id = :old AND status = 'confirmed'
+                    RETURNING id, clinic_id, patient_id, provider_id, slot_id, slot_start,
+                             slot_end, version, updated_at
+                    """
+                ),
+                {
+                    "a": appointment_id,
+                    "old": old_slot_id,
+                    "new": new_slot_id,
+                    "st": new_slot.start_time,
+                    "en": new_slot.end_time,
+                },
+            )
+        ).one_or_none()
     except IntegrityError as exc:
         if is_slot_taken(exc) or is_patient_overlap(exc):
             return "rejected"
@@ -592,6 +611,13 @@ async def swap_slot(
         to_status=AppointmentStatus.CONFIRMED,
         reason=RESCHEDULED_REASON,
         actor=actor,
+    )
+    await emit_appointment_event(
+        db,
+        APPOINTMENT_RESCHEDULED,
+        moved,
+        old_slot_id=old_slot_id,
+        old_slot_start=row.slot_start,
     )
     return "swapped"
 
@@ -709,17 +735,20 @@ async def check_in_appointment(
     if row.too_late:
         return "too_late"
 
-    moved = await db.scalar(
-        text(
-            """
-            UPDATE appointments
-               SET status = 'checked_in', version = version + 1, updated_at = now()
-             WHERE id = :a AND status = 'confirmed'
-            RETURNING id
-            """
-        ),
-        {"a": appointment_id},
-    )
+    moved = (
+        await db.execute(
+            text(
+                """
+                UPDATE appointments
+                   SET status = 'checked_in', version = version + 1, updated_at = now()
+                 WHERE id = :a AND status = 'confirmed'
+                RETURNING id, clinic_id, patient_id, provider_id, slot_id, slot_start,
+                         slot_end, version, updated_at
+                """
+            ),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
     if moved is None:  # pragma: no cover - the row is locked as confirmed above
         return "not_confirmed"
     await append_status_history(
@@ -729,6 +758,7 @@ async def check_in_appointment(
         to_status=AppointmentStatus.CHECKED_IN,
         actor=actor,
     )
+    await emit_appointment_event(db, APPOINTMENT_CHECKED_IN, moved)
     return "checked_in"
 
 
@@ -756,17 +786,20 @@ async def complete_appointment(
     if current != AppointmentStatus.CHECKED_IN:
         return "not_checked_in"
 
-    moved = await db.scalar(
-        text(
-            """
-            UPDATE appointments
-               SET status = 'completed', version = version + 1, updated_at = now()
-             WHERE id = :a AND status = 'checked_in'
-            RETURNING id
-            """
-        ),
-        {"a": appointment_id},
-    )
+    moved = (
+        await db.execute(
+            text(
+                """
+                UPDATE appointments
+                   SET status = 'completed', version = version + 1, updated_at = now()
+                 WHERE id = :a AND status = 'checked_in'
+                RETURNING id, clinic_id, patient_id, provider_id, slot_id, slot_start,
+                         slot_end, version, updated_at
+                """
+            ),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
     if moved is None:  # pragma: no cover - the row is locked as checked_in above
         return "not_checked_in"
     await append_status_history(
@@ -776,6 +809,7 @@ async def complete_appointment(
         to_status=AppointmentStatus.COMPLETED,
         actor=actor,
     )
+    await emit_appointment_event(db, APPOINTMENT_COMPLETED, moved)
     return "completed"
 
 
@@ -816,17 +850,20 @@ async def mark_no_show(
     if not row.past_grace:
         return "too_early"
 
-    moved = await db.scalar(
-        text(
-            """
-            UPDATE appointments
-               SET status = 'no_show', version = version + 1, updated_at = now()
-             WHERE id = :a AND status = 'confirmed'
-            RETURNING id
-            """
-        ),
-        {"a": appointment_id},
-    )
+    moved = (
+        await db.execute(
+            text(
+                """
+                UPDATE appointments
+                   SET status = 'no_show', version = version + 1, updated_at = now()
+                 WHERE id = :a AND status = 'confirmed'
+                RETURNING id, clinic_id, patient_id, provider_id, slot_id, slot_start,
+                         slot_end, version, updated_at
+                """
+            ),
+            {"a": appointment_id},
+        )
+    ).one_or_none()
     if moved is None:  # pragma: no cover - the row is locked as confirmed above
         return "not_confirmed"
     await append_status_history(
@@ -836,6 +873,7 @@ async def mark_no_show(
         to_status=AppointmentStatus.NO_SHOW,
         actor=actor,
     )
+    await emit_appointment_event(db, APPOINTMENT_NO_SHOW, moved)
     return "no_show"
 
 
