@@ -240,8 +240,13 @@ def test_snapshot_delivers_row_committed_before_connector_first_start() -> None:
     """`snapshot.mode=initial`: a row committed BEFORE a connector first registers is
     delivered by its initial snapshot. Uses a disposable connector with its own slot,
     prefix and topic, restricted to the one probe row, and removes the connector, its
-    slot and its topics afterwards (an orphaned slot would retain WAL, Pitfall 4)."""
-    name, slot = "scheduling-outbox-snapshot-probe", "dbz_snapshot_probe"
+    slot and its topics afterwards (an orphaned slot would retain WAL, Pitfall 4).
+
+    The connector name carries a per-run suffix: Kafka Connect keeps a deleted connector's
+    stored offsets, so a second run under the same name resumed from a stale LSN of the
+    already dropped slot ("Last recorded offset is no longer available") and the task
+    FAILED. A fresh name has no stored offset, so the test passes on every run."""
+    name, slot = f"scheduling-outbox-snapshot-probe-{uuid.uuid4().hex[:8]}", "dbz_snapshot_probe"
     prefix = "smarthealth-snapshot-probe"
     topic = "smarthealth.snapshotprobe.events"
     (row,) = stack.make_probe_rows(count=1)
