@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import quote
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 
 from libs.config import SharedSettings
 
@@ -49,6 +49,33 @@ class NotificationSettings(SharedSettings):
     rabbitmq_management_url: str = Field(
         default="http://localhost:15672", validation_alias="NOTIFICATION_RABBITMQ_MANAGEMENT_URL"
     )
+
+    # Reminder scheduling (plan 03-06, assumption A7). The leads and the delay are
+    # passed to the workflows as inputs; a workflow never reads these settings.
+    reminder_leads_minutes: str = Field(
+        default="1440,120", validation_alias="NOTIFICATION_REMINDER_LEADS_MINUTES"
+    )
+    followup_delay_minutes: int = Field(
+        default=4320, gt=0, validation_alias="NOTIFICATION_FOLLOWUP_DELAY_MINUTES"
+    )
+    temporal_heartbeat_path: str = Field(
+        default="/tmp/notification-temporal-worker.alive",  # noqa: S108 - liveness file, no secret
+        validation_alias="NOTIFICATION_TEMPORAL_HEARTBEAT_PATH",
+    )
+
+    @field_validator("reminder_leads_minutes")
+    @classmethod
+    def _leads_are_positive_integers(cls, value: str) -> str:
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if not parts or not all(part.isdigit() and int(part) > 0 for part in parts):
+            raise ValueError("NOTIFICATION_REMINDER_LEADS_MINUTES must be a comma list of positive integers")
+        return value
+
+    @property
+    def reminder_leads(self) -> list[int]:
+        """The reminder leads in minutes, largest first, without duplicates."""
+        parts = {int(part) for part in self.reminder_leads_minutes.split(",") if part.strip()}
+        return sorted(parts, reverse=True)
 
     def read_broker_password(self) -> SecretStr:
         try:

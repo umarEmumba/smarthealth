@@ -7,7 +7,8 @@ database drivers or HTTP clients into the deterministic workflow sandbox.
 Anything that reads configuration (`libs.temporal`) stays out of workflows.
 
 One task queue per service (D-05): Scheduling's workflows and activities run on
-`SCHEDULING_TASK_QUEUE`, Visit's on `VISIT_TASK_QUEUE`. The names live in
+`SCHEDULING_TASK_QUEUE`, Visit's on `VISIT_TASK_QUEUE`, Notification's reminder
+and follow-up timers on `NOTIFICATION_TASK_QUEUE` (plan 03-06). The names live in
 workflow histories and in every starter, so renaming one is a migration.
 
 Every activity is bounded (research Pitfall 6): the SDK's default retry policy
@@ -28,6 +29,7 @@ from temporalio.common import RetryPolicy
 
 SCHEDULING_TASK_QUEUE = "scheduling-tq"
 VISIT_TASK_QUEUE = "visit-tq"
+NOTIFICATION_TASK_QUEUE = "notification-tq"
 
 # ApplicationError types that are business outcomes, never retried.
 NON_RETRYABLE = ["SlotUnavailable", "BillingRejected", "ReferenceInvalid", "ConfirmLostHold"]
