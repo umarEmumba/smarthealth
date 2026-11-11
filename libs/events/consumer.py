@@ -328,11 +328,14 @@ class EventConsumer:
                     break
             self._transient_counts.pop((topic, partition, offset), None)
             self._commit(msg)
+            # Logged INSIDE the processing span so the `event.consumed` line carries the
+            # trace_id / span_id of the booking's trace (OBS-03): outside it the line would
+            # have no active span and could not be found by trace id.
+            self._record(envelope.event_type, Outcome.PROCESSED, envelope)
 
         event_processing_seconds.labels(self.group_id, envelope.event_type).observe(
             time.perf_counter() - started
         )
-        self._record(envelope.event_type, Outcome.PROCESSED, envelope)
         return Outcome.PROCESSED
 
     def _decode(self, msg: Any) -> EventEnvelope:
