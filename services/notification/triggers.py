@@ -39,6 +39,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+from uuid import UUID
 
 from amqp.exceptions import AMQPError
 from kombu.exceptions import KombuError
@@ -103,6 +104,12 @@ def _is_transient(exc: BaseException) -> bool:
     )
 
 
+def _uuid(value: str) -> str:
+    """The id unchanged when it is UUID-shaped, else ValueError (a poison id must not reach Mongo)."""
+    UUID(value)
+    return value
+
+
 def _iso(value: Any) -> str:
     """An Avro timestamp (aware datetime, epoch millis or ISO text) as an ISO-8601 string."""
     if isinstance(value, datetime):
@@ -150,7 +157,14 @@ class NotificationTriggers:
     # ------------------------------------------------------------- plumbing
 
     def handlers(self) -> Mapping[str, Handler]:
-        return {EventType.APPOINTMENT_BOOKED: self.on_booked}
+        return {
+            EventType.APPOINTMENT_BOOKED: self.on_booked,
+            EventType.APPOINTMENT_CANCELLED: self.on_cancelled,
+            EventType.APPOINTMENT_RESCHEDULED: self.on_rescheduled,
+            EventType.APPOINTMENT_NO_SHOW: self.on_no_show,
+            EventType.APPOINTMENT_CHECKED_IN: self.on_checked_in,
+            EventType.VISIT_COMPLETED: self.on_visit_completed,
+        }
 
     def _database(self) -> Database:
         if isinstance(self._db, Database) or not callable(self._db):
@@ -246,3 +260,81 @@ class NotificationTriggers:
             )
 
         await self._guarded(envelope, effect())
+
+    async def on_cancelled(self, envelope: EventEnvelope) -> None:
+        """Cancellation: stop the reminder, record the appointment closed (so a reminder
+        that already fired is skipped at send time) and send one cancellation notice."""
+
+        async def effect() -> None:
+            payload = envelope.payload
+            patient_id = str(payload["patient_id"])
+            appointment_id = str(payload["appointment_id"])
+            await self._close(appointment_id, "cancelled")
+            await self._helpers.cancel_reminder(await self._client_for_call(), appointment_id)
+            await self._send(envelope, TYPE_CANCELLED, patient_id, appointment_id)
+
+        await self._guarded(envelope, effect())
+
+    async def on_rescheduled(self, envelope: EventEnvelope) -> None:
+        """Reschedule: move the reminder to the new slot and send one reschedule notice."""
+
+        async def effect() -> None:
+            payload = envelope.payload
+            patient_id = str(payload["patient_id"])
+            appointment_id = str(payload["appointment_id"])
+            new_slot = _iso(payload["new_slot_start"])
+            await self._send(envelope, TYPE_RESCHEDULED, patient_id, appointment_id)
+            await self._helpers.reschedule_reminder(
+                await self._client_for_call(),
+                appointment_id=appointment_id,
+                patient_id=patient_id,
+                new_slot_iso=new_slot,
+                lead_minutes=self._settings.reminder_leads,
+            )
+
+        await self._guarded(envelope, effect())
+
+    async def on_no_show(self, envelope: EventEnvelope) -> None:
+        """No-show: no notification, only the reminder stops and the appointment is closed."""
+
+        async def effect() -> None:
+            appointment_id = str(envelope.payload["appointment_id"])
+            await self._close(appointment_id, "no_show")
+            await self._helpers.cancel_reminder(await self._client_for_call(), appointment_id)
+
+        await self._guarded(envelope, effect())
+
+    async def on_checked_in(self, envelope: EventEnvelope) -> None:
+        """Check-in: the patient is here, so the reminder is no longer wanted."""
+
+        async def effect() -> None:
+            appointment_id = str(envelope.payload["appointment_id"])
+            await self._close(appointment_id, "checked_in")
+            await self._helpers.cancel_reminder(await self._client_for_call(), appointment_id)
+
+        await self._guarded(envelope, effect())
+
+    async def on_visit_completed(self, envelope: EventEnvelope) -> None:
+        """A completed visit starts the follow-up workflow (`followup-{visit_id}`)."""
+
+        async def effect() -> None:
+            payload = envelope.payload
+            visit_id = _uuid(str(payload["visit_id"]))
+            appointment_id = _uuid(str(payload["appointment_id"]))
+            patient_id = _uuid(str(payload["patient_id"]))
+            completed_at = _iso(payload["completed_at"])
+            await self._helpers.start_followup(
+                await self._client_for_call(),
+                visit_id=visit_id,
+                appointment_id=appointment_id,
+                patient_id=patient_id,
+                completed_at_iso=completed_at,
+                delay_minutes=self._settings.followup_delay_minutes,
+            )
+
+        await self._guarded(envelope, effect())
+
+    async def _close(self, appointment_id: str, reason: str) -> None:
+        await asyncio.to_thread(
+            deliveries.mark_appointment_closed, self._database(), _uuid(appointment_id), reason
+        )
