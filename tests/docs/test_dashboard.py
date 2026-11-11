@@ -78,9 +78,30 @@ def test_appointment_svg_draws_all_seven_states(html: str) -> None:
 
 
 def test_version_marker_in_meta_row_and_footer(html: str) -> None:
-    # Plan 02.1-13: the marker moves from v3 · Phase 2 to v3.1 · Phase 2.1.
-    assert html.count("v3.1 · Phase 2.1") >= 2
+    # Plan 03-19: the marker moves from v3.1 · Phase 2.1 to v4 · Phase 3 (meta row and footer).
+    assert html.count("v4 · Phase 3") >= 2
+    assert "v3.1 · Phase 2.1" not in html
     assert "v3 · Phase 2" not in html
+
+
+def test_phase3_booking_event_flow_present(html: str) -> None:
+    flows = _section(html, "flows")
+    svgs = re.findall(r"<svg\b[^>]*>.*?</svg>", flows, re.DOTALL)
+    booking = [svg for svg in svgs if 'id="sd-ev-booking-t"' in svg]
+    assert len(booking) == 1
+    opening = booking[0][: booking[0].index(">") + 1]
+    assert 'role="img"' in opening
+    assert "<title" in booking[0] and "<desc" in booking[0]
+    for needle in (
+        "outbox",
+        "Debezium",
+        "smarthealth.appointment.events",
+        "notification-trigger",
+        "analytics-projection",
+        "ReminderWorkflow",
+        "Celery",
+    ):
+        assert needle in booking[0], needle
 
 
 def test_phase2_content_present(html: str) -> None:

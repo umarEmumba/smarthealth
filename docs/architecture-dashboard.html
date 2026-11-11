@@ -367,6 +367,8 @@
   .sd-ln { stroke: var(--accent-ink); stroke-width: 1.4; fill: none; }
   .sd-comp { stroke: var(--warn); stroke-dasharray: 5 4; }
   .sd-head { fill: var(--muted); }
+  .sd-grid.sd-wide { grid-template-columns: 1fr; }
+  .sd-wide figure.sd svg { min-width: 720px; }
   .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
   .callout.warn b { color: var(--warn); }
 </style>
@@ -377,10 +379,10 @@
   <div class="wrap">
     <p class="eyebrow">SmartHealth · Part A · MediNova</p>
     <h1>Architecture &amp; Decision Dashboard</h1>
-    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; v3 added Phase 2 (scheduling, visits and billing on Temporal) and v3.1 adds Phase 2.1, the remediation of the Week 1-2 mentor review: an appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, single-use refresh tokens, and quantified NFR targets with a runnable load test.</p>
+    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; v3 added Phase 2 (scheduling, visits and billing on Temporal), v3.1 added Phase 2.1 (the remediation of the Week 1-2 mentor review: an appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, single-use refresh tokens, and quantified NFR targets with a runnable load test), and v4 adds Phase 3: every state change in the event set is a durable Kafka event written through a transactional outbox and relayed by Debezium, idempotent consumers drive notifications, reminders, visit follow-up and the analytics projections, and every process exposes metrics and joins one trace.</p>
     <div class="meta-row">
       <span>Milestone <b>Part A — Core Platform</b></span>
-      <span>Dashboard <b>v3.1 · Phase 2.1</b></span>
+      <span>Dashboard <b>v4 · Phase 3</b></span>
       <span>Core value <b>reliable scheduling, no corrupted state</b></span>
     </div>
   </div>
@@ -967,6 +969,69 @@
       </figure>
 
     </div>
+    <h3 style="margin:26px 0 6px;font-size:18px;font-weight:650">Event flows (Phase 3)</h3>
+    <p class="sec-sub" style="margin-bottom:16px">Drawn from the code as built. Accent boxes are durable stores and topics; dashed arrows are timer-driven. Only the outbox insert runs on the request path; everything to the right of the commit is asynchronous, at-least-once on the wire, and absorbed by idempotent consumers.</p>
+    <div class="sd-grid sd-wide">
+
+      <figure class="sd">
+        <figcaption>Booking event flow &middot; <code>appointment.booked</code> to notifications, reminder and analytics</figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 800 395" role="img" aria-labelledby="sd-ev-booking-t sd-ev-booking-d">
+          <title id="sd-ev-booking-t">Booking event flow</title>
+          <desc id="sd-ev-booking-d">The booking workflow's confirm step commits the confirmed appointment and an outbox row in one scheduling_db transaction. Debezium reads the Postgres write-ahead log and publishes the row to the Kafka topic smarthealth.appointment.events keyed by the appointment id. The notification-trigger consumer group sends one Celery notifications.send task per dedupe key to the fake provider and starts a durable-timer ReminderWorkflow that later enqueues the same Celery task. The analytics-projection consumer group claims the event id and upserts the projection in analytics_db in one transaction. Only the outbox insert is synchronous; the 202 accept path writes no outbox row.</desc>
+          <defs><marker id="ah-ev-booking" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="20" width="170" height="52" rx="8"/>
+          <text class="sd-tx" x="95" y="41">BookingWorkflow</text>
+          <text class="sd-lb" x="95" y="58" text-anchor="middle">confirm activity</text>
+          <rect class="sd-term" x="215" y="20" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="310" y="41">scheduling_db</text>
+          <text class="sd-lb" x="310" y="58" text-anchor="middle">state + outbox row, one tx</text>
+          <rect class="sd-st" x="440" y="20" width="140" height="52" rx="8"/>
+          <text class="sd-tx" x="510" y="41">Debezium</text>
+          <text class="sd-lb" x="510" y="58" text-anchor="middle">WAL relay (connect)</text>
+          <rect class="sd-term" x="610" y="20" width="180" height="52" rx="8"/>
+          <text class="sd-tx" x="700" y="41">Kafka topic</text>
+          <text class="sd-lb" x="700" y="58" text-anchor="middle">smarthealth.appointment.events</text>
+          <rect class="sd-st" x="330" y="140" width="210" height="52" rx="8"/>
+          <text class="sd-tx" x="435" y="161">notification-trigger</text>
+          <text class="sd-lb" x="435" y="178" text-anchor="middle">group, notification-consumer</text>
+          <rect class="sd-st" x="600" y="140" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="695" y="161">analytics-projection</text>
+          <text class="sd-lb" x="695" y="178" text-anchor="middle">group, analytics-consumer</text>
+          <rect class="sd-st" x="10" y="255" width="210" height="52" rx="8"/>
+          <text class="sd-tx" x="115" y="276">Celery send</text>
+          <text class="sd-lb" x="115" y="293" text-anchor="middle">notifications.send, fake provider</text>
+          <rect class="sd-st" x="260" y="255" width="220" height="52" rx="8"/>
+          <text class="sd-tx" x="370" y="276">ReminderWorkflow</text>
+          <text class="sd-lb" x="370" y="293" text-anchor="middle">durable timers, notification-tq</text>
+          <rect class="sd-term" x="600" y="255" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="695" y="276">analytics_db</text>
+          <text class="sd-lb" x="695" y="293" text-anchor="middle">claim id + upsert, one tx</text>
+          <line class="sd-ln" x1="180" y1="46" x2="215" y2="46" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="405" y1="46" x2="440" y2="46" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="580" y1="46" x2="610" y2="46" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="660" y1="72" x2="500" y2="140" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="710" y1="72" x2="710" y2="140" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="360" y1="192" x2="150" y2="255" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="440" y1="192" x2="400" y2="255" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln sd-comp" x1="260" y1="281" x2="220" y2="281" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="700" y1="192" x2="700" y2="255" marker-end="url(#ah-ev-booking)"/>
+          <text class="sd-lb" x="182" y="40">confirm</text>
+          <text class="sd-lb" x="408" y="40">WAL</text>
+          <text class="sd-lb" x="700" y="108" text-anchor="end">appointment.booked</text>
+          <text class="sd-lb" x="275" y="214" text-anchor="end">send task</text>
+          <text class="sd-lb" x="432" y="232">start reminder-&lt;id&gt;</text>
+          <text class="sd-lb" x="224" y="274">timer</text>
+          <rect class="sd-note" x="10" y="325" width="780" height="54" rx="6"/>
+          <text class="sd-lb" x="20" y="343">Synchronous: only the outbox insert inside the confirm transaction. The 202 accept path writes no outbox row.</text>
+          <text class="sd-lb" x="20" y="357">At-least-once on the wire (Debezium). Every consumer is idempotent, so the effect happens once.</text>
+          <text class="sd-lb" x="20" y="371">The reminder timer fires hours or days later; one connected trace is verified up to the reminder start.</text>
+        </svg>
+        </div>
+      </figure>
+
+    </div>
+    <!-- /event-flows -->
   </section>
 
   <!-- Q&A -->
@@ -1169,7 +1234,7 @@
 
 <footer>
   <div class="wrap">
-    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v3.1 · Phase 2.1</code></span>
+    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v4 · Phase 3</code></span>
     <span>Source of truth: <code>docs/architecture-dashboard.html</code> · updated per phase</span>
   </div>
 </footer>
