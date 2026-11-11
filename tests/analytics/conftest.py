@@ -60,6 +60,22 @@ def clinic_id() -> Iterator[uuid.UUID]:
         asyncio.run(_run_sql(f"DELETE FROM {table} WHERE clinic_id = :c", {"c": clinic}, write=True))
 
 
+@pytest.fixture
+def claimed_event_ids() -> Iterator[list[str]]:
+    """Event ids a Kafka-driven test produced; their `processed_events` claims are
+    removed afterwards (test-data hygiene)."""
+    ids: list[str] = []
+    yield ids
+    if ids:
+        asyncio.run(
+            _run_sql(
+                "DELETE FROM processed_events WHERE event_id = ANY(CAST(:ids AS uuid[]))",
+                {"ids": ids},
+                write=True,
+            )
+        )
+
+
 @contextmanager
 def running_consumer(topic: str, group: str, dlq: str) -> Iterator[threading.Thread]:
     """Run the REAL analytics consumer (real `handle_event`) on one test topic in a thread."""
@@ -102,3 +118,110 @@ def wait_for(read: Callable[[], Any], expected: Any, *, timeout: float = 30.0) -
         time.sleep(0.3)
         value = read()
     return value
+
+
+# --------------------------------------------------------------------------
+# Envelope factory and projector harness for the metric-math tests (Task 2).
+# --------------------------------------------------------------------------
+
+import datetime  # noqa: E402
+import json  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
+
+from libs.events.catalog import EVENT_CATALOG  # noqa: E402
+from libs.events.consumer import EventEnvelope  # noqa: E402
+from libs.events.registry import load_schema_str  # noqa: E402
+from services.analytics.consumer import handle_event  # noqa: E402
+
+T0 = datetime.datetime(2026, 11, 10, 9, 0, tzinfo=datetime.UTC)
+ENVELOPE_FIELDS = {"event_id", "event_type", "schema_version", "occurred_at", "aggregate_id"}
+_AGGREGATE_FIELD = {
+    "appointment": "appointment_id",
+    "visit": "visit_id",
+    "patient": "patient_id",
+}
+
+
+def _avro_fields(event_type: str) -> list[dict[str, Any]]:
+    return json.loads(load_schema_str(event_type))["fields"]
+
+
+@dataclass
+class Projector:
+    """Builds schema-checked envelopes for one clinic and applies them through the real
+    `handle_event` (claim + upsert in one transaction) on the live analytics_db."""
+
+    clinic_id: uuid.UUID
+    event_ids: list[uuid.UUID] = field(default_factory=list)
+    _offset: int = 0
+
+    def make(
+        self,
+        event_type: str,
+        aggregate_id: uuid.UUID,
+        *,
+        occurred_at: datetime.datetime = T0,
+        event_id: uuid.UUID | None = None,
+        **fields: Any,
+    ) -> EventEnvelope:
+        """An envelope shaped like a decoded record: UUID and datetime values, every
+        Avro field of the event's schema present (a field the schema lacks is an error)."""
+        spec = EVENT_CATALOG[event_type]
+        event_id = event_id or uuid.uuid4()
+        payload: dict[str, Any] = {
+            "event_id": event_id,
+            "event_type": event_type,
+            "schema_version": 1,
+            "occurred_at": occurred_at,
+            "aggregate_id": str(aggregate_id),
+        }
+        values = {"clinic_id": self.clinic_id, **fields}
+        values[_AGGREGATE_FIELD[spec.aggregate_type]] = aggregate_id
+        schema_fields = {f["name"]: f for f in _avro_fields(event_type)}
+        unknown = set(values) - set(schema_fields)
+        assert not unknown, f"{event_type} has no field(s) {sorted(unknown)}"
+        for name, avro in schema_fields.items():
+            if name in ENVELOPE_FIELDS:
+                continue
+            if name in values:
+                payload[name] = values[name]
+            elif isinstance(avro["type"], list):
+                payload[name] = None
+            elif isinstance(avro["type"], dict) and avro["type"].get("logicalType") == "uuid":
+                payload[name] = uuid.uuid4()
+            else:
+                payload[name] = occurred_at
+        self._offset += 1
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=event_type,
+            aggregate_id=str(aggregate_id),
+            occurred_at=occurred_at,
+            schema_version=1,
+            payload=payload,
+            topic="p3test.analytics",
+            partition=0,
+            offset=self._offset,
+        )
+
+    async def apply(self, *envelopes: EventEnvelope) -> None:
+        for envelope in envelopes:
+            self.event_ids.append(envelope.event_id)
+            await handle_event(envelope)
+
+
+async def read(sql: str, **params: Any) -> list[Any]:
+    """Run a read-only statement on analytics_db from an async test."""
+    return await _run_sql(sql, params)
+
+
+@pytest.fixture
+async def projector(clinic_id: uuid.UUID) -> Any:
+    harness = Projector(clinic_id)
+    yield harness
+    if harness.event_ids:
+        await _run_sql(
+            "DELETE FROM processed_events WHERE event_id = ANY(:ids)",
+            {"ids": harness.event_ids},
+            write=True,
+        )
