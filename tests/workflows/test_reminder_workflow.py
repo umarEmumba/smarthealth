@@ -13,6 +13,8 @@ each test has its own environment.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -44,6 +46,7 @@ from services.notification.reminders import (
     start_followup,
     start_reminder,
 )
+from services.notification import temporal_worker
 from services.notification.workflows.reminder import FollowUpReminderWorkflow, ReminderWorkflow
 
 # Fixtures of the notification suite (throwaway vhost, in-process Celery worker, Mongo).
@@ -349,3 +352,50 @@ def test_reminder_leads_are_parsed_largest_first_and_must_be_positive() -> None:
             NotificationSettings(NOTIFICATION_REMINDER_LEADS_MINUTES=bad)
     with pytest.raises(ValidationError):
         NotificationSettings(NOTIFICATION_FOLLOWUP_DELAY_MINUTES=0)
+
+
+# --- the worker entrypoint ----------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_build_worker_runs_a_reminder_and_publishes_one_send(
+    temporal_env: WorkflowEnvironment, app
+) -> None:
+    appointment_id, patient_id = _ids()
+    slot = await temporal_env.get_current_time() + timedelta(hours=3)
+    async with temporal_worker.build_worker(temporal_env.client, app):
+        started = await start_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=slot.isoformat(),
+            lead_minutes=[120],
+        )
+        assert started is True
+        result = await _result(temporal_env, reminder_workflow_id(appointment_id))
+    assert result == ReminderResult("completed", [120])
+    # No Celery worker runs here, so the one published send waits in its queue.
+    with app.connection_for_read() as connection:
+        depth = connection.default_channel.queue_declare("notifications.reminder", passive=True).message_count
+    assert depth == 1
+
+
+async def test_main_instruments_publishing_touches_the_heartbeat_and_stops_on_sigterm(
+    temporal_env: WorkflowEnvironment, tmp_path, monkeypatch
+) -> None:
+    heartbeat = tmp_path / "notification-temporal-worker.alive"
+    instrumented: list[bool] = []
+
+    async def _connect() -> object:
+        return temporal_env.client
+
+    monkeypatch.setattr(temporal_worker.settings, "temporal_heartbeat_path", str(heartbeat))
+    monkeypatch.setattr(temporal_worker, "_connect_with_retry", _connect)
+    monkeypatch.setattr(temporal_worker, "instrument_publisher", lambda: instrumented.append(True))
+    monkeypatch.setattr(temporal_worker, "configure_tracer_provider", lambda name: None)
+    # The SIGTERM handler is installed by main() before it connects, so this signal
+    # is handled by main's stop event and never reaches the default disposition.
+    asyncio.get_running_loop().call_later(1.5, os.kill, os.getpid(), signal.SIGTERM)
+    assert await asyncio.wait_for(temporal_worker.main(), timeout=30) == 0
+    assert instrumented == [True]
+    assert heartbeat.exists()
