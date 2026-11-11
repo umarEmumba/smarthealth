@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: verifying
-stopped_at: Completed 03-24-multiprocess-metrics-PLAN.md
-last_updated: "2026-11-11T19:20:57.793Z"
+stopped_at: Completed 03-25-multiprocess-rollout-PLAN.md
+last_updated: "2026-11-11T19:59:10.470Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 9126f14df5a2f7e2fbb937d84dfc27e8b95b48ef
+state_head: 34c9954d3053a247b14b39c1f08fba9b1ef7a9f2
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 68
-  completed_plans: 66
+  completed_plans: 67
   percent: 60
 ---
 
@@ -118,6 +118,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P22 | 40min | 3 tasks | 14 files |
 | Phase 3 P23 | 1h50m | 2 tasks | 4 files |
 | Phase 03 P24 | ~40min | 2 tasks | 7 files |
+| Phase 3 P25 | 40min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -238,6 +239,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-22: lost visit.completed triggers are recovered by the existing visit-reconciler lost-trigger pass (no sweeper); DLQ records by scripts/replay_dlq.py (dry run by default)
 - [Phase 3]: 03-23: closed-loop engines retired by shutting down idle connection sockets; pool size/overflow are settings; Compose worst-case budget 241 of 297 enforced by a derived static test; measured suite peak 108 of 300
 - [Phase 03]: 03-24: Prometheus multiprocess mode with two gunicorn workers; PROMETHEUS_MULTIPROC_DIR exported only by the API image default command (never Compose); gateway /metrics renders via render_latest()
+- [Phase 3]: 03-25: all nine APIs run Prometheus multiprocess mode via the image default command; Compose never sets the directory or a worker-count variable (static test); smoke on the corrected stack exit 0, accept p95 41.85 / p99 245.49 ms, no p95 change visible
 
 ### Pending Todos
 
@@ -287,6 +289,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T19:20:57.697Z
-Stopped at: Completed 03-24-multiprocess-metrics-PLAN.md
+Last session: 2026-11-11T19:59:10.398Z
+Stopped at: Completed 03-25-multiprocess-rollout-PLAN.md
 Resume file: None
