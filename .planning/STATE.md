@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: verifying
-stopped_at: Completed 03-20-phase-gate-PLAN.md
-last_updated: "2026-11-11T15:18:01.155Z"
+stopped_at: Completed 03-21-consumer-reliability-PLAN.md
+last_updated: "2026-11-11T17:26:26.007Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 46767f9322a32b2343a6176af5d87faeeff4f49b
+state_head: 8dab269374a852de00a271c12cc74ae9e8b113c8
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 62
-  completed_plans: 62
+  total_plans: 68
+  completed_plans: 63
   percent: 60
 ---
 
@@ -114,6 +114,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P18 | not measured | 3 tasks | 16 files |
 | Phase 03 P19 | not measured | 2 tasks | 3 files |
 | Phase 03 P20 | about 4h | 3 tasks | 5 files |
+| Phase 03 P21 | ~65min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -229,6 +230,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-19: dashboard v4 states only what the code does or a SUMMARY measured; roadmap shows Phase 3 active with phase gate and visual checks pending; tests reject wire-level exactly-once claims and tie topic and event names to the catalog
 - [Phase 03]: 03-20: Phase gate not clean (known provider failure, Postgres max_connections=300 ceiling, macOS fork SIGTRAP, one Jaeger OOM) accepted and recorded as known test-environment limitations; follow-up not done
 - [Phase 03]: 03-20: the two new root-user Dockerfiles (services/analytics, services/notification) accepted for now, same class as the eight accepted at Phase 2 closeout
+- [Phase 03]: 03-21 W3: WR-03 closed by bounding (10 attempts AND 900 s then TransientExhausted), not narrowing; seven Temporal statuses, RuntimeError, OSError stay transient
+- [Phase 03]: 03-21: one classifier libs/events/classify.py (SQLSTATE 08/53/57/40 first); AST guard with structural detectors forbids a second copy
 
 ### Pending Todos
 
@@ -278,6 +281,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T15:18:01.050Z
-Stopped at: Completed 03-20-phase-gate-PLAN.md
+Last session: 2026-11-11T17:26:25.933Z
+Stopped at: Completed 03-21-consumer-reliability-PLAN.md
 Resume file: None
