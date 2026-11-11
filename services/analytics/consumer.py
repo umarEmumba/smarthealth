@@ -15,10 +15,16 @@ Failure classification (the consumer base in `libs.events.consumer` acts on it):
 
 * a malformed payload (a missing field, a bad id) can never succeed:
   `NonRetryableEventError`, dead-lettered after one attempt;
-* a database outage (`OperationalError`, `InterfaceError`, an invalidated connection,
-  `OSError`) is `TransientEventError`: the offset is NOT committed and the event is
-  retried, so an outage delays a projection and never drops it;
-* anything else goes through the base's bounded retries.
+* a database or network outage is `TransientEventError`, decided by the one shared
+  classifier (`libs.events.classify`, plan 03-21): SQLSTATE classes 08, 53, 57 and 40
+  (so `max_connections` at 53300, a restart at 57P03 or a deadlock at 40P01 never
+  dead-letters a healthy event, raw asyncpg error or wrapped by SQLAlchemy), SQLAlchemy
+  connection errors and pool timeouts, and socket errors. The offset is NOT committed
+  and the event is retried, so an outage delays a projection and never drops it; the
+  consumer base bounds the retries and then dead-letters as `TransientExhausted`
+  (visible and recoverable: `services.analytics.rebuild` replays retained events
+  idempotently);
+* anything else (a unique violation, a bug) goes through the base's bounded retries.
 
 Events for unknown or already-deleted ids are NOT errors: the upserts create a row
 that the views exclude, so the live topics' throw-away test events are absorbed
@@ -41,10 +47,10 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-import sqlalchemy.exc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.db.postgres import get_session_factory
+from libs.events import classify
 from libs.events.catalog import DLQ_TOPICS, topic_for
 from libs.events.consumer import (
     EventConsumer,
@@ -78,14 +84,6 @@ SERVICE_NAME = "smarthealth-analytics-consumer"
 SessionFactory = Callable[[], AsyncSession]
 
 
-def _is_transient(exc: BaseException) -> bool:
-    if isinstance(exc, sqlalchemy.exc.DBAPIError):
-        return exc.connection_invalidated or isinstance(
-            exc, (sqlalchemy.exc.OperationalError, sqlalchemy.exc.InterfaceError)
-        )
-    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
-
-
 async def handle_event(
     envelope: EventEnvelope, *, session_factory: SessionFactory | None = None
 ) -> None:
@@ -110,7 +108,7 @@ async def handle_event(
         )
         raise NonRetryableEventError("InvalidEvent") from exc
     except Exception as exc:  # noqa: BLE001 - classified below, re-raised if not transient
-        if _is_transient(exc):
+        if classify.is_transient(exc):
             log.warning(
                 "analytics.consumer_transient_failure",
                 event_id=str(envelope.event_id),

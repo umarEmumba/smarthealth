@@ -399,6 +399,31 @@ def test_a_temporal_outage_is_a_transient_event_error(
             EventType.VISIT_COMPLETED, visit_id=str(uuid.uuid4()), completed_at=NOW)))
 
 
+@pytest.mark.parametrize(
+    "status", [RPCStatusCode.UNAVAILABLE, RPCStatusCode.INTERNAL, RPCStatusCode.UNKNOWN]
+)
+def test_unavailable_internal_and_unknown_are_kept_transient_and_bounded_by_the_cap(
+    triggers: NotificationTriggers, helpers: FakeHelpers, status: RPCStatusCode
+) -> None:
+    """W3 (plan 03-21): a Temporal outage surfaces as several statuses, so they all stay
+    `TransientEventError`; the consumer base's cap (TransientExhausted) bounds them."""
+    helpers.fail_with = RPCError("down", status, b"")
+    with pytest.raises(TransientEventError):
+        asyncio.run(triggers.on_booked(_booked()))
+
+
+@pytest.mark.parametrize(
+    "status",
+    [RPCStatusCode.INVALID_ARGUMENT, RPCStatusCode.NOT_FOUND, RPCStatusCode.PERMISSION_DENIED],
+)
+def test_temporal_request_errors_propagate_unchanged(
+    triggers: NotificationTriggers, helpers: FakeHelpers, status: RPCStatusCode
+) -> None:
+    helpers.fail_with = RPCError("bad", status, b"")
+    with pytest.raises(RPCError):
+        asyncio.run(triggers.on_booked(_booked()))
+
+
 def test_a_lost_temporal_connection_runtime_error_is_transient(
     triggers: NotificationTriggers, helpers: FakeHelpers
 ) -> None:

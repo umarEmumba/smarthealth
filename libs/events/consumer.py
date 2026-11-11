@@ -43,18 +43,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
 import structlog
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer, TopicPartition
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
-from confluent_kafka.schema_registry.error import SchemaRegistryError
 from confluent_kafka.serialization import MessageField, SerializationContext, SerializationError
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from libs.config import shared_settings
+from libs.events import classify
 from libs.events.registry import deserializer
 from libs.events.tracing import extract_context
 
@@ -344,14 +343,12 @@ class EventConsumer:
             record = self._deserializer(msg.value(), SerializationContext(topic, MessageField.VALUE))
         except SerializationError as exc:
             raise _PoisonMessageError from exc
-        except SchemaRegistryError as exc:
-            status = getattr(exc, "http_status_code", -1)
-            if isinstance(status, int) and 400 <= status < 500:
-                raise _PoisonMessageError from exc  # unknown schema id: forged or foreign
-            raise _TransientDecodeError from exc
-        except (httpx.TransportError, ConnectionError, TimeoutError) as exc:
-            raise _TransientDecodeError from exc
-        except Exception as exc:  # noqa: BLE001 - corrupt Avro body etc.
+        except Exception as exc:  # noqa: BLE001 - registry outage, unknown schema id, corrupt Avro
+            # The one shared classifier decides (plan 03-21, WR-02): a registry 408, 429 or
+            # 5xx answer, no usable status or a transport failure is retried; any other 4xx
+            # (an unknown schema id: forged or foreign) and a corrupt body are poison.
+            if classify.is_transient_registry(exc):
+                raise _TransientDecodeError from exc
             raise _PoisonMessageError from exc
 
         if not isinstance(record, dict):

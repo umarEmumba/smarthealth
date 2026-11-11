@@ -20,8 +20,13 @@ Failure classification (the consumer base in `libs.events.consumer` acts on it):
 
 * a payload that cannot be turned into a send or a workflow input (a missing field, a
   non-UUID id) can never succeed: `NonRetryableEventError`, dead-lettered after one try;
-* a broker, Temporal or Mongo outage: `TransientEventError`, the offset is not committed
-  and the event is retried, so an outage delays a trigger and never drops it;
+* a broker, Mongo, network or Temporal outage (including the Temporal statuses UNKNOWN
+  and INTERNAL and the SDK's closed-client `RuntimeError`): `TransientEventError`
+  (decided by the shared classifier, `libs.events.classify`, plan 03-21), the offset is
+  not committed and the event is retried until the consumer base's cap, after which it
+  is dead-lettered as `TransientExhausted` (bounded, not narrowed): an outage delays a
+  trigger, a deterministic failure cannot block the partition for ever, and nothing is
+  dropped silently;
 * anything else goes through the base's bounded retries.
 
 Booking-type events (booked, cancelled, rescheduled) older than
@@ -41,14 +46,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
-from amqp.exceptions import AMQPError
-from kombu.exceptions import KombuError
 from pydantic import ValidationError
 from pymongo.database import Database
-from pymongo.errors import PyMongoError
 from temporalio.client import Client
-from temporalio.service import RPCError, RPCStatusCode
 
+from libs.events import classify
 from libs.events.catalog import EventType
 from libs.events.consumer import EventEnvelope, Handler, NonRetryableEventError, TransientEventError
 from libs.observability.logging import get_logger
@@ -65,19 +67,6 @@ TYPE_BOOKED = "appointment.booked"
 TYPE_CANCELLED = "appointment.cancelled"
 TYPE_RESCHEDULED = "appointment.rescheduled"
 
-# Temporal statuses that mean "the server is not serving right now", not "this request is wrong".
-_TRANSIENT_RPC_STATUSES = frozenset(
-    {
-        RPCStatusCode.UNAVAILABLE,
-        RPCStatusCode.DEADLINE_EXCEEDED,
-        RPCStatusCode.RESOURCE_EXHAUSTED,
-        RPCStatusCode.ABORTED,
-        RPCStatusCode.CANCELLED,
-        RPCStatusCode.UNKNOWN,
-        RPCStatusCode.INTERNAL,
-    }
-)
-
 
 class Publisher(Protocol):
     """Publishes one `notifications.send` (blocking; the triggers call it in a thread)."""
@@ -92,16 +81,6 @@ DbSource = Database | Callable[[], Database]
 def dedupe_key_for(notification_type: str, appointment_id: str, event_id: str) -> str:
     """`{type}:{appointment_id}:{event_id}`; never starts with the `FAIL-` injection prefix."""
     return f"{notification_type}:{appointment_id}:{event_id}"
-
-
-def _is_transient(exc: BaseException) -> bool:
-    if isinstance(exc, RPCError):
-        return exc.status in _TRANSIENT_RPC_STATUSES
-    # KombuError / AMQPError: the Celery broker; PyMongoError: the delivery log;
-    # RuntimeError: the Temporal SDK's lost-connection / closed-client signal.
-    return isinstance(
-        exc, (KombuError, AMQPError, PyMongoError, RuntimeError, TimeoutError, ConnectionError, OSError)
-    )
 
 
 def _uuid(value: str) -> str:
@@ -193,7 +172,7 @@ class NotificationTriggers:
             )
             raise NonRetryableEventError("InvalidEvent") from None
         except Exception as exc:  # noqa: BLE001 - classified here, re-raised if not transient
-            if _is_transient(exc):
+            if classify.is_transient(exc, db=False, temporal=True, broker=True):
                 log.warning(
                     "notification.trigger_transient_failure",
                     event_id=str(envelope.event_id),
