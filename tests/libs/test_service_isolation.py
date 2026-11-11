@@ -354,3 +354,28 @@ def test_analytics_package_names_no_oltp_database_and_holds_one_database_url() -
     ]
     assert database_fields == ["database_url"]
     assert AnalyticsSettings.model_fields["database_url"].default.endswith("/analytics_db")
+
+
+def test_analytics_imports_no_other_service_and_its_containers_get_one_database_url() -> None:
+    """ANLY-06 / T-3-36 (plan 03-13): the analytics package imports nothing from another
+    `services.<name>` package, and neither Compose container that runs it is handed any
+    database URL other than `ANALYTICS_DATABASE_URL`."""
+    import yaml  # noqa: PLC0415 - test-only dependency already present in the venv
+
+    foreign = {
+        f"{path.relative_to(REPO_ROOT)}: {module}"
+        for path in _py_files(SERVICES_DIR / "analytics")
+        for module in _imported_modules(path)
+        if _service_of(module) not in (None, "analytics")
+    }
+    assert not foreign, sorted(foreign)
+
+    compose = yaml.safe_load((REPO_ROOT / "infra" / "docker-compose.yml").read_text())
+    for name in ("analytics", "analytics-consumer"):
+        environment = compose["services"][name]["environment"]
+        urls = {key for key in environment if key.endswith("DATABASE_URL")}
+        assert urls == {"ANALYTICS_DATABASE_URL"}, (name, urls)
+        assert "analytics_db" in environment["ANALYTICS_DATABASE_URL"]
+        assert environment["ANALYTICS_DATABASE_URL"].startswith("postgresql+asyncpg://analytics_svc:")
+        # The consumer's Prometheus port is internal only (it binds 0.0.0.0 in the container).
+        assert "ports" not in compose["services"][name]
