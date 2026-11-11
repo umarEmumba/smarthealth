@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -53,5 +54,11 @@ def throwaway_broker() -> Iterator[Broker]:
         rabbitmqctl("set_permissions", "-p", broker.vhost, broker.user, ".*", ".*", ".*")
         yield broker
     finally:
-        rabbitmqctl("delete_vhost", broker.vhost, check=False)
+        # Retried: a worker that is still shutting down can make the first delete fail,
+        # and a leaked vhost would otherwise stay on the live broker.
+        for _ in range(3):
+            gone = rabbitmqctl("delete_vhost", broker.vhost, check=False).returncode == 0
+            if gone:
+                break
+            time.sleep(2)
         rabbitmqctl("delete_user", broker.user, check=False)
