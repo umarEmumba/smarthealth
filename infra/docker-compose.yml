@@ -387,10 +387,18 @@ services:
       # are provisioned from files, never built by hand; both mounts are read-only.
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    # The read-only analytics datasource reads its password from this file through
+    # `$__file{}` (plan 03-16, T-3-46); never an env value.
+    secrets:
+      - source: grafana_ro_password
+        target: grafana_ro.secret
     ports:
       - "${GRAFANA_HOST_PORT:-3000}:3000"
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
+      analytics:
+        condition: service_healthy
 
   # Identity: accounts, token issuance, JWKS. The only service that holds the
   # RSA private key. No host port: reached through the gateway (/api/auth,

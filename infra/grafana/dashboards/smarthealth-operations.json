@@ -1,0 +1,327 @@
+{
+  "uid": "smarthealth-operations",
+  "title": "SmartHealth · Operations",
+  "description": "The five operational metrics per clinic (total patients, appointments booked per day, completed visits, cancellation rate, average wait), read from the analytics views as the read-only grafana_ro role. Provisioned from infra/grafana/dashboards; edit the file, not the UI.",
+  "tags": [
+    "smarthealth",
+    "operations",
+    "analytics"
+  ],
+  "timezone": "utc",
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "clinic",
+        "label": "Clinic",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "analytics-pg"
+        },
+        "query": "SELECT clinic_id::text FROM patients UNION SELECT clinic_id::text FROM appointments ORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "description": "Clinics that have at least one projected patient or appointment"
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total patients (ANLY-01)",
+      "description": "Patients registered (patient.registered) and not deactivated (patient.deactivated), per clinic; a deactivation lowers the count. Current count, not windowed. Counts start at the Phase 3 cutover (D-13): patients that predate it are not backfilled. Source view: v_active_patients.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "analytics-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "analytics-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT coalesce(sum(active_patients), 0) AS total_patients FROM v_active_patients WHERE clinic_id::text = ${clinic:sqlstring}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Cancellation rate (ANLY-04)",
+      "description": "Cancellation rate = sum(cancelled) / sum(booked) over the time range: of the appointments booked on those UTC days (booked_at), how many were later cancelled. The denominator is appointments booked in the window, not appointments cancelled in it. Empty (not 0) when nothing was booked. Source view: v_cancellation.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "analytics-pg"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "analytics-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT sum(cancelled)::double precision / nullif(sum(booked), 0) AS cancellation_rate FROM v_cancellation WHERE clinic_id::text = ${clinic:sqlstring} AND day >= $__timeFrom()::date AND day <= $__timeTo()::date",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "percentunit",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Average wait time (ANLY-05)",
+      "description": "Average wait = visit start minus check-in (the time a patient waited in the clinic, D-10 revised), in seconds, averaged over the visits completed in the time range. Visits without a recorded start or with a negative difference are excluded from the wait only. Empty when there is no sample. Source view: v_visit_wait.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "analytics-pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "analytics-pg"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT avg(wait_seconds) AS average_wait_seconds FROM v_visit_wait WHERE clinic_id::text = ${clinic:sqlstring} AND completed_at >= $__timeFrom() AND completed_at <= $__timeTo()",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "text",
+      "title": "About these numbers",
+      "description": "Definitions and limits of the five operational metrics.",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Read from the analytics projection views as the read-only `grafana_ro` role (D-10). Days are UTC calendar days. **Counts start at the Phase 3 cutover (D-13):** earlier patients, appointments and visits are not backfilled. The same numbers are served by `/api/analytics`. Pick a clinic above; hover a panel title for its definition."
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Appointments booked per day (ANLY-02)",
+      "description": "Appointments with an appointment.booked event, grouped per clinic by the UTC calendar day of booked_at. A later cancel, reschedule or completion does not remove a booking from its day. Source view: v_appointments_booked_daily.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "analytics-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "analytics-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT (day::timestamp AT TIME ZONE 'UTC') AS time, appointments_booked FROM v_appointments_booked_daily WHERE clinic_id::text = ${clinic:sqlstring} AND day >= $__timeFrom()::date AND day <= $__timeTo()::date ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Completed visits per day (ANLY-03)",
+      "description": "One per visit.completed event, grouped per clinic by the UTC calendar day of completed_at. A visit completed without a recorded start still counts here. Source view: v_completed_visits_daily.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "analytics-pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "analytics-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT (day::timestamp AT TIME ZONE 'UTC') AS time, completed_visits FROM v_completed_visits_daily WHERE clinic_id::text = ${clinic:sqlstring} AND day >= $__timeFrom()::date AND day <= $__timeTo()::date ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    }
+  ]
+}
