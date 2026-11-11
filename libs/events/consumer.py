@@ -19,9 +19,22 @@ Shape (research Pattern 3):
 * Poison messages (undecodable bytes, `NonRetryableEventError`, retries
   exhausted) are copied to the group's DLQ topic with error TYPE headers only
   (never exception text) and the partition moves on (EVENT-05, T-3-11).
-  `TransientEventError` (an infrastructure outage) is NEVER dead-lettered: the
-  offset is not committed, the consumer seeks back to the message and retries
-  with capped backoff, so `max.poll.interval.ms` is never exceeded either.
+  `TransientEventError` (an infrastructure outage; what counts as one is decided by
+  `libs.events.classify`) is retried, not dead-lettered: the offset is not
+  committed, the consumer seeks back to the message and retries with capped
+  backoff, so `max.poll.interval.ms` is never exceeded either. Retrying is
+  BOUNDED (plan 03-21, WR-03): once a message has failed transiently at least
+  `max_transient_attempts` times AND for at least `max_transient_seconds`
+  (defaults 10 and 900 s), it is dead-lettered as `TransientExhausted`, so no
+  partition blocks for ever. The record stays visible
+  (`dlq_events_total{error_type="TransientExhausted"}`, the original key, value
+  and headers on the DLQ topic) and recoverable; the per-group recovery routes are
+  described in docs/architecture.md section 10.2.
+* A failed offset commit never ends the process unless the error is fatal: a
+  non-fatal `KafkaError` is retried with backoff, counted in
+  `event_commit_failures_total{group}` and, after `commit_attempts` tries, logged
+  and abandoned (the next successful commit covers the offset, and a redelivery
+  is absorbed by the idempotent handlers, D-08).
 * Prometheus metrics plus a heartbeat file give liveness (OBS-01 groundwork).
 
 Logs carry ids and types only, never a payload (PHI rule, T-3-13).
@@ -60,6 +73,7 @@ from libs.events.tracing import extract_context
 logger = structlog.get_logger("smarthealth.events.consumer")
 
 DESERIALIZATION_ERROR = "DeserializationError"
+TRANSIENT_EXHAUSTED = "TransientExhausted"
 UNKNOWN_EVENT_TYPE_LABEL = "unknown"
 _LAG_REFRESH_SECONDS = 15.0
 _TRANSIENT_BACKOFF_CAP_SECONDS = 30.0
@@ -85,6 +99,11 @@ dlq_events_total = Counter(
     "dlq_events_total",
     "Messages copied to a dead-letter topic, by error type.",
     ["group", "error_type"],
+)
+event_commit_failures_total = Counter(
+    "event_commit_failures_total",
+    "Failed offset commit attempts, by consumer group.",
+    ["group"],
 )
 kafka_consumer_lag = Gauge(
     "kafka_consumer_lag",
@@ -139,7 +158,20 @@ class _PoisonMessageError(Exception):
 
 
 class _TransientDecodeError(Exception):
-    """Internal: decoding failed because the registry is unreachable."""
+    """Internal: decoding failed because the registry is unreachable or pushing back."""
+
+
+@dataclass(slots=True)
+class _TransientState:
+    """How long and how often one offset has failed transiently (plan 03-21, WR-03)."""
+
+    attempts: int
+    first_failure: float
+
+
+def _monotonic() -> float:
+    """The clock of the transient cap (a seam: tests drive it without sleeping)."""
+    return time.monotonic()
 
 
 def _start_metrics_server(port: int) -> None:
@@ -169,12 +201,18 @@ class EventConsumer:
         consumer_overrides: Mapping[str, Any] | None = None,
         dlq_producer_overrides: Mapping[str, Any] | None = None,
         dlq_flush_timeout: float = 10.0,
+        max_transient_attempts: int = 10,
+        max_transient_seconds: float = 900.0,
+        commit_attempts: int = 3,
     ) -> None:
         self.group_id = group_id
         self.topics = list(topics)
         self.dlq_topic = dlq_topic
         self._handlers = dict(handlers)
         self._max_attempts = max(1, max_attempts)
+        self._max_transient_attempts = max(1, max_transient_attempts)
+        self._max_transient_seconds = max(0.0, max_transient_seconds)
+        self._commit_attempts = max(1, commit_attempts)
         self._backoff = backoff_seconds
         self._heartbeat_path = Path(heartbeat_path) if heartbeat_path else None
         self._poll_timeout = poll_timeout
@@ -186,7 +224,7 @@ class EventConsumer:
         )
         self._tracer = trace.get_tracer("smarthealth.events.consumer")
         self._stop = threading.Event()
-        self._transient_counts: dict[tuple[str, int, int], int] = {}
+        self._transient: dict[tuple[str, int, int], _TransientState] = {}
         self._last_lag_refresh = 0.0
         self._heartbeat_warned = False
         self._closed = False
@@ -325,7 +363,7 @@ class EventConsumer:
                     time.sleep(self._backoff * 2 ** (attempt - 1))
                 else:
                     break
-            self._transient_counts.pop((topic, partition, offset), None)
+            self._transient.pop((topic, partition, offset), None)
             self._commit(msg)
             # Logged INSIDE the processing span so the `event.consumed` line carries the
             # trace_id / span_id of the booking's trace (OBS-03): outside it the line would
@@ -384,15 +422,71 @@ class EventConsumer:
     # ----------------------------------------------------- commit / retry / DLQ
 
     def _commit(self, msg: Any) -> None:
-        self._consumer.commit(message=msg, asynchronous=False)
+        """Commit synchronously, surviving a broker blip (WR-07): a fatal `KafkaError` raises;
+        any other failure is counted, retried with backoff and finally abandoned, because
+        the next successful commit covers this offset and redelivery is idempotent."""
+        for attempt in range(self._commit_attempts):
+            try:
+                self._consumer.commit(message=msg, asynchronous=False)
+                return
+            except KafkaException as exc:
+                error = exc.args[0] if exc.args else None
+                if isinstance(error, KafkaError) and error.fatal():
+                    raise
+                event_commit_failures_total.labels(self.group_id).inc()
+                logger.warning(
+                    "event.commit_failed",
+                    group=self.group_id,
+                    topic=msg.topic(),
+                    partition=msg.partition(),
+                    offset=msg.offset(),
+                    error_type=str(error.name()) if isinstance(error, KafkaError) else type(exc).__name__,
+                    attempt=attempt + 1,
+                )
+                if attempt + 1 < self._commit_attempts:
+                    self._sleep(self._backoff * 2**attempt)
+        logger.error(
+            "event.commit_abandoned",
+            group=self.group_id,
+            topic=msg.topic(),
+            partition=msg.partition(),
+            offset=msg.offset(),
+        )
 
     def _retry_later(
         self, msg: Any, event_type: str, envelope: EventEnvelope | None = None
     ) -> Outcome:
         topic, partition, offset = msg.topic(), msg.partition(), msg.offset()
         key = (topic, partition, offset)
-        count = self._transient_counts.get(key, 0)
-        self._transient_counts[key] = count + 1
+        now = _monotonic()
+        state = self._transient.get(key)
+        if state is None:
+            state = self._transient[key] = _TransientState(attempts=0, first_failure=now)
+        count = state.attempts
+        state.attempts += 1
+        # The cap needs BOTH thresholds (WR-03): a short blip is never dead-lettered, and
+        # a long outage ends in a visible, replayable TransientExhausted record, not in a
+        # partition that is blocked for ever.
+        if (
+            state.attempts >= self._max_transient_attempts
+            and now - state.first_failure >= self._max_transient_seconds
+        ):
+            logger.error(
+                "event.transient_exhausted",
+                group=self.group_id,
+                topic=topic,
+                partition=partition,
+                offset=offset,
+                event_type=event_type,
+                attempts=state.attempts,
+            )
+            return self._dead_letter(
+                msg,
+                TRANSIENT_EXHAUSTED,
+                attempts=state.attempts,
+                event_type=event_type,
+                envelope=envelope,
+            )
         self._consumer.seek(TopicPartition(topic, partition, offset))
         self._record(event_type, Outcome.RETRY_LATER, envelope, topic=topic, offset=offset)
         self._sleep(min(_TRANSIENT_BACKOFF_CAP_SECONDS, self._backoff * 2**count))
@@ -444,7 +538,7 @@ class EventConsumer:
         ]
         self._write_dlq(msg.key(), msg.value(), headers)
         self._commit(msg)
-        self._transient_counts.pop((topic, partition, offset), None)
+        self._transient.pop((topic, partition, offset), None)
         dlq_events_total.labels(self.group_id, error_type).inc()
         logger.error(
             "event.dead_lettered",
@@ -559,6 +653,7 @@ class EventConsumer:
 
 
 __all__ = [
+    "TRANSIENT_EXHAUSTED",
     "DeadLetterWriteError",
     "EventConsumer",
     "EventEnvelope",
@@ -568,6 +663,7 @@ __all__ = [
     "Outcome",
     "TransientEventError",
     "dlq_events_total",
+    "event_commit_failures_total",
     "event_end_to_end_lag_seconds",
     "event_processing_seconds",
     "events_consumed_total",
