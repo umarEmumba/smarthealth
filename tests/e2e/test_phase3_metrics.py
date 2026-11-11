@@ -258,10 +258,9 @@ def _render(sql: str, clinic_id: str, start: datetime.datetime, end: datetime.da
     )
 
 
-async def test_operations_panels_return_rows_as_grafana_ro(gateway: httpx.AsyncClient) -> None:
-    """After a booking, a cancel and a visit completion in a fresh clinic, each of the five
-    panel queries (run as grafana_ro, clinic variable and time range substituted) returns
-    the clinic's number, equal to `/api/analytics/summary` for the same window."""
+async def _book_cancel_and_complete(gateway: httpx.AsyncClient) -> E2EWorld:
+    """One fresh clinic with three patients: one booking kept, one booked then cancelled, one
+    booked, checked in, started and completed (a visit). Returns the world."""
     ew = await seed_phase2_world(gateway, patients=3)
     day_slot_ids = [slot["id"] for slot in (await day_slots(gateway, ew, ew.world.last_day))[:2]]
     assert len(day_slot_ids) == 2
@@ -280,6 +279,14 @@ async def test_operations_panels_return_rows_as_grafana_ro(gateway: httpx.AsyncC
     visit_id = checked_in.json()["id"]
     assert (await gateway.post(f"/api/visits/{visit_id}/start", headers=ew.front_desk)).status_code == 200
     assert (await gateway.post(f"/api/visits/{visit_id}/complete", headers=ew.front_desk)).status_code == 200
+    return ew
+
+
+async def test_operations_panels_return_rows_as_grafana_ro(gateway: httpx.AsyncClient) -> None:
+    """After a booking, a cancel and a visit completion in a fresh clinic, each of the five
+    panel queries (run as grafana_ro, clinic variable and time range substituted) returns
+    the clinic's number, equal to `/api/analytics/summary` for the same window."""
+    ew = await _book_cancel_and_complete(gateway)
 
     today = datetime.datetime.now(datetime.UTC).date()
     window_from, window_to = today - datetime.timedelta(days=1), today + datetime.timedelta(days=1)
@@ -390,3 +397,49 @@ async def test_replication_slot_query_as_grafana_ro() -> None:
     for name, row in slots.items():
         assert row["active"] is True, name
         assert row["retained_wal_bytes"] is not None and row["retained_wal_bytes"] >= 0, name
+
+
+# --- Plan 03-16 Task 3: every NFR histogram has samples ------------------------------
+
+CONSUMER_GROUPS = ("analytics-projection", "notification-trigger", "visit-downstream")
+
+
+def _total(expr: str) -> float:
+    """Sum of an instant vector (0.0 when it has no series yet)."""
+    return sum(float(r["value"][1]) for r in prom_query(f"sum({expr})"))
+
+
+NFR_HISTOGRAM_SERIES: dict[str, str] = {
+    "booking accept HTTP latency": 'http_request_duration_seconds_count{job="smarthealth-scheduling",handler="/api/appointments",method="POST"}',
+    "booking saga completion": "booking_saga_seconds_count",
+    "outbox insert": "outbox_insert_seconds_count",
+    "notification delivery": "notification_delivery_seconds_count",
+    **{
+        f"event end-to-end lag ({group})": f'event_end_to_end_lag_seconds_count{{group="{group}"}}'
+        for group in CONSUMER_GROUPS
+    },
+}
+
+
+async def test_nfr_histograms_present(gateway: httpx.AsyncClient) -> None:
+    """After a booking, a cancel and a visit completion, every NFR histogram has grown: the
+    booking accept handler, the saga, the outbox insert, the end-to-end lag of each of the
+    three consumer groups and notification delivery. The accept handler's histogram also
+    has the finer buckets (an edge on 0.2 s and 0.3 s) so the NFR-03/04 quantiles are exact
+    around their thresholds."""
+    before = {name: await asyncio.to_thread(_total, expr) for name, expr in NFR_HISTOGRAM_SERIES.items()}
+    await _book_cancel_and_complete(gateway)
+
+    def grown() -> dict[str, float] | None:
+        now = {name: _total(expr) for name, expr in NFR_HISTOGRAM_SERIES.items()}
+        return now if all(now[name] > before[name] for name in now) else None
+
+    now = await asyncio.to_thread(wait_until, grown, timeout=FLOW_DEADLINE_SECONDS + 30)
+    assert all(now[name] > 0 for name in now), now
+
+    accept = 'job="smarthealth-scheduling",handler="/api/appointments",method="POST"'
+    edges = {
+        r["metric"]["le"]
+        for r in prom_query(f"http_request_duration_seconds_bucket{{{accept}}}")
+    }
+    assert {"0.2", "0.3", "0.8"} <= edges, sorted(edges)
