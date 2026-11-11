@@ -848,6 +848,131 @@ host port; they are reachable only on the Compose network, through the gateway.
 | Pagination convention (Phase 2.1, C5) | Plain array body, `X-Total-Count`, `limit` 1..200 default 50, `offset` >= 0, order `(created_at, id)`, `422` outside bounds | Backward compatible with existing clients and Visit's list; the id tiebreak makes paging stable |
 | Load test and NFRs (Phase 2.1, D1, D2) | k6 from a pinned Docker image; targets single-sourced in `loadtest/nfr.json`, checked against the PRD table and `nfr.md` by a test | No package added to the project; a changed number cannot drift between the documents and the thresholds. Cost: the targets are unmeasured until Phase 3 |
 
+Phase 3 decisions (CDC outbox, Avro, projections on a Kafka consumer, Temporal reminders, Celery) are
+recorded in [section 10.8](#108-phase-3-decisions).
+
+---
+
+## 10. Phase 3: event backbone, notifications, analytics and observability
+
+Phase 3 makes every state change in the D-07 event set a durable, replayable Kafka event, runs
+notifications, reminders, follow-ups and the analytics projections as background work that no
+user-facing request waits for, and makes the system measurable. Services never talk to Kafka on the
+request path: a service inserts one row into its own `outbox` table inside the transaction that changes
+its state, and Debezium (change data capture on the Postgres write-ahead log) relays it. This section
+describes what the code does; limitations are in [10.9](#109-limitations-and-operations-notes), and the
+statement of what "every state change" covers is in [10.1](#101-event-backbone-and-the-booking-event-flow).
+
+### 10.1 Event backbone and the booking event flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Client
+    participant SCH as Scheduling API
+    participant T as Temporal
+    participant W as scheduling-worker
+    participant PG as scheduling_db
+    participant DBZ as connect (Debezium, scheduling-outbox)
+    participant K as Kafka (smarthealth.appointment.events)
+    participant NC as notification-consumer (group notification-trigger)
+    participant CEL as notification-celery
+    participant AC as analytics-consumer (group analytics-projection)
+    participant NT as notification-temporal-worker
+
+    U->>SCH: POST /api/appointments (Idempotency-Key)
+    SCH->>PG: one tx: idempotency row + appointment pending (no outbox row, nothing new on this path)
+    SCH->>T: start booking-<id>
+    SCH-->>U: 202 { appointment_id, status_url }
+    T->>W: BookingWorkflow (validate, hold, billing pre-check)
+    W->>PG: confirm: ONE tx = appointment confirmed + slot booked + history row + outbox row (appointment.booked)
+    PG-->>DBZ: WAL, logical decoding, publication dbz_outbox
+    DBZ->>K: key = appointment id, headers id / eventType / traceparent / schemaVersion, Avro value
+    K->>NC: appointment.booked
+    NC->>CEL: notifications.send on queue notifications.booking (dedupe key per type, appointment, event id)
+    CEL->>CEL: fake provider records the send once per dedupe key
+    NC->>T: start reminder-<appointment id> on notification-tq
+    T->>NT: ReminderWorkflow (durable timers)
+    K->>AC: appointment.booked
+    AC->>AC: one tx in analytics_db: claim event id in processed_events + upsert the projection
+```
+
+What is synchronous: only the `outbox` insert inside the confirm step (`confirm_booking`, run by the
+Temporal worker). The 202 accept path is unchanged: `accept_booking` writes no outbox row, so a booking that
+is accepted and then fails before confirm emits no event. Everything to the right of the commit is
+asynchronous and independent of the caller; the client still learns the outcome by polling the status URL.
+The event is written with the state change or not at all, so there is no window in which the appointment is
+confirmed but no event will ever exist, and no service holds a relay loop.
+
+**Topics and who reads them.** One topic per aggregate, keyed by the aggregate id, so every event of one
+appointment lands in one partition in order; the event type travels in the Avro record name and the
+`eventType` header, never in the topic name. All topics have 3 partitions, replication factor 1 (single dev
+broker) and `retention.ms=-1`, and are created by `kafka-init`, because auto-creation would give one
+partition and default retention.
+
+| Topic | Key | Written by (outbox, connector) | Read by (consumer group) |
+|---|---|---|---|
+| `smarthealth.appointment.events` | appointment id | Scheduling, `scheduling-outbox` | `notification-trigger`, `analytics-projection` |
+| `smarthealth.visit.events` | visit id | Visit, `visit-outbox` | `visit-downstream`, `notification-trigger`, `analytics-projection` |
+| `smarthealth.patient.events` | patient id | Patient, `patient-outbox` | `analytics-projection` |
+| `smarthealth.provider.events` | provider id | Provider, `provider-outbox` | nobody (published, not consumed; see 10.9) |
+| `smarthealth.cdcprobe.events` | test aggregate | tests only | nobody (used to prove the CDC path without touching real topics) |
+| `smarthealth.dlq.visit-downstream`, `smarthealth.dlq.notification-trigger`, `smarthealth.dlq.analytics-projection` | original key | the consumer group of the same name, for poison messages | operators |
+
+**Event set (D-07), ten types, one Schema Registry subject each** (the Avro record name,
+`com.smarthealth.events.<PascalName>`, compatibility BACKWARD): `appointment.booked`,
+`appointment.cancelled`, `appointment.rescheduled`, `appointment.checked_in`, `appointment.completed`,
+`appointment.no_show` (Scheduling), `visit.completed` (Visit), `patient.registered`,
+`patient.deactivated` (Patient) and `provider.schedule_changed` (Provider). Payloads carry ids and
+timestamps only, never PHI: a test scans every `.avsc` for banned field names, and the producers' tests check
+the payload bytes and the raw Kafka bytes for seeded PHI values.
+
+**The statement "every state change" is scoped to that set.** Billing transitions, waitlist changes, a visit
+moving to in-progress, and the reconciler and hold-reaper actions are not evented. An analytics number or a
+notification therefore reflects only the ten event types above.
+
+**The outbox.** Each producing service owns exactly one `outbox` table in its own database (no
+cross-database write): `id` (uuid, primary key), `aggregatetype`, `aggregateid`, `type`, `payload` (`bytea`,
+the Avro-serialized record), `traceparent`, `schema_version`, `occurred_at`. The row is inserted by
+`enqueue_event` in the caller's own session and the caller commits, so rollback removes the row with the state
+change. The event id is deterministic (a uuid5 of aggregate id, event type and a discriminator such as the
+post-transition appointment version), and the insert is `ON CONFLICT (id) DO NOTHING`, so a retried step cannot
+write a second row. The table is insert-only and keeps every row as the replay source.
+
+**The relay.** One Debezium connector per outbox database (`scheduling-outbox`, `patient-outbox`,
+`provider-outbox`, `visit-outbox`), each with its own replication slot (`dbz_scheduling`, `dbz_patient`,
+`dbz_provider`, `dbz_visit`) on the publication `dbz_outbox`, which covers the `outbox` table only. The
+connector logs in as the least-privilege role `debezium` (replication and `SELECT` on the outbox table, and
+nothing on any business table). The Debezium outbox event router publishes `payload` unchanged
+(`BinaryDataConverter`), the topic from `aggregatetype`, the key from `aggregateid` and the headers `id`,
+`eventType`, `traceparent`, `schemaVersion`. Services serialize the Avro themselves with a strict serializer
+(`auto.register.schemas=False`); only the one-shot `schema-init` job registers schemas, so a service can never
+create a subject at runtime.
+
+**What the pipeline guarantees, in one sentence.** No event is lost once its transaction commits;
+delivery on the wire is at-least-once (Debezium can re-emit after a hard kill of Connect); and the effect of
+each event is exactly-once because every consumer is idempotent (effect-level exactly-once). The measured
+evidence and the limits of that claim are in [10.2](#102-delivery-semantics).
+
+| Compose service | Phase 3 role |
+|---|---|
+| `kafka-init` | One-shot: creates the eight topics with explicit partitions and retention |
+| `schema-init` | One-shot: registers the ten subjects and sets BACKWARD (`python -m libs.events.register`); the only registry writer |
+| `connect` | Kafka Connect with Debezium (`quay.io/debezium/connect:3.7.1.Final`); no host port, REST API reachable only on the Compose network |
+| `connect-init` | One-shot: registers the four connectors by name and polls connector **and task** state until RUNNING |
+| `visit-consumer` | Kafka consumer, group `visit-downstream`: starts the downstream workflow for `visit.completed` |
+| `analytics` | Read-only analytics API (`/api/analytics`) over `analytics_db` |
+| `analytics-consumer` | Kafka consumer, group `analytics-projection`: maintains the projections |
+| `rabbitmq-init` | One-shot: provisions vhost `smarthealth` and the non-admin broker user `smarthealth_notification` |
+| `notification-celery` | Celery worker (threads pool) that delivers notifications through the fake provider |
+| `notification-consumer` | Kafka consumer, group `notification-trigger`: turns events into sends and reminder workflows |
+| `notification-temporal-worker` | Temporal worker on `notification-tq` running the reminder and follow-up workflows |
+
+`postgres` itself changed: it now starts with `wal_level=logical` and `max_slot_wal_keep_size=2GB`, and the
+`db-init` job creates the `debezium` and `grafana_ro` roles and `analytics_db`. Moving an existing volume to
+`wal_level=logical` needs one Postgres restart and loses no data; every service reconnects through its
+pre-ping pool and restart policy.
+
 See [`architecture-dashboard.html`](./architecture-dashboard.html) for the interactive decision record
 (alternatives and tradeoffs per decision), [`architecture.html`](./architecture.html) for a standalone
 diagram view, and [`erd.md`](./erd.md) for the per-service schemas.
