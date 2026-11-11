@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-02-notification-delivery-PLAN.md
-last_updated: "2026-11-11T07:36:34.895Z"
+stopped_at: Completed 03-06-reminder-workflows-PLAN.md
+last_updated: "2026-11-11T07:49:47.041Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 3c44daf04a6695b954daef1a8ff0f9cac6a60f28
+state_head: 4468e279b7db99db3b8f18209990cb8f44bd966f
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 46
+  completed_plans: 47
   percent: 60
 ---
 
@@ -98,6 +98,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P03 | n/a (interrupted) | 3 tasks | 14 files |
 | Phase 3 P04 | not measured | 3 tasks | 7 files |
 | Phase 03 P02 | not measured | 3 tasks | 12 files |
+| Phase 03 P06 | not measured | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -190,6 +191,8 @@ Recent decisions affecting current work:
 - [Phase 03]: Notification delivery: ClaimResult(state, attempts) returned from claim_delivery
 - [Phase 03]: Worker declares queue and DLX topology at start (declare_topology) so notifications.dlq exists
 - [Phase 03]: Dead-letter Reject reason is the exception class name only (no payload text in logs)
+- [Phase 03]: 03-06: a failed reminder enqueue is logged and the walk continues with the next lead; a failed follow-up enqueue fails its workflow
+- [Phase 03]: 03-06: reminder dedupe key includes slot epoch; sent_leads of a rescheduled reminder covers the final slot only
 
 ### Pending Todos
 
@@ -230,6 +233,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T07:36:34.822Z
-Stopped at: Completed 03-02-notification-delivery-PLAN.md
+Last session: 2026-11-11T07:49:46.969Z
+Stopped at: Completed 03-06-reminder-workflows-PLAN.md
 Resume file: None
