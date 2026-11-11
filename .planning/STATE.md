@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-17-e2e-guarantees-PLAN.md
-last_updated: "2026-11-11T12:42:00.558Z"
+stopped_at: Completed 03-18-docs-closeout-PLAN.md
+last_updated: "2026-11-11T13:02:39.880Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: c2ead524c733b668a0fc592452f511c3c916bff0
+state_head: 42b34c68c0bafa9bd738056a1f435f8e31ae2979
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 59
+  completed_plans: 60
   percent: 60
 ---
 
@@ -111,6 +111,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P15 | 1h20m | 2 tasks | 17 files |
 | Phase 03 P16 | 2h | 3 tasks | 19 files |
 | Phase 03 P17 | 3h | 3 tasks | 12 files |
+| Phase 03 P18 | not measured | 3 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -220,6 +221,9 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-16: grafana_ro needs no pg_monitor grant (slot query works SELECT-only); HTTP latency buckets owned by libs.observability.http_metrics.instrument_http with an edge on every NFR threshold
 - [Phase 03]: 03-17: Debezium heartbeat needs heartbeat.action.query (logical-decoding message, excluded prefix) to move a quiet slot; heartbeat.interval.ms alone did not
 - [Phase 03]: 03-17: event.consumed is logged inside the consumer processing span so consumer logs carry trace_id
+- [Phase 03]: Phase 3 docs: delivery guarantee stated as no loss, at-least-once on the wire, effect-level exactly-once, with measured duplicates
+- [Phase 03]: Phase 3 docs: EVENT-04 deviation (projections on a Kafka consumer, not Celery) recorded with the user's answer; REQUIREMENTS.md wording left to the user
+- [Phase 03]: Phase 3 docs test (tests/docs/test_phase3_docs.py) ties every topic, group, Compose service, event type, queue, setting, migration and metric name to the code
 
 ### Pending Todos
 
@@ -260,6 +264,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T12:42:00.480Z
-Stopped at: Completed 03-17-e2e-guarantees-PLAN.md
+Last session: 2026-11-11T13:02:39.814Z
+Stopped at: Completed 03-18-docs-closeout-PLAN.md
 Resume file: None
