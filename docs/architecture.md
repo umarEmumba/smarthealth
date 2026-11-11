@@ -1406,7 +1406,8 @@ each stays because events do not subsume it:
   `notification_deliveries` and `notification_appointment_state` grow without bound, and the live DLQ topics also
   hold records from test runs (filter by key or event id, do not count the topic).
 - **No authentication on the dev event network.** Kafka (plaintext listeners), Schema Registry and the Connect
-  REST API accept unauthenticated calls from inside the Compose network (Connect publishes no host port).
+  REST API accept unauthenticated calls from inside the Compose network; Kafka (9092) and Schema Registry (8081)
+  are also published on host ports in the dev Compose file, and the Connect REST API is not.
   Production would need SASL and TLS on Kafka, ACLs per consumer group, Schema Registry authentication and
   authenticated Connect REST access.
 - **`temporalio/auto-setup` is non-production** (see 10.8).
