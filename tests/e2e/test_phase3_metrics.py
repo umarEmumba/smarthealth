@@ -461,6 +461,7 @@ async def test_nfr_histograms_present(gateway: httpx.AsyncClient) -> None:
 # service. Plan 03-25 adds the other seven.
 MULTIPROCESS_API_JOBS: dict[str, str] = {
     "smarthealth-scheduling": "scheduling",
+    "smarthealth-gateway": "gateway",
 }
 DRIVEN_REQUESTS = 40
 MIN_UPTIME_SECONDS = 135

@@ -13,7 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from prometheus_client import REGISTRY
+from prometheus_client.mmap_dict import MmapedDict, mmap_key
+
 from libs.observability import gunicorn_conf
+from libs.observability.http_metrics import exposition_registry, render_latest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV = "PROMETHEUS_MULTIPROC_DIR"
@@ -21,6 +25,7 @@ ENV = "PROMETHEUS_MULTIPROC_DIR"
 # service -> (has an Alembic step, app path, binds)
 API_DOCKERFILES: dict[str, tuple[bool, str, tuple[str, ...]]] = {
     "scheduling": (True, "services.scheduling.app:app", ("0.0.0.0:8000",)),
+    "gateway": (False, "services.gateway.app:app", ("0.0.0.0:8000", "0.0.0.0:9100")),
 }
 
 
@@ -118,3 +123,30 @@ def test_the_variable_is_exported_only_by_image_commands_never_in_compose() -> N
     the variable they would write mmap files nobody aggregates."""
     compose = (REPO_ROOT / "infra" / "docker-compose.yml").read_text()
     assert "PROMETHEUS_MULTIPROC_DIR" not in compose
+
+
+def _write_counter_file(directory: Path, pid: int, value: float) -> None:
+    key = mmap_key(
+        "http_requests_total", "http_requests_total", ["handler", "method", "status"], ["/x", "GET", "2xx"], "help"
+    )
+    values = MmapedDict(str(directory / f"counter_{pid}.db"))
+    try:
+        values.write_value(key, value, 0.0)
+    finally:
+        values.close()
+
+
+def test_render_latest_sums_the_per_process_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_counter_file(tmp_path, 101, 3.0)
+    _write_counter_file(tmp_path, 202, 4.0)
+    monkeypatch.setenv(ENV, str(tmp_path))
+
+    text = render_latest().decode()
+
+    assert 'http_requests_total{handler="/x",method="GET",status="2xx"} 7.0' in text
+
+
+def test_exposition_registry_is_the_default_registry_without_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ENV, raising=False)
+    assert exposition_registry() is REGISTRY
+    assert isinstance(render_latest(), bytes)

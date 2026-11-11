@@ -12,16 +12,27 @@ booking accept path gains no work (D-04). The series count grows with the bucket
 only (handler and method labels are unchanged, so cardinality stays bounded, T-3-48).
 
 Every service calls `instrument_http(app)` instead of building its own `Instrumentator()`.
+
+Multiprocess exposition (plan 03-24, CR-02, D-14): the gunicorn APIs run two workers, and
+`prometheus_client` keeps one registry per process. When `PROMETHEUS_MULTIPROC_DIR` is set
+(by the API image's default command only) each worker writes to memory-mapped files and a
+scrape must sum them: `Instrumentator.expose()` does that by itself, and `render_latest()`
+is the same thing for a hand-written `/metrics` route (the gateway's). With the variable
+unset (tests, Temporal workers, consumers) both fall back to the process registry. Note a
+multiprocess exposition carries only the metrics created through `prometheus_client`
+(no default `process_*` / `python_*` collectors).
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import FastAPI
+from prometheus_client import REGISTRY, CollectorRegistry, generate_latest, multiprocess
 from prometheus_fastapi_instrumentator import Instrumentator
 
-__all__ = ["HTTP_LATENCY_BUCKETS", "instrument_http"]
+__all__ = ["HTTP_LATENCY_BUCKETS", "exposition_registry", "instrument_http", "render_latest"]
 
 # Seconds. Edges on the NFR thresholds: 0.2 (read p95), 0.3 (book p95), 0.5 (read p99),
 # 0.8 (book p99); finer below them for the fast paths; 1 to 5 s for the slow tail.
@@ -33,3 +44,18 @@ def instrument_http(app: FastAPI, *, registry: Any | None = None) -> Instrumenta
     can still chain `.expose(app)`. `registry` is for tests (default: the process registry)."""
     instrumentator = Instrumentator(registry=registry) if registry is not None else Instrumentator()
     return instrumentator.instrument(app, latency_lowr_buckets=HTTP_LATENCY_BUCKETS)
+
+
+def exposition_registry() -> CollectorRegistry:
+    """The registry a scrape must be rendered from: a fresh registry that sums the per-process
+    files when `PROMETHEUS_MULTIPROC_DIR` is set, else the default process registry."""
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return registry
+    return REGISTRY
+
+
+def render_latest() -> bytes:
+    """Prometheus text exposition of `exposition_registry()`."""
+    return generate_latest(exposition_registry())
