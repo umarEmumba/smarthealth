@@ -6,9 +6,10 @@ outbox row with the state change in scheduling_db; Debezium relays it to
 topic back with a fresh consumer group per call (nothing here disturbs a real
 consumer) and counts messages by their `id` header.
 
-Nothing in this file stops, kills or restarts a container: the kill-after-commit
-and Connect-down proofs for appointment events are plan 03-11's (they need a quiet
-stack). Run with the stack up:
+The tests up to the "Plan 03-11" marker never stop, kill or restart a container. The
+kill-after-commit and Connect-down proofs below that marker (plan 03-11) do, and need a
+quiet stack: each restores what it killed or stopped in `finally`, waits for health and,
+for Connect, for every registered connector task to be RUNNING. Run with the stack up:
     SMARTHEALTH_E2E_REQUIRE_STACK=1 pytest tests/e2e/test_phase3_booking_events.py -m e2e
 """
 
@@ -16,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import secrets
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -243,3 +246,109 @@ async def test_reschedule_publishes_exactly_one_rescheduled_event_after_booked(
     assert _same_instant(value["new_slot_start"], new_slot["start_time"])
     assert _same_instant(value["new_slot_end"], new_slot["end_time"])
     assert "coverage_ref" not in value
+
+
+# --- Plan 03-11: kill after commit, Connect outage -----------------------------------
+#
+# These use a fresh clinic (the `ew` fixture) and identify messages by the appointment key
+# and the `id` header only; the topic holds many unrelated events from earlier runs.
+
+log = logging.getLogger(__name__)
+
+CONNECT_DOWN_QUIET_SECONDS = 10
+
+
+@contextmanager
+def _restored(service: str, *, connect: bool = False) -> Iterator[None]:
+    """Whatever the body does to `service` (kill, stop), start it again afterwards and
+    wait until it is healthy; for Connect also until every connector task is RUNNING."""
+    try:
+        yield
+    finally:
+        stack.start_service(service)
+        stack.wait_service_healthy(service)
+        if connect:
+            stack.wait_connectors_running()
+
+
+async def _confirmed_booking(gateway: httpx.AsyncClient, ew: E2EWorld, slot: dict[str, Any]) -> str:
+    appointment_id = await book(gateway, ew, slot_id=slot["id"], patient_id=ew.patient_ids[0])
+    got = await appointment_in(gateway, ew, appointment_id, {"confirmed", "failed"})
+    assert got["status"] == "confirmed", got
+    return appointment_id
+
+
+async def _copies(appointment_id: str, event_type: str, window: float) -> list[dict[str, Any]]:
+    """Every copy of this key's event of this type on the topic, reading for the whole
+    `window` (never stops early), so wire duplicates are seen and counted."""
+    return await asyncio.to_thread(
+        stack.consume_matching,
+        TOPIC,
+        lambda m: m["key"] == appointment_id and m["headers"].get("eventType") == event_type,
+        window,
+        1,
+        done=lambda matches: False,
+        decode=False,
+    )
+
+
+async def test_cancel_event_survives_worker_kill_after_commit(
+    gateway: httpx.AsyncClient, ew: E2EWorld
+) -> None:
+    """Kill the process that committed the cancel (scheduling-worker, SIGKILL) as soon as
+    the appointment reads `cancelled`: the outbox row was committed with the transition,
+    so the cancelled event id (uuid5 of appointment, type, version 2) still reaches Kafka
+    and the worker comes back healthy (roadmap success criterion 1, delivery half)."""
+    slot = (await _slots(gateway, ew))[0]
+    appointment_id = await _confirmed_booking(gateway, ew, slot)
+    expected_id = str(event_id_for(appointment_id, "appointment.cancelled", "2"))
+
+    with _restored("scheduling-worker"):
+        cancel = await gateway.post(
+            f"/api/appointments/{appointment_id}/cancel", json={}, headers=ew.front_desk
+        )
+        assert cancel.status_code == 202, cancel.text
+        assert (await appointment_in(gateway, ew, appointment_id, {"cancelled"}))["status"] == "cancelled"
+        await asyncio.to_thread(stack.kill_service, "scheduling-worker")
+
+        found = await _events(appointment_id, "appointment.cancelled", timeout=60)
+        assert found, "the appointment.cancelled event was lost after the worker was killed"
+        assert {m["headers"]["id"] for m in found} == {expected_id}
+
+    assert stack.service_health("scheduling-worker") == "healthy"
+    stack.wait_connectors_running(["scheduling-outbox"])
+
+
+async def test_booked_event_delivered_after_connect_restart(
+    gateway: httpx.AsyncClient, ew: E2EWorld
+) -> None:
+    """With Connect stopped a booking still confirms (the outbox row commits with it) but
+    no booked event reaches Kafka for 10 s; once Connect is started and every connector
+    task is RUNNING the event id arrives. Debezium is at-least-once, so the number of
+    copies on the wire is logged, not asserted to be one."""
+    slot = (await _slots(gateway, ew))[0]
+    with _restored(stack.CONNECT_SERVICE, connect=True):
+        await asyncio.to_thread(stack.stop_service, stack.CONNECT_SERVICE)
+        appointment_id = await _confirmed_booking(gateway, ew, slot)
+        expected_id = str(event_id_for(appointment_id, "appointment.booked", "1"))
+
+        quiet = await _copies(appointment_id, "appointment.booked", CONNECT_DOWN_QUIET_SECONDS)
+        assert quiet == [], f"a booked event arrived while Connect was stopped: {len(quiet)} copies"
+
+        await asyncio.to_thread(stack.start_service, stack.CONNECT_SERVICE)
+        await asyncio.to_thread(stack.wait_service_healthy, stack.CONNECT_SERVICE)
+        await asyncio.to_thread(stack.wait_connectors_running)
+
+        arrived = await _events(appointment_id, "appointment.booked", timeout=90)
+        assert arrived, "the booked event never arrived after Connect restarted"
+        copies = await _copies(appointment_id, "appointment.booked", 15)
+
+    ids = {m["headers"]["id"] for m in copies}
+    assert ids == {expected_id}, ids
+    log.warning(
+        "connect-restart wire copies for booked event %s: %d (distinct ids: %d)",
+        expected_id,
+        len(copies),
+        len(ids),
+    )
+    print(f"CONNECT_RESTART_COPIES appointment={appointment_id} event_id={expected_id} copies={len(copies)}")
