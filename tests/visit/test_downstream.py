@@ -7,8 +7,15 @@ visit-downstream consumer, which these harness tests (no Kafka, no running consu
 stand in for with `deliver_visit_events`; it then runs on `visit-tq` (the
 `visit_worker` fixture), finalizes the billing record and records the follow-up and
 analytics intents. Plan 03-12 (D-03) retired the Phase 2 sweeper: nothing in a worker
-start-up path touches a completed visit whose marker is NULL any more (only the outbox
-event starts its workflow), and the sweeper workflow remains as a no-op tombstone.
+start-up path restarts a completed visit whose marker is NULL within the reconcile grace
+(only the outbox event starts its workflow), and the sweeper workflow remains as a
+no-op tombstone. Plan 03-22 gave the reconciler a lost-trigger pass for visits still
+unmarked AFTER the grace; its tests are in `test_visit_reconciler.py`.
+
+Isolation from the live reconciler (plan 03-22, W5/W6): the Compose visit worker scans the
+same visit_db every 60 s with a 10 minute grace, so no test here ages a NULL-marker
+completed visit past 5 minutes, and `VisitActivities.reconcile()` is only called with
+both pass functions replaced by recorders.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from libs.auth.service_tokens import ServiceTokenProvider, load_client_secret
 from libs.db.postgres import get_session_factory
 from libs.internal_client import UpstreamServiceUnavailable
 from libs.temporal_policies import VISIT_TASK_QUEUE
+from services.visit import downstream
 from services.visit.api import visits as visits_api
 from services.visit.config import settings as visit_settings
 from services.visit.activities.downstream import VisitActivities
@@ -221,18 +229,36 @@ async def test_null_marker_visit_is_not_touched_by_any_worker_start_up_path(
     visit_world: VisitWorld,
     mongo_client: AsyncMongoClient,
     temporal_env: WorkflowEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D-03: a completed visit whose marker is NULL and that is far older than the old
-    30 s sweep grace is left alone by the worker's start-up work (the reconcile pass, the
+    """D-03: a completed visit whose marker is NULL is left alone by the worker's
+    start-up work that has no Temporal client (the reconcile pass without a client, the
     sweep tombstone): no workflow starts, billing is untouched. Only the outbox event
-    starts it (positive control), so the absence above is attributable to the retirement."""
+    starts it (positive control), so the absence above is attributable to the retirement.
+    The reconcile pass runs with its two pass functions replaced by recorders (W5: a real
+    pass would act on every visit in the shared visit_db), and the visit is never aged
+    past 5 minutes (the live reconciler's grace is 10), so this test cannot race it."""
+    called: list[str] = []
+
+    async def unsettled_recorder(*args: Any, **kwargs: Any) -> int:
+        called.append("unsettled")
+        return 0
+
+    async def lost_recorder(*args: Any, **kwargs: Any) -> int:
+        called.append("lost")
+        return 0
+
+    monkeypatch.setattr(downstream, "reconcile_unsettled", unsettled_recorder)
+    monkeypatch.setattr(downstream, "restart_lost_triggers", lost_recorder)
+
     visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
     assert await _marker(visit["id"]) is None
-    await _age_completion(visit["id"], 600)
+    await _age_completion(visit["id"], 120)
 
-    acts = _activities(mesh, mongo_client)
-    assert await acts.reconcile() >= 0  # the worker's start-up reconcile pass
+    acts = _activities(mesh, mongo_client)  # no Temporal client
+    assert await acts.reconcile() == 0  # the worker's start-up reconcile pass
+    assert called == ["unsettled"]  # no client: the lost-trigger pass is skipped
     assert await _run_sweep_tombstone(acts, visit["id"]) == SweepResult(processed=0)
 
     assert await _marker(visit["id"]) is None
@@ -261,7 +287,7 @@ async def test_sweeper_workflow_is_a_no_op_tombstone_that_still_runs(
     with an old NULL-marker completed visit in the database."""
     visit, _, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
-    await _age_completion(visit["id"], 600)
+    await _age_completion(visit["id"], 120)
 
     result = await temporal_env.client.execute_workflow(
         SWEEPER_WORKFLOW,

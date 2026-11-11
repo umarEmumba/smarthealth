@@ -10,13 +10,22 @@ appointment back through Scheduling's internal lookup.
 Clean-up removes only rows the test created: Scheduling rows by the world's
 provider id(s) (`cleanup_scheduling_rows`) and Visit rows by the same
 provider ids (test-data hygiene; application code never deletes).
+
+Leftover guard (plan 03-22, W6): the live visit-reconciler restarts every completed visit
+whose `downstream_started_at` is still NULL after 10 minutes, in the same visit_db these
+tests use. `_visit_world` therefore registers its final provider ids in
+`SUITE_PROVIDER_IDS`, and a session-scoped autouse fixture counts, at the end of the
+session, the completed NULL-marker visits left for those providers
+(`null_marker_leftovers`); any survivor is removed and fails the session
+(`guard_null_marker_leftovers`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import uuid
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
@@ -241,6 +250,67 @@ async def cleanup_visit_rows(provider_ids: Iterable[uuid.UUID]) -> None:
         await engine.dispose()
 
 
+# Every provider id a `_visit_world` cleaned up in this session (plan 03-22, W6).
+SUITE_PROVIDER_IDS: set[uuid.UUID] = set()
+
+
+async def null_marker_leftovers(provider_ids: Iterable[uuid.UUID]) -> int:
+    """How many completed visits with `downstream_started_at IS NULL` exist for the given
+    provider ids (own short-lived engine, disposed): exactly the rows the live
+    visit-reconciler would restart once they are older than its grace."""
+    from services.visit.config import settings  # noqa: PLC0415
+
+    ids = list(provider_ids)
+    if not ids:
+        return 0
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            return int(
+                await conn.scalar(
+                    text(
+                        "SELECT count(*) FROM visits WHERE status = 'completed' "
+                        "AND downstream_started_at IS NULL AND provider_id = ANY(:ids)"
+                    ),
+                    {"ids": ids},
+                )
+                or 0
+            )
+    finally:
+        await engine.dispose()
+
+
+async def guard_null_marker_leftovers(
+    provider_ids: Iterable[uuid.UUID],
+    *,
+    count: Callable[[list[uuid.UUID]], Awaitable[int]] | None = None,
+    cleanup_outbox: Callable[[list[uuid.UUID]], Awaitable[None]] | None = None,
+    cleanup_rows: Callable[[list[uuid.UUID]], Awaitable[None]] | None = None,
+) -> int:
+    """The session guard's decision: count the NULL-marker leftovers of `provider_ids`;
+    when above 0, remove them (outbox first, then history and visits, as the fixtures do)
+    and raise with the count only. Returns 0 when there is nothing left. The three
+    callables are injectable so a unit test can drive the failure path with a fake count."""
+    ids = list(provider_ids)
+    leftovers = await (count or null_marker_leftovers)(ids)
+    if leftovers > 0:
+        await (cleanup_outbox or cleanup_visit_outbox)(ids)
+        await (cleanup_rows or cleanup_visit_rows)(ids)
+        raise AssertionError(
+            f"{leftovers} completed visit(s) with a NULL downstream marker survived the "
+            "visit test session (removed now): the live visit-reconciler would restart them"
+        )
+    return 0
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_null_marker_leftovers() -> Iterator[None]:
+    """At the end of the session, fail if a NULL-marker completed visit of any provider
+    this suite's worlds used survived their teardown (W6)."""
+    yield
+    asyncio.run(guard_null_marker_leftovers(set(SUITE_PROVIDER_IDS)))
+
+
 async def _visit_world(client: AsyncClient, mesh: httpx.AsyncClient) -> AsyncIterator[VisitWorld]:
     from services.scheduling.config import settings  # noqa: PLC0415
 
@@ -250,6 +320,7 @@ async def _visit_world(client: AsyncClient, mesh: httpx.AsyncClient) -> AsyncIte
     try:
         yield vw
     finally:
+        SUITE_PROVIDER_IDS.update(vw.provider_ids)  # for the session guard (W6)
         await cleanup_visit_outbox(vw.provider_ids)
         await cleanup_visit_rows(vw.provider_ids)
         await cleanup_scheduling_rows(engine, vw.provider_ids)
