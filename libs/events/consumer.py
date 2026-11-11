@@ -148,7 +148,7 @@ def _start_metrics_server(port: int) -> None:
         if port in _metrics_ports:
             return
         # Internal port: Compose publishes no host mapping for it.
-        start_http_server(port)  # nosemgrep
+        start_http_server(port)
         _metrics_ports.add(port)
 
 
