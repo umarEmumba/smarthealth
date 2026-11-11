@@ -24,6 +24,8 @@ import asyncio
 import datetime
 import json
 import os
+import re
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -83,6 +85,17 @@ def prom_query(expr: str) -> list[dict[str, Any]]:
     """Instant query against the published Prometheus; the result vector."""
     url = f"{prometheus_url()}/api/v1/query?{urllib.parse.urlencode({'query': expr})}"
     with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310 - fixed local URL
+        body = json.loads(response.read())
+    assert body["status"] == "success", body
+    return body["data"]["result"]
+
+
+def prom_query_range(expr: str, *, start: float, end: float, step: int) -> list[dict[str, Any]]:
+    """Range query against the published Prometheus; the result matrix."""
+    params = urllib.parse.urlencode({"query": expr, "start": start, "end": end, "step": step})
+    with urllib.request.urlopen(  # noqa: S310 - fixed local URL
+        f"{prometheus_url()}/api/v1/query_range?{params}", timeout=15
+    ) as response:
         body = json.loads(response.read())
     assert body["status"] == "success", body
     return body["data"]["result"]
@@ -440,3 +453,102 @@ async def test_nfr_histograms_present(gateway: httpx.AsyncClient) -> None:
         for r in prom_query(f"http_request_duration_seconds_bucket{{{accept}}}")
     }
     assert {"0.2", "0.3", "0.8"} <= edges, sorted(edges)
+
+
+# --- Plan 03-24: multiprocess metrics (CR-02) ----------------------------------------
+
+# The APIs already running gunicorn in Prometheus multiprocess mode: scrape job -> Compose
+# service. Plan 03-25 adds the other seven.
+MULTIPROCESS_API_JOBS: dict[str, str] = {
+    "smarthealth-scheduling": "scheduling",
+}
+DRIVEN_REQUESTS = 40
+MIN_UPTIME_SECONDS = 135
+SCRAPE_FRESH_DEADLINE_SECONDS = 60
+
+_DRIVE_SCRIPT = (
+    "import sys, urllib.request\n"
+    "n = int(sys.argv[1])\n"
+    "for _ in range(n):\n"
+    "    urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()\n"
+)
+
+
+def _drive_requests(service: str, n: int) -> None:
+    """`n` GET /health requests to the API's own public listener from inside its container
+    (the image has Python and no curl, like the Compose healthcheck), so the traffic reaches
+    that API itself whatever the gateway routes."""
+    stack.compose("exec", "-T", service, "python", "-c", _DRIVE_SCRIPT, str(n), timeout=120)
+
+
+def _container_uptime_seconds(service: str) -> float:
+    container = stack.compose("ps", "-q", service).stdout.strip().splitlines()[0]
+    started = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["docker", "inspect", "-f", "{{.State.StartedAt}}", container],
+        check=True, capture_output=True, text=True, timeout=30,
+    ).stdout.strip()
+    # Docker prints nanoseconds; datetime takes microseconds.
+    started = re.sub(r"(\.\d{6})\d*Z$", r"\1+00:00", started)
+    started_at = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
+    return (datetime.datetime.now(datetime.UTC) - started_at).total_seconds()
+
+
+def _job_sum(job: str) -> float:
+    return _total(f'http_requests_total{{job="{job}"}}')
+
+
+def _wait_for_scrape_after(job: str, moment: float) -> None:
+    """Block until Prometheus holds a sample of the job scraped after `moment` (epoch s)."""
+    def fresh() -> bool:
+        result = prom_query(f'max(timestamp(http_requests_total{{job="{job}"}}))')
+        return bool(result) and float(result[0]["value"][1]) > moment
+
+    wait_until(fresh, timeout=SCRAPE_FRESH_DEADLINE_SECONDS, interval=2.0)
+
+
+@pytest.mark.parametrize("job", sorted(MULTIPROCESS_API_JOBS))
+def test_http_request_counters_have_no_resets_and_never_decrease(job: str) -> None:
+    """With two gunicorn workers per API, each scrape must be the SUM over both workers
+    (Prometheus multiprocess mode). Proof, with no container restart in the window: the
+    requests driven into the API itself all show up in the job's summed counter, no counter
+    resets inside the window, and the summed counter never decreases across its scrapes."""
+    service = MULTIPROCESS_API_JOBS[job]
+
+    # Wait until the container has been up long enough for a meaningful window.
+    uptime = _container_uptime_seconds(service)
+    if uptime < MIN_UPTIME_SECONDS:
+        time.sleep(MIN_UPTIME_SECONDS - uptime)
+        uptime = _container_uptime_seconds(service)
+    window = int(min(300, uptime - 30))
+    assert window >= 60, (service, uptime)
+
+    _wait_for_scrape_after(job, time.time())
+    before = _job_sum(job)
+
+    _drive_requests(service, DRIVEN_REQUESTS)
+    driven_at = time.time()
+    time.sleep(30)  # two scrape intervals
+    _wait_for_scrape_after(job, driven_at)
+    after = _job_sum(job)
+
+    assert prom_query(f'count(http_requests_total{{job="{job}"}})'), job
+    increase = after - before
+    resets = _total(f'resets(http_requests_total{{job="{job}"}}[{window}s])')
+    end = time.time()
+    series = prom_query_range(
+        f'sum(http_requests_total{{job="{job}"}})', start=end - window, end=end, step=15
+    )
+    assert len(series) == 1, series
+    values = [float(v) for _, v in series[0]["values"]]
+    decreases = [(a, b) for a, b in zip(values, values[1:], strict=False) if b < a]
+
+    report = {
+        "job": job, "window_s": window, "uptime_s": round(uptime), "before": before,
+        "after": after, "increase": increase, "resets": resets,
+        "points": len(values), "decreases": decreases[:5],
+    }
+    print("MULTIPROCESS_CHECK", json.dumps(report))
+    assert increase >= DRIVEN_REQUESTS, report
+    assert resets == 0, report
+    assert len(values) >= window // 15 // 2, report
+    assert not decreases, report
