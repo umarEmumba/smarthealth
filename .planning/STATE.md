@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-04-consumer-base-PLAN.md
-last_updated: "2026-11-11T05:19:01.273Z"
+stopped_at: Completed 03-02-notification-delivery-PLAN.md
+last_updated: "2026-11-11T07:36:34.895Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 537ca01b84d67000f36dc59235cf71d8eb935406
+state_head: 3c44daf04a6695b954daef1a8ff0f9cac6a60f28
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 45
+  completed_plans: 46
   percent: 60
 ---
 
@@ -97,6 +97,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P01 | 21min | 3 tasks | 10 files |
 | Phase 03 P03 | n/a (interrupted) | 3 tasks | 14 files |
 | Phase 3 P04 | not measured | 3 tasks | 7 files |
+| Phase 03 P02 | not measured | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -186,6 +187,9 @@ Recent decisions affecting current work:
 - [Phase 02.1]: Audit dedupe index is restored by test_audit_indexes and ensured by the concurrent-finalize test, so test order no longer decides
 - [Phase 03]: 03-01: Event contract D-05 confirmed as Avro, one subject per event type by record name, one topic per aggregate; all six veto items accepted; Connect image quay.io/debezium/connect:3.7.1.Final approved
 - [Phase 3]: 03-04: EventEnvelope.payload is the full decoded Avro record; registry outage during decode is transient (retry), not poison
+- [Phase 03]: Notification delivery: ClaimResult(state, attempts) returned from claim_delivery
+- [Phase 03]: Worker declares queue and DLX topology at start (declare_topology) so notifications.dlq exists
+- [Phase 03]: Dead-letter Reject reason is the exception class name only (no payload text in logs)
 
 ### Pending Todos
 
@@ -226,6 +230,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T05:19:01.201Z
-Stopped at: Completed 03-04-consumer-base-PLAN.md
+Last session: 2026-11-11T07:36:34.822Z
+Stopped at: Completed 03-02-notification-delivery-PLAN.md
 Resume file: None
