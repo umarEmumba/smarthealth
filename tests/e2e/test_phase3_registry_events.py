@@ -37,6 +37,7 @@ from tests.e2e.phase2_stack import E2EWorld, gateway_url, require_stack, seed_ph
 pytestmark = pytest.mark.e2e
 
 PATIENT_TOPIC = topic_for("patient.registered")
+PROVIDER_TOPIC = topic_for("provider.schedule_changed")
 
 # Distinctive synthetic PHI strings: none may appear in any byte of the event.
 PHI_FULL_NAME = "Zzyzx Tracerpatient Phibyte"
@@ -48,7 +49,7 @@ PHI_ADDRESS = "4242 Synthetic Boulevard Apt 9"
 @pytest.fixture(scope="module", autouse=True)
 def _stack_ready() -> None:
     stack.require_phase3_stack()
-    stack.wait_connectors_running(["patient-outbox"])
+    stack.wait_connectors_running(["patient-outbox", "provider-outbox"])
 
 
 @pytest_asyncio.fixture
@@ -147,3 +148,49 @@ async def test_tracer_registered_patient_publishes_phi_free_event(
 
     # The id is not random noise: it is the uuid5 of the patient id and the type.
     assert uuid.UUID(message["headers"]["id"]).version == 5
+
+
+# --- Task 3: provider.schedule_changed -------------------------------------------------
+
+
+async def test_template_update_publishes_provider_schedule_changed(
+    gateway: httpx.AsyncClient, ew: E2EWorld
+) -> None:
+    """PATCH of an availability template (a schedule-affecting change) through the gateway
+    -> exactly one provider.schedule_changed message keyed by the provider id, carrying the
+    template id and the `template_updated` change type."""
+    provider_id = ew.provider_id
+    template_id = str(ew.world.template_ids[0])
+
+    patched = await gateway.patch(
+        f"/api/providers/{provider_id}/availability/{template_id}",
+        json={"end_time": "12:30:00"},
+        headers=ew.admin,
+    )
+    assert patched.status_code == 200, patched.text
+
+    found = await _messages(PROVIDER_TOPIC, provider_id, "provider.schedule_changed")
+    assert found, f"no provider.schedule_changed message for {provider_id} within 60 s"
+    # Debezium is at-least-once: count distinct event ids, not messages. The seeded
+    # provider has no earlier schedule change, so this PATCH is the only one.
+    assert len({m["headers"]["id"] for m in found}) == 1
+    message = found[0]
+
+    assert message["key"] == provider_id
+    assert message["headers"]["eventType"] == "provider.schedule_changed"
+    value = message["value"]
+    assert str(value["provider_id"]) == provider_id
+    assert str(value["aggregate_id"]) == provider_id
+    assert value["change_type"] == "template_updated"
+    assert str(value["template_id"]) == template_id
+    assert isinstance(value["changed_at"], datetime.datetime)
+    assert abs(
+        _aware(value["changed_at"]) - datetime.datetime.now(datetime.UTC)
+    ) < datetime.timedelta(minutes=5)
+    # The event id is the uuid5 of provider id, type and the feed row id (= change_event_id).
+    assert message["headers"]["id"] == str(
+        event_id_for(provider_id, "provider.schedule_changed", str(value["change_event_id"]))
+    )
+    # Ids, a change type and timestamps only: no provider name, no specialty.
+    raw = bytes(message["raw_value"])
+    assert b"Dr." not in raw and b"General" not in raw

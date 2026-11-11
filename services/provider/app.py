@@ -24,6 +24,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from libs.audit.mongo_indexes import ensure_audit_indexes
 from libs.auth.jwks_client import JwksClient
 from libs.db.mongo import get_mongo_client
+from libs.events.registry import warm_up
 from libs.health import build_health_router
 from libs.observability.logging import configure_logging
 from libs.observability.otel import setup_tracing
@@ -31,12 +32,16 @@ from services.provider.api.availability import router as availability_router
 from services.provider.api.internal import router as internal_router
 from services.provider.api.providers import router as providers_router
 from services.provider.config import settings
+from services.provider.events import PROVIDER_EVENT_TYPES
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     await ensure_audit_indexes(get_mongo_client())
+    # Resolve the event schema ids once (retried while the registry starts), so no
+    # schedule-change request pays or blocks on the first registry round trip (T-3-04).
+    await warm_up(PROVIDER_EVENT_TYPES)
     yield
 
 
