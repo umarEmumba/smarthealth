@@ -24,7 +24,14 @@ Events for unknown or already-deleted ids are NOT errors: the upserts create a r
 that the views exclude, so the live topics' throw-away test events are absorbed
 without reaching the DLQ. Logs carry event ids and types only (no PHI exists in
 events, T-3-34). The metrics port is internal to the Compose network and is never
-published to the host; the container is added by plan 03-13.
+published to the host. Plan 03-13 added the `analytics-consumer` container.
+
+Where a new group starts (D-13): `ANALYTICS_CONSUMER_START` (`latest` in Compose,
+`earliest` as the code default) maps to `auto.offset.reset` for a group without
+committed offsets. `main()` additionally PINS the start: with `latest` it commits the
+current high watermark for every partition of the group that has no committed offset
+before the consumer subscribes, so an event produced right after the container
+starts is never skipped by the usual "latest is decided at first assignment" race.
 """
 
 from __future__ import annotations
@@ -35,7 +42,10 @@ from collections.abc import Callable
 from typing import Any
 
 import sqlalchemy.exc
+from confluent_kafka import Consumer, KafkaException, TopicPartition
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from libs.config import shared_settings
 
 from libs.db.postgres import get_session_factory
 from libs.events.catalog import DLQ_TOPICS, topic_for
@@ -52,7 +62,14 @@ from libs.observability.otel import configure_tracer_provider
 from services.analytics.config import settings
 from services.analytics.projections import PROJECTED_EVENT_TYPES, apply_event
 
-__all__ = ["CONSUMER_NAME", "GROUP_ID", "build_consumer", "handle_event", "main"]
+__all__ = [
+    "CONSUMER_NAME",
+    "GROUP_ID",
+    "build_consumer",
+    "handle_event",
+    "main",
+    "pin_start_offsets",
+]
 
 log = get_logger(__name__)
 
@@ -105,6 +122,62 @@ async def handle_event(
         raise
 
 
+def pin_start_offsets(
+    group_id: str,
+    topics: list[str],
+    start: str,
+    *,
+    bootstrap_servers: str | None = None,
+    timeout: float = 15.0,
+) -> dict[tuple[str, int], int]:
+    """With `start == "latest"`, commit the current end of every partition the group
+    has NOT committed yet; return the (topic, partition) -> offset pairs it pinned.
+
+    This records the go-live position deterministically instead of leaving it to the
+    group's first assignment, so events produced after this call are always consumed.
+    A group that already has a committed offset keeps it (a restart resumes). Any
+    broker error is logged and ignored: the consumer then falls back to
+    `auto.offset.reset`, which is the same `latest` behaviour minus the race guard.
+    """
+    if start != "latest":
+        return {}
+    probe = Consumer(
+        {
+            "bootstrap.servers": bootstrap_servers or shared_settings.kafka_bootstrap_servers,
+            "group.id": group_id,
+            "enable.auto.commit": False,
+        }
+    )
+    pinned: dict[tuple[str, int], int] = {}
+    try:
+        metadata = probe.list_topics(timeout=timeout)
+        wanted = [
+            TopicPartition(topic, partition)
+            for topic in topics
+            if topic in metadata.topics and metadata.topics[topic].error is None
+            for partition in metadata.topics[topic].partitions
+        ]
+        if not wanted:
+            return {}
+        to_commit: list[TopicPartition] = []
+        for tp in probe.committed(wanted, timeout=timeout):
+            if tp.offset >= 0:
+                continue  # already has a position: keep it
+            _low, high = probe.get_watermark_offsets(
+                TopicPartition(tp.topic, tp.partition), timeout=timeout
+            )
+            to_commit.append(TopicPartition(tp.topic, tp.partition, high))
+            pinned[(tp.topic, tp.partition)] = high
+        if to_commit:
+            probe.commit(offsets=to_commit, asynchronous=False)
+    except KafkaException as exc:
+        log.warning("consumer.pin_start_failed", group=group_id, error=type(exc).__name__)
+        return {}
+    finally:
+        probe.close()
+    return pinned
+
+
 def build_consumer(**overrides: Any) -> EventConsumer:
     """The analytics-projection consumer: group `analytics-projection`, the patient,
     appointment and visit topics, DLQ `smarthealth.dlq.analytics-projection`."""
@@ -116,6 +189,8 @@ def build_consumer(**overrides: Any) -> EventConsumer:
         "dlq_topic": DLQ_TOPICS[GROUP_ID],
         "heartbeat_path": settings.consumer_heartbeat_path,
         "metrics_port": settings.consumer_metrics_port,
+        # Where a NEW group starts (D-13); a committed offset always wins.
+        "consumer_overrides": {"auto.offset.reset": settings.consumer_start},
     }
     kwargs.update(overrides)
     return EventConsumer(**kwargs)
@@ -127,8 +202,15 @@ def main() -> int:
     # Resolve the event schema ids once, retried while the registry starts; a registry
     # that never comes up exits non-zero and the orchestrator restarts the container.
     asyncio.run(warm_up(PROJECTED_EVENT_TYPES))
+    topics = sorted({topic_for(event_type) for event_type in PROJECTED_EVENT_TYPES})
+    pinned = pin_start_offsets(GROUP_ID, topics, settings.consumer_start)
     consumer = build_consumer()
-    log.info("consumer.started", group=GROUP_ID)
+    log.info(
+        "consumer.started",
+        group=GROUP_ID,
+        start=settings.consumer_start,
+        pinned_partitions=len(pinned),
+    )
     consumer.run()  # returns on SIGTERM/SIGINT after closing cleanly
     log.info("consumer.stopped", group=GROUP_ID)
     return 0

@@ -496,6 +496,8 @@ services:
         condition: service_healthy
       billing:
         condition: service_healthy
+      analytics:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck: *app-healthcheck
@@ -661,6 +663,60 @@ services:
         - python
         - -c
         - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/visit-consumer.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # Analytics (plan 03-13, D-10): the read-only metrics API over analytics_db, reached
+  # through the gateway at /api/analytics (admin: any clinic; front desk: its own
+  # clinic); no host port. It owns analytics_db and has no URL, role or import for any
+  # OLTP database (ANLY-06). Runs Alembic on start.
+  analytics:
+    build:
+      context: ..
+      dockerfile: services/analytics/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment: &analytics-env
+      <<: *app-env
+      ANALYTICS_DATABASE_URL: postgresql+asyncpg://analytics_svc:${ANALYTICS_DB_PASSWORD:-changeme-analytics-local-dev-only}@postgres:5432/analytics_db
+      # D-13: a NEW consumer group starts at the end of the topics, so the metrics count
+      # from go-live and the throw-away events already retained are not projected.
+      ANALYTICS_CONSUMER_START: ${ANALYTICS_CONSUMER_START:-latest}
+    depends_on: *app-depends-on
+    healthcheck: *app-healthcheck
+
+  # Analytics' projection consumer (plan 03-10 code, container added by plan 03-13): the
+  # analytics-projection group reads the patient, appointment and visit topics and keeps
+  # the projections in analytics_db current (idempotent upserts, EVENT-03). Same image as
+  # `analytics`, command override; it starts only after the API ran Alembic. Its
+  # Prometheus metrics server (ANALYTICS_CONSUMER_METRICS_PORT, 9100) binds 0.0.0.0
+  # inside the container and is deliberately NOT published to the host.
+  analytics-consumer:
+    build:
+      context: ..
+      dockerfile: services/analytics/Dockerfile
+    command: ["python", "-m", "services.analytics.consumer"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *analytics-env
+    depends_on:
+      analytics:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/analytics-consumer.alive') < 30 else 1)"
       interval: 10s
       timeout: 5s
       retries: 6

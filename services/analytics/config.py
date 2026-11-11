@@ -12,6 +12,8 @@ override it from the environment.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from libs.config import SharedSettings
@@ -31,6 +33,15 @@ class AnalyticsSettings(SharedSettings):
     consumer_heartbeat_path: str = Field(
         default="/tmp/analytics-consumer.alive",
         validation_alias="ANALYTICS_CONSUMER_HEARTBEAT_PATH",
+    )
+    # Where a NEW consumer group starts reading (plan 03-13, D-13): `latest` makes the
+    # live metrics count from go-live and leaves the retained throw-away test events
+    # out; `earliest` replays everything the topics retain. Applies only to a group
+    # without committed offsets (`auto.offset.reset`); the rebuild tool resets offsets
+    # explicitly. The code default is `earliest` (tests use unique groups and
+    # topics and produce BEFORE the group joins); Compose sets `latest`.
+    consumer_start: Literal["latest", "earliest"] = Field(
+        default="earliest", validation_alias="ANALYTICS_CONSUMER_START"
     )
     # Default reporting window of the metrics read API (plan 03-13).
     default_window_days: int = Field(
