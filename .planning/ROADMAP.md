@@ -243,7 +243,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 20/20 plans executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own)
+**Plans:** 25 plans: 20/20 executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own), plus 5 gap-closure plans (0/5 executed) from the phase verification (CR-01 event reliability, CR-02 metrics correctness), in waves 14-18, one plan per wave because they share the live stack
 
 **Wave 1**
 
@@ -304,6 +304,26 @@ Success criterion 1 is defined honestly (research F4): no loss, at-least-once on
 
 - [x] 03-20-phase-gate-PLAN.md — PHASE3_TRACE, phase-gate full regression on a rebuilt stack, end-of-phase human checks (all 20)
 
+**Wave 14** *(gap closure, blocked on Wave 13 completion)*
+
+- [ ] 03-21-consumer-reliability-PLAN.md — shared classifier `libs/events/classify.py` (SQLSTATE 08/53/57/40, narrowed Temporal statuses) in all three consumers, transient cap with `TransientExhausted`, Schema Registry 408/429/5xx retried, commit failures survive (CR-01, WR-02, IN-01, WR-03, WR-07)
+
+**Wave 15** *(gap closure, blocked on Wave 14 completion)*
+
+- [ ] 03-22-visit-trigger-recovery-PLAN.md — the existing visit-reconciler restarts lost `visit.completed` triggers, backfill restarts queued-but-dead-lettered visits, live e2e recovery proof (CR-01, D-03)
+
+**Wave 16** *(gap closure, blocked on Wave 15 completion)*
+
+- [ ] 03-23-connection-budget-PLAN.md — engine registry retires closed-loop engines, pool size as settings, Compose budget under `max_connections=300`, measured peak (WR-05)
+
+**Wave 17** *(gap closure, blocked on Wave 16 completion)*
+
+- [ ] 03-24-multiprocess-metrics-PLAN.md — Prometheus multiprocess mode for the nine gunicorn APIs (two workers kept), gateway `/metrics` from `MultiProcessCollector`, no-reset e2e check (CR-02, OBS-01)
+
+**Wave 18** *(gap closure, blocked on Wave 17 completion)*
+
+- [ ] 03-25-gap-closeout-PLAN.md — docs and dashboard corrected with guard tests, k6 smoke rerun only, final regression, follow-ups, gateway budget restored last (EVENT-05, OBS-01, DASH-03, DASH-04)
+
 ## Progress
 
 **Execution Order:**
@@ -314,4 +334,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 20/20 | In Progress|  |
+| 3. Event-Driven System + Observability | 20/25 | In Progress (gap closure planned) |  |
