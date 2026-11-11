@@ -9,8 +9,11 @@ a `visit.completed` outbox row in visit_db; the `visit-outbox` connector relays 
 within 15 s of the completion, which is shorter than the still-running sweeper's 30 s
 grace (D-03: the sweeper is retired in plan 03-12), so they prove the consumer path.
 
-Plan 03-11 adds the kill-between-commit-and-publish and outage proofs; nothing in this
-file stops, kills or restarts a container. Each Kafka read uses a fresh consumer group.
+Plan 03-11 adds the kill-between-commit-and-publish and outage proofs (the D-03 gate
+before the sweeper is retired in plan 03-12) below the "Plan 03-11" marker. They kill or
+stop `visit`, `visit-consumer` and `connect`, restore each in `finally`, wait for health
+(Connect: every connector task RUNNING) and need a quiet stack. Each Kafka read uses a
+fresh consumer group.
 Run with the stack up:
     SMARTHEALTH_E2E_REQUIRE_STACK=1 pytest tests/e2e/test_phase3_visit_downstream.py -m e2e
 """
@@ -19,8 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -182,3 +187,153 @@ async def test_tracer_completed_visit_starts_downstream_through_the_outbox_and_c
     # The downstream fan-out the consumer started still finishes the visit's work.
     await billing_in(gateway, ew, appointment_id, "finalized")
     assert (await appointment_in(gateway, ew, appointment_id, {"completed"}))["status"] == "completed"
+
+
+# --- Plan 03-11: the D-03 kill-between-commit-and-publish gate ------------------------
+#
+# Three scenarios, each in a fresh clinic. The completion is committed together with its
+# `visit.completed` outbox row; the downstream trigger must survive a kill of the committing
+# API, a consumer outage and a Connect outage with exactly one `visit-completed-{id}`
+# execution and the marker set. The still-running sweeper (30 s grace, interval 60 s) is a
+# second path to the same end state, so each test also reads the visit-consumer's own log
+# line `visit.downstream_started` (outcome=started) for the visit id: that proves the
+# OUTBOX path started the workflow, not the sweeper.
+
+OUTAGE_SECONDS = 15
+SETTLE_SECONDS = 5
+
+
+@contextmanager
+def _restored(service: str, *, connect: bool = False) -> Iterator[None]:
+    """Whatever the body does to `service` (kill, stop), start it again afterwards and wait
+    until it is healthy; for Connect also until every connector task is RUNNING."""
+    try:
+        yield
+    finally:
+        stack.start_service(service)
+        stack.wait_service_healthy(service)
+        if connect:
+            stack.wait_connectors_running()
+
+
+async def _executions(temporal: Client, visit_id: str) -> int:
+    """Number of Temporal executions (any status) with the visit's deterministic id."""
+    query = f"WorkflowId = '{visit_completed_workflow_id(visit_id)}'"
+    return len([wf async for wf in temporal.list_workflows(query)])
+
+
+async def _wait_one_execution(temporal: Client, visit_id: str, *, timeout: float = 60) -> None:
+    """Wait until visibility shows the execution, let it settle, then require exactly one."""
+    deadline = time.monotonic() + timeout
+    count = await _executions(temporal, visit_id)
+    while count == 0 and time.monotonic() < deadline:
+        await asyncio.sleep(0.5)
+        count = await _executions(temporal, visit_id)
+    await asyncio.sleep(SETTLE_SECONDS)
+    count = await _executions(temporal, visit_id)
+    assert count == 1, f"expected exactly one execution of the visit's downstream workflow, saw {count}"
+
+
+def _consumer_started_it(visit_id: str, since: datetime.datetime) -> bool:
+    """True when the visit-consumer logged `visit.downstream_started` with outcome=started
+    for this visit id since `since` (the outbox path, not the sweeper, started it)."""
+    out = stack.compose(
+        "logs", "--no-color", "--since", since.strftime("%Y-%m-%dT%H:%M:%SZ"), "visit-consumer"
+    ).stdout
+    for line in out.splitlines():
+        _, _, payload = line.partition("| ")
+        try:
+            record = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if (
+            record.get("event") == "visit.downstream_started"
+            and record.get("visit_id") == visit_id
+            and record.get("outcome") == "started"
+        ):
+            return True
+    return False
+
+
+async def _downstream_finishes(gateway: httpx.AsyncClient, ew: E2EWorld, appointment_id: str) -> None:
+    await billing_in(gateway, ew, appointment_id, "finalized")
+    assert (await appointment_in(gateway, ew, appointment_id, {"completed"}))["status"] == "completed"
+
+
+async def _start_window() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=5)
+
+
+async def test_visit_trigger_survives_api_kill_after_commit(
+    gateway: httpx.AsyncClient, ew: E2EWorld, temporal: Client
+) -> None:
+    """SIGKILL the Visit API the moment the completion response arrives: the committed
+    outbox row still reaches the consumer, which starts one execution and sets the marker
+    within 15 s of the completion (inside the sweeper's 30 s grace)."""
+    since = await _start_window()
+    with _restored("visit"):
+        visit_id, appointment_id, completed_at_mono = await _complete_visit_through_gateway(gateway, ew)
+        await asyncio.to_thread(stack.kill_service, "visit")
+
+        marker = await _wait_for(
+            lambda: _downstream_marker(visit_id), completed_at_mono + DOWNSTREAM_DEADLINE_SECONDS
+        )
+        assert marker is not None, "marker still NULL 15 s after the API was killed after the commit"
+        assert time.monotonic() <= completed_at_mono + DOWNSTREAM_DEADLINE_SECONDS + 1.0
+        await _wait_one_execution(temporal, visit_id)
+        assert _consumer_started_it(visit_id, since), "the outbox consumer did not start the workflow"
+
+    await _downstream_finishes(gateway, ew, appointment_id)
+    fetched = await gateway.get(f"/api/visits/{visit_id}", headers=ew.front_desk)
+    assert fetched.status_code == 200 and fetched.json()["status"] == "completed", fetched.text
+
+
+async def test_visit_trigger_catches_up_after_consumer_outage(
+    gateway: httpx.AsyncClient, ew: E2EWorld, temporal: Client
+) -> None:
+    """With the consumer stopped the completion leaves no workflow and a NULL marker for
+    15 s; once it is started the unread event is consumed from the committed offset and
+    the workflow starts once, the marker set."""
+    since = await _start_window()
+    with _restored("visit-consumer"):
+        await asyncio.to_thread(stack.stop_service, "visit-consumer")
+        visit_id, appointment_id, completed_at_mono = await _complete_visit_through_gateway(gateway, ew)
+
+        await asyncio.sleep(max(0.0, completed_at_mono + OUTAGE_SECONDS - time.monotonic()))
+        assert await _downstream_marker(visit_id) is None, "marker set while the consumer was stopped"
+        assert await _executions(temporal, visit_id) == 0, "a workflow started while the consumer was stopped"
+
+        await asyncio.to_thread(stack.start_service, "visit-consumer")
+        await asyncio.to_thread(stack.wait_service_healthy, "visit-consumer")
+        marker = await _wait_for(lambda: _downstream_marker(visit_id), time.monotonic() + 60)
+        assert marker is not None, "marker still NULL after the consumer was started again"
+        await _wait_one_execution(temporal, visit_id)
+        assert _consumer_started_it(visit_id, since), "the outbox consumer did not start the workflow"
+
+    await _downstream_finishes(gateway, ew, appointment_id)
+
+
+async def test_visit_trigger_survives_connect_outage(
+    gateway: httpx.AsyncClient, ew: E2EWorld, temporal: Client
+) -> None:
+    """With Connect stopped the completion commits but nothing is relayed: no workflow and
+    a NULL marker for 15 s. Once Connect is started and every connector task is RUNNING,
+    the event is relayed and downstream starts once."""
+    since = await _start_window()
+    with _restored(stack.CONNECT_SERVICE, connect=True):
+        await asyncio.to_thread(stack.stop_service, stack.CONNECT_SERVICE)
+        visit_id, appointment_id, completed_at_mono = await _complete_visit_through_gateway(gateway, ew)
+
+        await asyncio.sleep(max(0.0, completed_at_mono + OUTAGE_SECONDS - time.monotonic()))
+        assert await _downstream_marker(visit_id) is None, "marker set while Connect was stopped"
+        assert await _executions(temporal, visit_id) == 0, "a workflow started while Connect was stopped"
+
+        await asyncio.to_thread(stack.start_service, stack.CONNECT_SERVICE)
+        await asyncio.to_thread(stack.wait_service_healthy, stack.CONNECT_SERVICE)
+        await asyncio.to_thread(stack.wait_connectors_running)
+        marker = await _wait_for(lambda: _downstream_marker(visit_id), time.monotonic() + 90)
+        assert marker is not None, "marker still NULL after Connect was started again"
+        await _wait_one_execution(temporal, visit_id)
+        assert _consumer_started_it(visit_id, since), "the outbox consumer did not start the workflow"
+
+    await _downstream_finishes(gateway, ew, appointment_id)
