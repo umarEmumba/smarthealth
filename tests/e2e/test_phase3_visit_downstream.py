@@ -337,3 +337,54 @@ async def test_visit_trigger_survives_connect_outage(
         assert _consumer_started_it(visit_id, since), "the outbox consumer did not start the workflow"
 
     await _downstream_finishes(gateway, ew, appointment_id)
+
+
+# --- Plan 03-12: the visit downstream sweeper is retired (D-03) -----------------------------
+# Read-only: the test never deletes, pauses or creates anything. It describes the Schedules
+# the rebuilt visit worker leaves on the live Temporal server.
+
+RETIRED_SCHEDULE = "visit-downstream-sweeper"
+SAFETY_NET_SCHEDULES = (
+    "visit-reconciler",
+    "scheduling-hold-reaper",
+    "scheduling-pending-starter",
+    "scheduling-reconciler",
+)
+PAUSED_POLLER = "scheduling-schedule-change-poller"
+
+
+async def _schedule_paused(temporal: Client, schedule_id: str) -> bool | None:
+    """True/False for an existing Schedule's paused flag, None when it does not exist."""
+    from temporalio.service import RPCError, RPCStatusCode  # noqa: PLC0415
+
+    try:
+        description = await temporal.get_schedule_handle(schedule_id).describe()
+    except RPCError as exc:
+        if exc.status == RPCStatusCode.NOT_FOUND:
+            return None
+        raise
+    return description.schedule.state.paused
+
+
+async def test_sweeper_schedule_retired_on_live_server(temporal: Client) -> None:
+    """D-03, T-3-38: the sweeper Schedule is gone, every other safety net is still
+    registered and running, the user-paused poller is still paused, and no sweeper run is
+    in flight (an in-flight run gets 60 s to finish)."""
+    assert await _schedule_paused(temporal, RETIRED_SCHEDULE) is None, (
+        "the visit-downstream-sweeper Schedule still exists on the live server"
+    )
+    for schedule_id in SAFETY_NET_SCHEDULES:
+        assert await _schedule_paused(temporal, schedule_id) is False, (
+            f"{schedule_id} must exist and not be paused"
+        )
+    assert await _schedule_paused(temporal, PAUSED_POLLER) is True, (
+        "scheduling-schedule-change-poller must still exist and stay paused"
+    )
+
+    query = "WorkflowType = 'VisitDownstreamSweeperWorkflow' AND ExecutionStatus = 'Running'"
+    deadline = time.monotonic() + 60
+    running = [wf async for wf in temporal.list_workflows(query)]
+    while running and time.monotonic() < deadline:
+        await asyncio.sleep(2)
+        running = [wf async for wf in temporal.list_workflows(query)]
+    assert not running, "a VisitDownstreamSweeperWorkflow execution is still running"
