@@ -145,3 +145,62 @@ async def test_tracer_saga_time_reaches_prometheus_and_grafana_is_provisioned(
     assert any("provision dashboards" in line for line in provisioning), "dashboards provider not loaded"
     errors = [line for line in provisioning if "level=error" in line or "level=warn" in line]
     assert not errors, errors
+
+
+# --- Task 2: every process scraped and up --------------------------------------------
+
+EXPECTED_JOBS = {
+    "smarthealth-gateway",
+    "smarthealth-identity",
+    "smarthealth-organization",
+    "smarthealth-provider",
+    "smarthealth-patient",
+    "smarthealth-scheduling",
+    "smarthealth-billing",
+    "smarthealth-visit",
+    "smarthealth-analytics",
+    "smarthealth-scheduling-worker",
+    "smarthealth-visit-worker",
+    "smarthealth-notification-temporal-worker",
+    "smarthealth-visit-consumer",
+    "smarthealth-analytics-consumer",
+    "smarthealth-notification-consumer",
+    "smarthealth-notification-celery",
+    "rabbitmq",
+}
+TEMPORAL_WORKER_JOBS = (
+    "smarthealth-scheduling-worker",
+    "smarthealth-visit-worker",
+    "smarthealth-notification-temporal-worker",
+)
+
+
+def test_every_job_and_target_is_up() -> None:
+    def all_up() -> list[dict[str, Any]] | None:
+        targets = prom_targets()
+        jobs = {t["labels"]["job"] for t in targets}
+        down = [t for t in targets if t["health"] != "up"]
+        return targets if EXPECTED_JOBS <= jobs and not down else None
+
+    targets = wait_until(all_up, timeout=SCRAPE_DEADLINE_SECONDS)
+    assert len(targets) >= 20, len(targets)
+    # Both ports of each Temporal worker are scraped (application + SDK metrics).
+    for job in TEMPORAL_WORKER_JOBS:
+        ports = {t["scrapeUrl"].split("//", 1)[1].split("/", 1)[0].rsplit(":", 1)[-1] for t in targets if t["labels"]["job"] == job}
+        assert ports == {"9100", "9464"}, (job, ports)
+
+
+@pytest.mark.parametrize("job", TEMPORAL_WORKER_JOBS)
+def test_each_temporal_worker_exposes_temporal_sdk_series(job: str) -> None:
+    def present() -> bool:
+        return bool(prom_query(f'count({{__name__=~"temporal_.+",job="{job}"}})'))
+
+    wait_until(present, timeout=SCRAPE_DEADLINE_SECONDS)
+
+
+def test_no_worker_consumer_or_celery_series_is_labelled_by_an_entity_id() -> None:
+    """Bounded cardinality (T-3-48): no series on the worker, consumer or Celery jobs
+    carries an appointment, patient, visit, provider or clinic id as a label."""
+    jobs = "smarthealth-(scheduling-worker|visit-worker|notification-.+|visit-consumer|analytics-consumer)"
+    for label in ("appointment_id", "patient_id", "visit_id", "provider_id", "clinic_id"):
+        assert prom_query(f'count({{job=~"{jobs}",{label}!=""}})') == [], label

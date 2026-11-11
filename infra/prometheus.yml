@@ -48,3 +48,37 @@ scrape_configs:
   - job_name: "smarthealth-scheduling-worker"
     static_configs:
       - targets: ["scheduling-worker:9100", "scheduling-worker:9464"]
+
+  # --- Phase 3 (plan 03-15): analytics, the other Temporal workers, consumers, Celery, RabbitMQ ---
+  - job_name: "smarthealth-analytics"
+    static_configs:
+      - targets: ["analytics:8000"]
+
+  - job_name: "smarthealth-visit-worker"
+    static_configs:
+      - targets: ["visit-worker:9100", "visit-worker:9464"]
+
+  - job_name: "smarthealth-notification-temporal-worker"
+    static_configs:
+      - targets: ["notification-temporal-worker:9100", "notification-temporal-worker:9464"]
+
+  - job_name: "smarthealth-visit-consumer"
+    static_configs:
+      - targets: ["visit-consumer:9100"]
+
+  - job_name: "smarthealth-analytics-consumer"
+    static_configs:
+      - targets: ["analytics-consumer:9100"]
+
+  - job_name: "smarthealth-notification-consumer"
+    static_configs:
+      - targets: ["notification-consumer:9100"]
+
+  - job_name: "smarthealth-notification-celery"
+    static_configs:
+      - targets: ["notification-celery:9100"]
+
+  # RabbitMQ's own rabbitmq_prometheus plugin (queue depth, including the dead-letter queue).
+  - job_name: "rabbitmq"
+    static_configs:
+      - targets: ["rabbitmq:15692"]

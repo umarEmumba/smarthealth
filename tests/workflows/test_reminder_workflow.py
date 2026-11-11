@@ -393,6 +393,8 @@ async def test_main_instruments_publishing_touches_the_heartbeat_and_stops_on_si
     monkeypatch.setattr(temporal_worker, "_connect_with_retry", _connect)
     monkeypatch.setattr(temporal_worker, "instrument_publisher", lambda: instrumented.append(True))
     monkeypatch.setattr(temporal_worker, "configure_tracer_provider", lambda name: None)
+    # main() serves worker metrics on a fixed port (plan 03-15); the test must not bind it.
+    monkeypatch.setattr(temporal_worker, "start_worker_metrics_server", lambda: None)
     # The SIGTERM handler is installed by main() before it connects, so this signal
     # is handled by main's stop event and never reaches the default disposition.
     asyncio.get_running_loop().call_later(1.5, os.kill, os.getpid(), signal.SIGTERM)
