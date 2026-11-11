@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 from temporalio import activity
-from temporalio.client import Client
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -31,8 +33,16 @@ from services.notification.contracts import (
     ReminderInput,
     ReminderResult,
     followup_dedupe_key,
+    followup_workflow_id,
     reminder_dedupe_key,
     reminder_workflow_id,
+)
+from services.notification.config import NotificationSettings
+from services.notification.reminders import (
+    cancel_reminder,
+    reschedule_reminder,
+    start_followup,
+    start_reminder,
 )
 from services.notification.workflows.reminder import FollowUpReminderWorkflow, ReminderWorkflow
 
@@ -82,3 +92,260 @@ async def test_tracer_reminder_timer_fires_and_celery_send_is_delivered(
     )
     assert row, "the reminder was not delivered through the Celery send task"
     assert row["notification_type"] == "appointment.reminder"
+
+
+# --- recording fake: the same activity name, no broker -----------------------------
+
+
+class Recorder:
+    """A stand-in for `notification.enqueue` that records the requests it receives."""
+
+    def __init__(self) -> None:
+        self.calls: list[EnqueueRequest] = []
+
+    @activity.defn(name=ACT_ENQUEUE)
+    async def enqueue(self, req: EnqueueRequest) -> None:
+        self.calls.append(req)
+
+
+@asynccontextmanager
+async def running(env: WorkflowEnvironment) -> AsyncIterator[Recorder]:
+    recorder = Recorder()
+    async with Worker(
+        env.client,
+        task_queue=NOTIFICATION_TASK_QUEUE,
+        workflows=WORKFLOWS,
+        activities=[recorder.enqueue],
+    ):
+        yield recorder
+
+
+async def _result(env: WorkflowEnvironment, workflow_id: str) -> ReminderResult:
+    """The latest run's result, with virtual time unlocked while waiting. Handles
+    from `get_workflow_handle` (the helpers discard the start handle) do not unlock
+    time skipping themselves."""
+    async with env.time_skipping_unlocked():
+        return await env.client.get_workflow_handle(workflow_id, result_type=ReminderResult).result()
+
+
+async def _settle() -> None:
+    """Real time, not virtual: lets the workflow reach its timer before a signal."""
+    await asyncio.sleep(0.5)
+
+
+# --- ReminderWorkflow ---------------------------------------------------------------
+
+
+async def test_two_leads_fire_largest_first_with_distinct_keys(temporal_env: WorkflowEnvironment) -> None:
+    appointment_id, patient_id = _ids()
+    slot = await temporal_env.get_current_time() + timedelta(days=2)
+    async with running(temporal_env) as recorder:
+        started = await start_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=slot.isoformat(),
+            lead_minutes=[120, 1440],  # given out of order on purpose
+        )
+        assert started is True
+        result = await _result(temporal_env, reminder_workflow_id(appointment_id))
+    assert result == ReminderResult("completed", [1440, 120])
+    assert [c.dedupe_key for c in recorder.calls] == [
+        reminder_dedupe_key(appointment_id, slot.isoformat(), 1440),
+        reminder_dedupe_key(appointment_id, slot.isoformat(), 120),
+    ]
+    assert {c.notification_type for c in recorder.calls} == {"appointment.reminder"}
+    assert all(c.patient_id == patient_id and c.appointment_id == appointment_id for c in recorder.calls)
+
+
+async def test_cancel_before_the_first_lead_fires_nothing(temporal_env: WorkflowEnvironment) -> None:
+    appointment_id, patient_id = _ids()
+    slot = await temporal_env.get_current_time() + timedelta(days=2)
+    async with running(temporal_env) as recorder:
+        await start_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=slot.isoformat(),
+            lead_minutes=[1440, 120],
+        )
+        await _settle()
+        await cancel_reminder(temporal_env.client, appointment_id)
+        result = await _result(temporal_env, reminder_workflow_id(appointment_id))
+        assert result == ReminderResult("cancelled", [])
+        assert recorder.calls == []
+        # A second cancel (the run is closed) and a cancel of an unknown id are harmless.
+        await cancel_reminder(temporal_env.client, appointment_id)
+        await cancel_reminder(temporal_env.client, str(uuid.uuid4()))
+
+
+async def test_reschedule_fires_for_the_new_slot_only(temporal_env: WorkflowEnvironment) -> None:
+    appointment_id, patient_id = _ids()
+    now = await temporal_env.get_current_time()
+    old_slot, new_slot = now + timedelta(hours=3), now + timedelta(hours=8)
+    async with running(temporal_env) as recorder:
+        await start_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=old_slot.isoformat(),
+            lead_minutes=[120],
+        )
+        await _settle()
+        await reschedule_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            new_slot_iso=new_slot.isoformat(),
+            lead_minutes=[120],
+        )
+        result = await _result(temporal_env, reminder_workflow_id(appointment_id))
+    assert result == ReminderResult("completed", [120])
+    assert [c.dedupe_key for c in recorder.calls] == [
+        reminder_dedupe_key(appointment_id, new_slot.isoformat(), 120)
+    ]
+    assert str(int(old_slot.timestamp())) not in recorder.calls[0].dedupe_key
+
+
+async def test_a_lead_already_in_the_past_is_skipped(temporal_env: WorkflowEnvironment) -> None:
+    appointment_id, patient_id = _ids()
+    slot = await temporal_env.get_current_time() + timedelta(minutes=30)
+    async with running(temporal_env) as recorder:
+        await start_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=slot.isoformat(),
+            lead_minutes=[120],
+        )
+        result = await _result(temporal_env, reminder_workflow_id(appointment_id))
+    assert result == ReminderResult("skipped_past", [])
+    assert recorder.calls == []
+
+
+async def test_only_the_leads_still_ahead_fire(temporal_env: WorkflowEnvironment) -> None:
+    appointment_id, patient_id = _ids()
+    slot = await temporal_env.get_current_time() + timedelta(hours=5)
+    async with running(temporal_env) as recorder:
+        await start_reminder(
+            temporal_env.client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=slot.isoformat(),
+            lead_minutes=[1440, 120],  # 24 h is past, 2 h is ahead
+        )
+        result = await _result(temporal_env, reminder_workflow_id(appointment_id))
+    assert result == ReminderResult("completed", [120])
+    assert len(recorder.calls) == 1
+
+
+async def test_duplicate_start_attaches_to_the_running_run_then_is_refused_after_close(
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    appointment_id, patient_id = _ids()
+    slot = await temporal_env.get_current_time() + timedelta(days=2)
+    kwargs = {
+        "appointment_id": appointment_id,
+        "patient_id": patient_id,
+        "slot_start_iso": slot.isoformat(),
+        "lead_minutes": [120],
+    }
+    async with running(temporal_env):
+        client = temporal_env.client
+        assert await start_reminder(client, **kwargs) is True
+        handle = client.get_workflow_handle(reminder_workflow_id(appointment_id))
+        first_run = (await handle.describe()).run_id
+        assert await start_reminder(client, **kwargs) is True  # attaches
+        assert (await handle.describe()).run_id == first_run
+        await cancel_reminder(client, appointment_id)
+        await _result(temporal_env, reminder_workflow_id(appointment_id))
+        # The run closed: a second start is refused and reported, never raised.
+        assert await start_reminder(client, **kwargs) is False
+
+
+async def test_reschedule_after_the_reminder_closed_starts_a_new_run(
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    appointment_id, patient_id = _ids()
+    client = temporal_env.client
+    slot = await temporal_env.get_current_time() + timedelta(hours=3)
+    async with running(temporal_env) as recorder:
+        await start_reminder(
+            client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            slot_start_iso=slot.isoformat(),
+            lead_minutes=[120],
+        )
+        handle = client.get_workflow_handle(reminder_workflow_id(appointment_id))
+        assert await _result(temporal_env, reminder_workflow_id(appointment_id)) == ReminderResult(
+            "completed", [120]
+        )
+        first_run = (await handle.describe()).run_id
+
+        new_slot = await temporal_env.get_current_time() + timedelta(hours=6)
+        await reschedule_reminder(
+            client,
+            appointment_id=appointment_id,
+            patient_id=patient_id,
+            new_slot_iso=new_slot.isoformat(),
+            lead_minutes=[120],
+        )
+        assert await _result(temporal_env, reminder_workflow_id(appointment_id)) == ReminderResult(
+            "completed", [120]
+        )
+        assert (await handle.describe()).run_id != first_run
+    assert [c.dedupe_key for c in recorder.calls] == [
+        reminder_dedupe_key(appointment_id, slot.isoformat(), 120),
+        reminder_dedupe_key(appointment_id, new_slot.isoformat(), 120),
+    ]
+
+
+# --- FollowUpReminderWorkflow ---------------------------------------------------------
+
+
+async def test_followup_fires_once_after_the_delay_and_a_second_start_is_one_run(
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    visit_id, appointment_id = _ids()
+    patient_id = str(uuid.uuid4())
+    completed_at = await temporal_env.get_current_time()
+    kwargs = {
+        "visit_id": visit_id,
+        "appointment_id": appointment_id,
+        "patient_id": patient_id,
+        "completed_at_iso": completed_at.isoformat(),
+        "delay_minutes": 4320,
+    }
+    client = temporal_env.client
+    async with running(temporal_env) as recorder:
+        assert await start_followup(client, **kwargs) is True
+        handle = client.get_workflow_handle(followup_workflow_id(visit_id))
+        first_run = (await handle.describe()).run_id
+        assert await start_followup(client, **kwargs) is True  # attaches while it sleeps
+        assert (await handle.describe()).run_id == first_run
+        assert await _result(temporal_env, followup_workflow_id(visit_id)) == ReminderResult(
+            "completed", [4320]
+        )
+        assert await start_followup(client, **kwargs) is False  # closed: refused
+    assert len(recorder.calls) == 1
+    call = recorder.calls[0]
+    assert call.notification_type == "visit.followup"
+    assert call.dedupe_key == followup_dedupe_key(visit_id) == f"visit.followup:{visit_id}"
+    assert call.visit_id == visit_id and call.appointment_id == appointment_id
+
+
+# --- settings -------------------------------------------------------------------------
+
+
+def test_reminder_leads_are_parsed_largest_first_and_must_be_positive() -> None:
+    default = NotificationSettings()
+    assert default.reminder_leads == [1440, 120]
+    assert default.followup_delay_minutes == 4320
+    parsed = NotificationSettings(NOTIFICATION_REMINDER_LEADS_MINUTES="30, 120,30,1440")
+    assert parsed.reminder_leads == [1440, 120, 30]
+    for bad in ("", "0,120", "-5", "abc", "120,,x"):
+        with pytest.raises(ValidationError):
+            NotificationSettings(NOTIFICATION_REMINDER_LEADS_MINUTES=bad)
+    with pytest.raises(ValidationError):
+        NotificationSettings(NOTIFICATION_FOLLOWUP_DELAY_MINUTES=0)

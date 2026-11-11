@@ -106,6 +106,9 @@ def make_worker() -> Iterator[Callable[..., Any]]:
             perform_ping_check=False,
             queues=list(queues),
             loglevel="WARNING",
+            # An in-process worker needs 8-10 s to stop here, right at Celery's 10 s
+            # default, which made teardown flaky (plan 03-06 saw it about 1 run in 3).
+            shutdown_timeout=60.0,
         )
         worker = cm.__enter__()
         stack.append(cm)
