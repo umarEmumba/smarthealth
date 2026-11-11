@@ -41,8 +41,10 @@ Each branch catches its own `ActivityError` and reports `skipped:<ErrorType>`
 in the result instead of failing the workflow, so one branch failing never
 blocks the others. No run timeout: activities are bounded by their policies.
 
-Phase 3 replaces the trigger (commit-then-start + sweeper) with a
-transactional outbox, and the two intent stubs with Kafka events / Celery jobs.
+Phase 3 replaced the trigger (commit-then-start + sweeper) with a transactional outbox:
+the visit-downstream consumer starts this workflow on `visit.completed`. The two
+intent stubs stay intent records: the real follow-up and analytics work is done by
+the notification and analytics consumers from the same event.
 
 Sandbox: only `temporalio`, stdlib, the pure contracts and the policies.
 """

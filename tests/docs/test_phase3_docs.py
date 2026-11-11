@@ -402,3 +402,93 @@ def test_metric_names_the_docs_cite_exist_in_the_code_or_the_dashboards(name: st
         if _METRIC_NAME.fullmatch(base):
             # k6 trend names live in loadtest/booking.js, which the corpus reads (`.js`).
             assert base in source_corpus(), f"{name}: the metric {token!r} is not defined in the code or dashboards"
+def test_the_visit_sweeper_is_not_described_as_a_live_trigger_anywhere() -> None:
+    """The sweeper Schedule is deleted and its workflow is a tombstone (plan 03-12)."""
+    live = (
+        r"sweeper stays as a safety net",
+        r"sweeper still runs",
+        r"visit sweeper still runs",
+        r"sweeper finds\s+completed visits",
+        r"sweeper starts the workflow",
+        r"plan 02-11's sweeper finds",
+        r"phase 3 replaces the trigger",
+        r"and the lost-trigger sweep\)",
+    )
+    for path in sorted((REPO_ROOT / "services" / "visit").rglob("*.py")):
+        if "migrations" in path.parts:  # revisions are history; their docstrings are not edited
+            continue
+        text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
+        for claim in live:
+            assert not re.search(claim, text), f"{path.relative_to(REPO_ROOT)} still says {claim!r}"
+
+
+def test_the_three_named_visit_docstrings_say_what_replaced_the_sweeper() -> None:
+    app = (REPO_ROOT / "services/visit/app.py").read_text(encoding="utf-8")
+    assert "outbox" in app and "retired" in app
+    init = (REPO_ROOT / "services/visit/workflows/__init__.py").read_text(encoding="utf-8")
+    assert "tombstone" in init and "list_workflows" in init
+    reconciler = (REPO_ROOT / "services/visit/workflows/reconciler.py").read_text(encoding="utf-8").lower()
+    assert "outbox" in reconciler and "never-started" in reconciler
+
+
+
+
+# --------------------------------------------------------------------------- ERD, NFR page and load-test README (Task 3)
+
+
+def test_migration_revisions_the_erd_names_exist_as_files() -> None:
+    revisions = {p.stem for p in (REPO_ROOT / "services").glob("*/migrations/versions/*.py")}
+    named = set(re.findall(r"\b[a-z]+_\d{4}_[a-z0-9_]+\b", ERD_MD.read_text(encoding="utf-8")))
+    assert named, "docs/erd.md names no migration revisions"
+    for revision in sorted(named):
+        assert revision in revisions, f"docs/erd.md names the revision {revision!r}; no such migration file"
+    for revision in ("scheduling_0006_outbox", "visit_0003_outbox", "provider_0003_outbox", "patient_0002_outbox", "analytics_0001_projections"):
+        assert revision in named, f"docs/erd.md does not name {revision}"
+        assert revision in ERD_HTML.read_text(encoding="utf-8"), f"docs/erd.html does not name {revision}"
+
+
+@pytest.mark.parametrize("name", ["erd.md", "erd.html"])
+def test_tables_views_collections_and_indexes_the_erd_names_exist(name: str) -> None:
+    text = documents()[name]
+    tokens = backticked(text) | set(re.findall(r"\b(?:v_[a-z_]+|ux_[a-z_]+|notification_[a-z_]+|ix_[a-z_]+)\b", text))
+    for token in sorted(tokens):
+        if re.fullmatch(r"(?:v_|ux_|ix_)[a-z_]+|notification_(?:deliveries|provider_calls|appointment_state)", token):
+            assert token in source_corpus(), f"{name}: {token!r} does not exist in the code or migrations"
+    for table in ("outbox", "processed_events", "visits_completed", "notification_deliveries",
+                  "notification_provider_calls", "notification_appointment_state", "analytics_db"):
+        assert table in text, f"{name} does not mention {table}"
+
+
+def test_the_dashboards_the_docs_name_exist() -> None:
+    uids = {
+        re.search(r'"uid":\s*"([^"]+)"', path.read_text(encoding="utf-8")).group(1)  # type: ignore[union-attr]
+        for path in (REPO_ROOT / "infra" / "grafana" / "dashboards").glob("*.json")
+    }
+    assert {"smarthealth-booking-nfr", "smarthealth-events", "smarthealth-notifications", "smarthealth-operations"} <= uids
+    for name in ("architecture.md", "nfr.md", "loadtest/README.md"):
+        text = phase3_markdown() if name == "architecture.md" else documents()[name]
+        for token in sorted(set(re.findall(r"smarthealth-(?:booking-nfr|events|notifications|operations)", text))):
+            assert token in uids, f"{name} names the dashboard {token!r}, which is not provisioned"
+
+
+def test_the_nfr_page_records_the_phase3_smoke_runs_and_keeps_the_unmeasured_status() -> None:
+    nfr = NFR_MD.read_text(encoding="utf-8")
+    loadtest = LOADTEST_README.read_text(encoding="utf-8")
+    for text in (nfr, loadtest):
+        for figure in ("21.8", "29.3", "49.1", "200.8", "170.0"):
+            assert figure in text, f"a Phase 3 smoke figure {figure} is missing"
+        assert "not run" in text or "not been run" in text
+        assert "smarthealth-booking-nfr" in text
+    assert "booking_saga_seconds" in nfr
+    assert "not yet measured" in nfr
+
+
+STALE_DOCS_ALL = ("README.md", "architecture.md", "architecture.html", "erd.md", "erd.html", "nfr.md", "loadtest/README.md")
+
+
+@pytest.mark.parametrize("name", STALE_DOCS_ALL)
+def test_every_document_is_free_of_the_claims_phase3_made_false(name: str) -> None:
+    text = re.sub(r"\s+", " ", documents()[name].lower())
+    for claim in STALE_CLAIMS:
+        assert not re.search(claim, text), f"{name} still claims {claim!r}"
+    assert "sweeper picks it up" not in text and "lets the sweeper find" not in text

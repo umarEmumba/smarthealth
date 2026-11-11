@@ -43,7 +43,7 @@ Completion is non-blocking (VISIT-04): the transition commits with
 `downstream_started_at` NULL AND a `visit.completed` outbox row (plan 03-09, D-03),
 then the route returns 200. The route makes no Temporal call: Debezium relays the
 event and the visit-downstream consumer starts `visit-completed-{visit_id}` and sets
-the marker. The Phase 2 visit sweeper still runs as a safety net until plan 03-12.
+the marker. There is no sweeper: the Phase 2 visit sweeper was retired in plan 03-12.
 
 List (VISIT-05, D-17): ops staff poll it (no cache, no push), filtered by
 status, provider and check-in time (`date_from` inclusive, `date_to`

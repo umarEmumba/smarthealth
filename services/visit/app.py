@@ -11,8 +11,10 @@ Completion commits with `downstream_started_at` NULL and a `visit.completed`
 outbox row (plan 03-09, D-03). The API makes no Temporal call: Debezium relays the
 event and the visit-downstream consumer (`python -m services.visit.consumer`) starts
 the non-blocking `visit-completed-{visit_id}` workflow and sets the marker; the visit
-worker (`python -m services.visit.worker`) runs it, and its sweeper stays as a safety
-net until plan 03-12 retires it.
+worker (`python -m services.visit.worker`) runs it. The downstream work is triggered
+by that outbox event, not by this API and not by a sweeper: the Phase 2 sweeper was
+retired in plan 03-12 (its Schedule is deleted at worker start and only a no-op
+tombstone workflow remains registered).
 
 Every bearer token is verified LOCALLY with a `JwksClient` over Identity's
 public JWKS (cached; never a call to Identity per request).
