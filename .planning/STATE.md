@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Event-Driven System + Observability
 status: executing
-stopped_at: Completed 03-07-PLAN.md
-last_updated: "2026-11-11T08:25:33.076Z"
+stopped_at: Completed 03-08-patient-provider-producer-PLAN.md
+last_updated: "2026-11-11T08:40:47.512Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 02.1 execution started
-state_head: 84444c41a0e0a273cf16ef8d91f88a961e887897
+state_head: 392fea8826035e3e9956f36f6c84eed64fcc8f1a
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 62
-  completed_plans: 49
+  completed_plans: 50
   percent: 60
 ---
 
@@ -101,6 +101,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P06 | not measured | 3 tasks | 13 files |
 | Phase 03 P05 | 14min | 3 tasks | 12 files |
 | Phase 03 P07 | 75min | 3 tasks | 6 files |
+| Phase 03 P08 | 35min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -197,6 +198,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-06: reminder dedupe key includes slot epoch; sent_leads of a rescheduled reminder covers the final slot only
 - [Phase 03]: 03-05: Kafka Connect runs on quay.io/debezium/connect:3.7.1.Final; connector password via Compose secret + FileConfigProvider; connector tests parametrized over connector JSON files present
 - [Phase 03]: 03-07: appointment event occurred_at is the row's updated_at (DB transaction time); event id discriminator is the post-transition version
+- [Phase 03]: 03-08: Patient and Provider are outbox producers (patient-outbox, provider-outbox connectors); only registration/deactivation and schedule-affecting changes emit; events PHI-free, proven at table and Kafka bytes
 
 ### Pending Todos
 
@@ -237,6 +239,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T08:25:33.008Z
-Stopped at: Completed 03-07-PLAN.md
+Last session: 2026-11-11T08:40:47.445Z
+Stopped at: Completed 03-08-patient-provider-producer-PLAN.md
 Resume file: None
