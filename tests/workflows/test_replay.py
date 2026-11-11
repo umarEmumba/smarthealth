@@ -438,6 +438,7 @@ async def test_record_visit_history(
     temporal_env: WorkflowEnvironment,
 ) -> None:
     from tests.visit.conftest import _visit_world, widened_checkin_window  # noqa: PLC0415
+    from tests.visit.conftest import deliver_visit_events  # noqa: PLC0415
     from tests.visit.test_downstream import _completed_visit  # noqa: PLC0415
 
     # Plan 02.1-09: check-in now needs the widened window (the world's slots are far out).
@@ -445,6 +446,8 @@ async def test_record_visit_history(
         async for vw in _visit_world(client, mesh):
             visit, _, completed = await _completed_visit(client, mesh, vw)
             assert completed.status_code == 200, completed.text
+            # Plan 03-09: the visit-downstream consumer (not the API) starts the workflow.
+            await deliver_visit_events(None, visit["id"], client=temporal_env.client)
             handle = temporal_env.client.get_workflow_handle(
                 visit_completed_workflow_id(visit["id"]), result_type=VisitCompletedResult
             )

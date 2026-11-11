@@ -250,8 +250,104 @@ async def _visit_world(client: AsyncClient, mesh: httpx.AsyncClient) -> AsyncIte
     try:
         yield vw
     finally:
+        await cleanup_visit_outbox(vw.provider_ids)
         await cleanup_visit_rows(vw.provider_ids)
         await cleanup_scheduling_rows(engine, vw.provider_ids)
+        await engine.dispose()
+
+
+async def outbox_rows(visit_id: str) -> list[Any]:
+    """The visit's outbox rows (`id`, `type`, `aggregateid`, `payload`, `occurred_at`,
+    `schema_version`, `traceparent`), oldest first, read straight from visit_db."""
+    from services.visit.config import settings  # noqa: PLC0415
+
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT id, aggregatetype, aggregateid, type, payload, traceparent, "
+                    "schema_version, occurred_at FROM outbox WHERE aggregateid = :a "
+                    "ORDER BY occurred_at, id"
+                ),
+                {"a": visit_id},
+            )
+            return list(result.all())
+    finally:
+        await engine.dispose()
+
+
+async def deliver_visit_events(db: Any, visit_id: str, *, client: Any = None) -> int:
+    """Stand in for Debezium + Kafka + the visit-downstream consumer (the harness has
+    none running): decode the visit's outbox rows with the registry deserializer, wrap
+    each in an `EventEnvelope` and await `handle_visit_completed` with `client` (the
+    test's Temporal client) injected. `db` is an `AsyncSession` or `AsyncEngine` on
+    visit_db used to read the rows; None opens a short-lived engine. Returns how many
+    events were delivered. Raises whatever the handler raises, so a test can assert on
+    the consumer's classification."""
+    from confluent_kafka.serialization import MessageField, SerializationContext  # noqa: PLC0415
+
+    from libs.events.catalog import topic_for  # noqa: PLC0415
+    from libs.events.consumer import EventEnvelope  # noqa: PLC0415
+    from libs.events.registry import deserializer  # noqa: PLC0415
+    from services.visit.config import settings  # noqa: PLC0415
+    from services.visit.consumer import handle_visit_completed  # noqa: PLC0415
+
+    sql = text(
+        "SELECT id, type, aggregateid, payload, schema_version, occurred_at FROM outbox "
+        "WHERE aggregateid = :a ORDER BY occurred_at, id"
+    )
+    if db is None:
+        engine = create_async_engine(settings.database_url)
+        try:
+            async with engine.connect() as conn:
+                rows = list((await conn.execute(sql, {"a": visit_id})).all())
+        finally:
+            await engine.dispose()
+    else:
+        rows = list((await db.execute(sql, {"a": visit_id})).all())
+
+    decode = deserializer()
+    delivered = 0
+    for offset, row in enumerate(rows):
+        topic = topic_for(row.type)
+        record = decode(bytes(row.payload), SerializationContext(topic, MessageField.VALUE))
+        envelope = EventEnvelope(
+            event_id=row.id,
+            event_type=row.type,
+            aggregate_id=row.aggregateid,
+            occurred_at=row.occurred_at,
+            schema_version=row.schema_version,
+            payload=record,
+            topic=topic,
+            partition=0,
+            offset=offset,
+        )
+        await handle_visit_completed(envelope, client=client)
+        delivered += 1
+    return delivered
+
+
+async def cleanup_visit_outbox(provider_ids: Iterable[uuid.UUID]) -> None:
+    """Test-data hygiene: delete the outbox rows of the visits a test created BEFORE
+    `cleanup_visit_rows` removes the visits (application code never deletes; the outbox
+    is insert-only in production). Rows already relayed to Kafka stay there."""
+    from services.visit.config import settings  # noqa: PLC0415
+
+    ids = list(provider_ids)
+    if not ids:
+        return
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "DELETE FROM outbox WHERE aggregateid IN "
+                    "(SELECT id::text FROM visits WHERE provider_id = ANY(:ids))"
+                ),
+                {"ids": ids},
+            )
+    finally:
         await engine.dispose()
 
 
