@@ -214,6 +214,10 @@ def test_stale_text_removed(html: str) -> None:
         "Phase 3 observability measures them",
         "nothing is delegated to it yet",
         "compute a projection",
+        # Plan 03-26 (CR-01): an outage is dead-lettered as TransientExhausted once the cap is reached.
+        "retried and never dead-lettered",
+        "the message is never dead-lettered",
+        "an outage delays an event and never drops it",
     ):
         assert stale not in html, stale
 
@@ -379,3 +383,13 @@ def test_event_names_the_dashboard_cites_exist_in_the_catalog(html: str) -> None
     assert types <= set(EVENT_CATALOG), types - set(EVENT_CATALOG)
     # Every event type of the D-07 set is named somewhere on the page.
     assert set(EVENT_CATALOG) <= types, set(EVENT_CATALOG) - types
+
+
+def test_qa_outage_answer_states_the_cap_and_the_recovery_tools(html: str) -> None:
+    """Plan 03-26: the outage answer says what the code does (cap, TransientExhausted, three recovery routes)."""
+    qa = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", _section(html, "qa")))
+    assert "TransientExhausted" in qa
+    assert "10 attempts and 15 minutes" in qa
+    for tool in ("visit reconciler", "analytics rebuild", "DLQ replay script"):
+        assert tool in qa, tool
+    assert "outage" in qa.lower()

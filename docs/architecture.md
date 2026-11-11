@@ -608,9 +608,16 @@ rows per list per run.
 same step bodies the workflow uses, under the workflow id `visit-completed-<visit id>`, so Billing's
 `Idempotency-Key` and the audit dedupe key are identical whether the workflow or the reconciler runs a step.
 It never updates a marker directly. Terminal business outcomes (`BillingNotFinalizable`,
-`AppointmentNotCheckedIn`) are logged as refusals, not failures. Only started workflows are covered here; a
-completion whose workflow was never started is the `visit-downstream` consumer's job (the sweeper that used to
-do it is retired).
+`AppointmentNotCheckedIn`) are logged as refusals, not failures. The settle pass covers started workflows only.
+
+The same reconciler also restarts **lost triggers** (plan 03-22, CR-01): a visit that is `completed`, whose
+`downstream_started_at` marker is still NULL and whose completion is older than the same grace, had its
+`visit.completed` event dead-lettered or consumed and dropped. `VisitActivities.reconcile` runs the settle pass
+first and then this pass (`visit_repo.list_lost_triggers`, `downstream.restart_lost_triggers`), which calls
+the consumer's own idempotent `ensure_downstream_started` (`start_once` on `visit-completed-<visit id>`, then
+the conditional marker), once at worker start and on the 60 s Schedule. The sweeper that used to be the only
+safety net stays retired (its Schedule is deleted); this is a pass of the existing reconciler, not a new Schedule
+and not a new workflow, so no `workflow.patched` was needed.
 
 **Replay discipline.** `ReconcilerWorkflow` and `VisitReconcilerWorkflow` are new workflow types and need no
 patch marker; any later change to their command sequence needs `workflow.patched` and a newly recorded history
@@ -1074,8 +1081,49 @@ an explicit ignore, or after a confirmed write to the group's DLQ. A message tha
 (undecodable bytes, a malformed payload, an unknown id) is copied to the group's dead-letter topic with the
 original key, value and headers plus `dlq.*` headers that carry the error **type** only, never the error text,
 and the partition moves on. An ordinary handler error is retried up to three attempts and then dead-lettered.
-An infrastructure outage (Schema Registry, Postgres, Temporal, RabbitMQ) is never dead-lettered: the offset is
-held, the consumer seeks back and retries with capped backoff, so an outage delays an event and never drops it.
+
+**Infrastructure failures are retried, with a cap, and then dead-lettered as `TransientExhausted`.** One module
+decides what is transient (`libs/events/classify.py`; all three consumers call it and a test scans the code for
+private copies). A failure is transient when it is a PostgreSQL SQLSTATE of class 08, 53, 57 or 40 (for example
+53300 too many connections, 57P03 cannot connect now, 40P01 deadlock; a unique violation 23505 or an undefined
+table 42P01 is never transient), a SQLAlchemy connection error or pool timeout, a Schema Registry answer of 408,
+429 or 5xx, a Temporal outage status (UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED, ABORTED, CANCELLED,
+UNKNOWN, INTERNAL) or the SDK's closed-client error, or a broker, MongoDB or network error. The consumer holds
+the offset, seeks back and retries with capped backoff. When a message has failed transiently **at least 10
+times over at least 15 minutes** (the defaults, `max_transient_attempts` and `max_transient_seconds`), it is
+copied to the group's DLQ topic with the original key, value and headers and `dlq.error_type`
+`TransientExhausted`, counted in `dlq_events_total{error_type="TransientExhausted"}`, and the partition moves on.
+A failed offset commit is retried (three tries with backoff), counted in `event_commit_failures_total{group}`
+and never stops the consumer unless the Kafka error is fatal.
+
+This paragraph used to claim the opposite (that an infrastructure outage can never end in a dead letter). The
+gap-closure verification found that false: before plan 03-21 an asyncpg resource or connection error such as
+53300 was not classified as transient and a healthy `visit.completed` was dead-lettered after three quick
+attempts and never recovered (CR-01); the analytics consumer had the same defect (WR-02).
+
+**Head-of-line effect of the cap.** The cap is per message: each message gets its own 15 minute window. During a
+long outage the first message of a partition fails for 15 minutes and is dead-lettered, then the next healthy
+message starts its own 15 minutes, so a run of healthy events is dead-lettered one per 15 minutes per partition
+for as long as the outage lasts. That is the price of never blocking a partition for ever; it makes
+**replaying the DLQ a required operational step after any outage longer than 15 minutes**, not an optional one.
+
+**Recovery of a `TransientExhausted` record, per group, with the tools that exist:**
+
+| Group | Recovery |
+|---|---|
+| `visit-downstream` | Automatic: the visit reconciler's lost-trigger pass restarts the visit after `VISIT_RECONCILE_GRACE_MINUTES` (4f, 10.4). By hand: `scripts/backfill_visit_completed_events.py --apply` (its `stale_queued` / `restarted` path) or `scripts/replay_dlq.py --group visit-downstream` |
+| `analytics-projection` | `scripts/replay_dlq.py --group analytics-projection`, or `services.analytics.rebuild` (10.6) |
+| `notification-trigger` | `scripts/replay_dlq.py --group notification-trigger` |
+
+`scripts/replay_dlq.py` is a dry run by default (it reads and prints coordinates, the error type and the event id,
+never a key or a payload). `--apply` re-produces each selected record's original key, value and original headers
+(every `dlq.*` header removed) to its `dlq.original_topic`, only if that is a catalogue topic (or one named with
+`--allow-topic`; anything else is counted `refused`). It filters by `--error-type`, `--key`, `--event-id` and
+`--limit` (default 100), and it never moves a consumer group's offsets. A replay reaches every group that reads
+that topic, and each absorbs the duplicate through its own idempotency key (D-08), so replaying an event a group
+already handled changes nothing; a record that fails again is dead-lettered again. Replaying the live
+`visit-downstream` DLQ unfiltered is not advised: it holds `NonRetryableEventError` records for deleted test
+visits, so select by `--error-type TransientExhausted`.
 
 **Ordering.** Kafka orders only within a partition, and the key is the aggregate id, so the events of one
 appointment are ordered; events of different aggregates, and events on different topics, are not. The
@@ -1156,12 +1204,27 @@ Temporal or database outage is retried. When the workflow's appointment branch c
 Scheduling commits `appointment.completed` through the same outbox. The follow-up reminder fires
 `NOTIFICATION_FOLLOWUP_DELAY_MINUTES` (default 4320, three days) after completion.
 
+**A lost trigger is recovered, not just detected** (plan 03-22). A `visit.completed` that was dead-lettered
+(a poison record, or `TransientExhausted`, 10.2) or consumed and dropped leaves its visit `completed` with
+`downstream_started_at` NULL. The visit reconciler's lost-trigger pass (4f) restarts such a visit (`restart_lost_triggers`) after
+`VISIT_RECONCILE_GRACE_MINUTES` through the consumer's own `ensure_downstream_started`, with no operator action. A
+live test proves it (`test_lost_visit_trigger_is_recovered_by_the_reconciler`: the consumer is stopped, the
+event's offset is moved past the visit, and the Schedule's own pass starts exactly one `visit-completed-<id>`
+execution and sets the marker). The retired sweeper Schedule is not involved.
+
 Visits that were completed before Phase 3 and never had their downstream work started have no outbox row.
 `scripts/backfill_visit_completed_events.py` writes the missing `visit.completed` rows with the same event id
 the live code would have used: `.venv/bin/python scripts/backfill_visit_completed_events.py` is a dry run
-that prints counts, and `--apply` writes (optional `--clinic-id` and `--limit`). The dry run against the live
-`visit_db` found 0 candidates, so it was never applied there. Run `--apply` only after a dry run shows
-candidates; each written event starts one downstream workflow and, through analytics, one projection update.
+that prints counts, and `--apply` writes (optional `--clinic-id`, `--limit` and `--stale-after-minutes`). A
+candidate whose event already exists is `already_queued`; if its completion is older than
+`--stale-after-minutes` (default 10) the event was probably dead-lettered, so it is counted `stale_queued` and
+`--apply` restarts its downstream work through the same idempotent `ensure_downstream_started` (`restarted=N`;
+this needs Temporal, from the host `TEMPORAL_ADDRESS=localhost:7233`). The counts line is
+`mode=... candidates=... already_queued=... written=... skipped=... stale_queued=... restarted=...`. The dry run
+against the live `visit_db` found 0 candidates before and after plan 03-22, so it was never applied there. Run
+`--apply` only after a dry run shows candidates; each written or restarted visit starts one downstream workflow
+and, through analytics, one projection update. WR-06 stays open: a backfill (or a replay) of an old visit can
+still lead to a follow-up notification for it (a replay keeps the event id and is absorbed).
 
 ### 10.5 Notifications and reminders
 
@@ -1307,8 +1370,31 @@ confirm and mark-failed activities), `outbox_insert_seconds{event_type}`, the co
 histogram has finer buckets than the library default (0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5, 5 s),
 set in one helper that every service calls, so every NFR latency threshold has a bucket edge. That makes a panel
 reliable for "above or below the threshold line"; it does not make the plotted quantile exact to the third
-digit (a quantile with few samples in a bucket reads near that bucket's upper edge). Only `scheduling` was
-rebuilt with the new buckets; the other services pick them up at their next rebuild.
+digit (a quantile with few samples in a bucket reads near that bucket's upper edge).
+
+**HTTP metrics are correct under gunicorn (CR-02, plans 03-24 and 03-25).** The nine APIs (gateway,
+analytics, billing, identity, organization, patient, provider, scheduling, visit) each run two gunicorn workers,
+and before the fix every scrape
+reached one of the two workers at random, so the counters seemed to jump between two series (measured: 4711 to
+1423 within a minute, 48 resets in 300 s on `scheduling`). The two workers are **kept** (D-14: one worker would
+have halved API capacity and distorted the deferred NFR measurement) and the APIs now run in Prometheus
+multiprocess mode: the image's default command exports `PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus-multiproc`,
+the gunicorn config `libs/observability/gunicorn_conf.py` empties that directory in the master at start
+(`on_starting`) and `child_exit` calls `mark_process_dead` for a worker that exits, and `/metrics` is built
+from a `CollectorRegistry` with a `MultiProcessCollector`, so a scrape is the sum over both workers (the
+gateway's hand-written route renders through `render_latest()`). The variable is exported only by the API image
+command, never by Compose, so the Temporal workers, consumers and the Celery worker built from the same images
+stay single-process (a test checks pid 1's environment in 9 API and 7 other containers). A scrape of an API no
+longer carries the default `process_*` and `python_*` collectors (nothing in the dashboards, tests or docs used
+them). All nine APIs were rebuilt (`scheduling` and `gateway` in 03-24, the other seven in 03-25), so every API
+now has the finer buckets above.
+
+Evidence, measured on the live stack by `test_http_request_counters_have_no_resets_and_never_decrease`, which
+drives 40 `/health` requests into each API and reads the range series from Prometheus: red before the change on
+every API (resets 12 to 48 per 300 s, sums that fell), green after on all
+nine (increase 45 = 40 driven plus the Compose health probes, **resets 0**, no decrease). The k6 smoke after the
+rollout reported 0 resets for each of the nine jobs. What was **not** isolated: the per-request cost of the mmap
+writes on the accept path. There was no A/B run, so a small cost cannot be excluded (see `docs/nfr.md`).
 
 **Dashboards, as code.** Four dashboards are provisioned from `infra/grafana/dashboards` with
 `allowUiUpdates: false`: `smarthealth-booking-nfr` (accept, read and saga latency with the NFR thresholds drawn
@@ -1374,7 +1460,7 @@ each stays because events do not subsume it:
 | Hold reaper (`scheduling-hold-reaper`) | Stays | An expired hold is the absence of an event: the booking workflow that held the slot may be gone, and nothing is emitted for a hold that simply times out |
 | Pending-booking starter (`scheduling-pending-starter`) | Stays | It recovers a workflow start lost *after the accept commit*. The accept path writes no outbox row (the NFR-03 accept path must not gain work), so no event exists for a pending appointment |
 | Scheduling reconciler (`scheduling-reconciler`) | Stays | It resolves stuck `pending` bookings whose workflow is gone, stuck waitlist entries and the time-driven no-show sweep; none is triggered by an event (the sweep itself *emits* `appointment.no_show`) |
-| Visit reconciler (`visit-reconciler`) | Stays | It settles visits whose workflow *started* but whose billing or appointment marker never landed; the trigger event cannot fix an already-started run |
+| Visit reconciler (`visit-reconciler`) | Stays, and gained the lost-trigger pass (4f) | It settles visits whose workflow *started* but whose billing or appointment marker never landed (the trigger event cannot fix an already-started run), and since plan 03-22 it restarts a completed visit whose `visit.completed` was dead-lettered or dropped, which is the recovery route the retired sweeper used to provide |
 | Schedule-change poller (`scheduling-schedule-change-poller`) | Stays **paused** on the live Temporal server (user decision) | `provider.schedule_changed` is published but nothing consumes it (10.9); the pull feed and its workflows still exist |
 | Notification stub activities | Stay, as intent records | See 10.5 |
 | Temporal `auto-setup` | Stays, **non-production** | A local-dev convenience; production uses `temporalio/server` with a schema job |
@@ -1420,17 +1506,31 @@ each stays because events do not subsume it:
   Semgrep `missing-user` Dockerfile findings are accepted for now by the user; production hardening is deferred.
   That is ten Dockerfiles: the eight accepted at the Phase 2 closeout and the two added in Phase 3
   (`services/analytics` and `services/notification`), which the user accepted for now at the phase gate.
-- **Test-environment capacity (measured at the Phase 3 gate).** The dev Postgres runs with `max_connections=300`.
-  The full non-e2e suite run against the live stack reaches that ceiling: the containers hold about 110 idle
-  connections and the pytest process grows from about 50 to about 200 as fixtures open engines, peaking at 304
-  in the last part of a 26 minute run. Some tests then fail with `TooManyConnectionsError` in the full run
-  and pass when run alone (two such cases in two runs). The Docker VM (7.65 GiB) OOM-killed the Jaeger container
-  once during the full regression; Jaeger keeps traces in memory, so the traces it held were lost on restart.
-  Subprocess tests that fork from the threaded pytest process on macOS can crash with SIGTRAP (exit -5, a
-  fork-in-a-multithreaded-process crash on the child side); they passed when rerun alone. The two non-e2e runs
-  each had failures (2 and 5), so the full non-e2e suite did not finish clean on any run; the e2e suite passed
-  71 of 71 on its second run. The follow-up (raise the dev `max_connections`, cap Jaeger memory, dispose engines
-  per test) is **not done**.
+- **Connection budget and test-environment capacity (plan 03-23).** The dev Postgres runs with
+  `max_connections=300` (297 usable). At the first Phase 3 gate the full non-e2e suite against the live stack
+  reached 304 and some tests failed with `TooManyConnectionsError`. The engine registry
+  (`libs/db/postgres.py`) keyed engines by event loop and orphaned the engine of every closed loop (WR-05; it
+  now retires a closed loop's engine at every lookup and closes its idle connections). Pool sizes are now settings (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`; code
+  defaults 5 and 10; Compose sets 5 and 5 for the APIs and Temporal workers and 2 and 2 for the visit and
+  analytics consumers). The Compose worst case is derived by `test_compose_connection_budget` from Compose, the
+  Dockerfiles, the connector files and the Grafana provisioning: 8 database-backed APIs x 2 gunicorn workers x
+  pool 10 = 160, two Temporal workers 20, two consumers 8, Debezium 8, Temporal 40, Grafana 5 = **241 of 297**.
+  Two terms are not derived from the repository: Debezium's 2 connections per connector is an assumption and
+  Temporal's 40 is an **observed constant** (its config template caps 20 plus 10 per pool and Compose sets
+  neither, so the true bound is not established). Measured: the same suite that peaked at 304 (`tests/visit` plus
+  `tests/workflows`) peaked at **108 of 300** with the fix, and the k6 smoke on the nine-API stack peaked at 91.
+  What is **not** done: raising the dev `max_connections` (less urgent now) and capping Jaeger memory. The Docker VM
+  (7.65 GiB) has OOM-killed containers twice: Jaeger during the first full regression (Jaeger keeps traces in
+  memory, so they were lost on restart) and **Kafka while seven images were rebuilt at once** (plan 03-25; exit
+  137, replication slots inactive until it was started again). Kafka has no memory limit in Compose; rebuild
+  fewer images at a time on a host of this size. Subprocess tests that fork from the threaded pytest process on
+  macOS can crash with SIGTRAP (exit -5, a fork-in-a-multithreaded-process crash on the child side); they pass
+  when rerun alone.
+- **`scripts/compose_healthcheck.sh` does not notice a stopped container.** It checks the services that are
+  running. After Kafka was OOM-killed it still printed OK while the replication slots were inactive. Before a
+  verification run, also read `docker compose -f infra/docker-compose.yml ps -a` for an exited long-running
+  container. Making the script flag a stopped required container is an open follow-up (the script was not
+  changed).
 - **S3 audit-via-outbox is deferred.** Post-commit audit writes to Mongo remain best effort and can be lost if
   Mongo is down at that instant; moving them into the outbox is the natural fix and was deferred (accepted),
   because it must not widen the booking accept path.
@@ -1446,14 +1546,35 @@ each stays because events do not subsume it:
   write depend on the owning service being up.
 - **The gateway rate budgets are a test-time setting.** The live gateway ran for the tests and the load runs
   with the budgets raised (1000 per minute for the auth routes, 100000 for the rest); the Compose defaults are
-  20 and 300. Raise them per run on a local stack only.
-- **Load.** The k6 `smoke` profile passed every threshold on the Phase 3 stack in three runs (10 to 11 November
-  2026; see `docs/nfr.md`), and accept latency crept up between them, so it is the number to watch.
-  `sustained`, `burst` and `contention` were **not run**: the user deferred them until after Phase 3, so
-  NFR-01..08 remain targets that are not yet measured.
-- **Not verified:** the reminder's later firing inside the same trace (10.7),
-  the decode-time Schema Registry outage path of the consumer base (implemented, no automated test), and the
-  connector after the slot cap is exceeded.
+  20 and 300, and the gateway was put back on them as the last step of plan 03-26. Raise them per run on a local
+  stack only.
+- **Load.** The k6 `smoke` profile passed every threshold in four runs on the Phase 3 stack and its
+  predecessor. Accept (`POST /api/appointments`) p95 / p99: 21.8 / 78.9 ms before Phase 3 (10 November), 29.3 /
+  170.0 ms after the producers, 49.1 / 200.8 ms on the finished stack and **41.85 / 245.49 ms after the
+  multiprocess rollout** (12 November); the saga stayed at about 0.5 s (0.53 s from k6, about 0.45 s from
+  Prometheus). The host was not equally busy in the four runs and no A/B run isolates the mmap cost of
+  multiprocess metrics, so the honest reading is "no p95 change visible, p99 within the noise of one outlier";
+  accept latency is the number to watch (`docs/nfr.md`). `sustained`, `burst` and `contention` were **not run**:
+  the user deferred them until after Phase 3, so NFR-01..08 remain targets that are not yet measured.
+- **Proof level of the dead-letter fix (CR-01).** The classification is proven at the real `_handle_message`
+  path at unit level, with real asyncpg exception classes (`TooManyConnectionsError`, `CannotConnectNowError`,
+  `DeadlockDetectedError`, raw and wrapped like the dialect wraps them) and a recording stand-in for the Kafka
+  consumer, plus the **live** lost-trigger test (10.4) that proves the recovery. **No 53300 was injected into the
+  running stack**: saturating the shared dev Postgres would disturb every service and the unrelated containers
+  on this host. The cap itself was also run against a live broker (a unique topic, DLQ record with the original
+  key and `dlq.error_type`, committed offset moved on); a failed offset commit is proven with a stand-in only.
+- **Not verified:** the reminder's later firing inside the same trace (10.7); the Schema Registry 408 / 429 / 5xx
+  path of the consumer base is unit-tested (including the decode path) but was never exercised against a live
+  registry outage; a Kafka broker outage on its own; and the connector after the slot cap is exceeded.
+- **Open follow-ups (out of scope for the gap closure, D-14).** WR-01: a reminder `reschedule` signal that
+  arrives while the last lead's enqueue activity runs can be dropped (the fix needs `workflow.patched` and a
+  replay test). WR-04: the `debezium` role's privileges, the unauthenticated Connect REST API and an
+  unrestricted FileConfigProvider (PHI-relevant; local-dev scope). WR-06: a backfill or replay can send
+  follow-ups for old visits. IN-02 to IN-06 of the Phase 3 review (notification duplicate code, consumer metric
+  cardinality, Compose and RabbitMQ hygiene, metrics servers that record "started" when the bind failed, slot
+  invalidation and Grafana scoping). Also open: the ten root-user Dockerfiles, the healthcheck gap and the Kafka
+  memory limit above, the Temporal connection constant, the k6 `sustained`, `burst` and `contention` runs after
+  Phase 3, and the wording of EVENT-04 in `REQUIREMENTS.md` (a user decision; the file is not edited here).
 
 See [`architecture-dashboard.html`](./architecture-dashboard.html) for the interactive decision record
 (alternatives and tradeoffs per decision), [`architecture.html`](./architecture.html) for a standalone

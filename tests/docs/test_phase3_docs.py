@@ -365,6 +365,11 @@ STALE_CLAIMS = (
     r"`visit-downstream-sweeper` \(every 60 s\)",
     r"visit-downstream-sweeper \(every 60 s\)",
     r"removed by\s+event-fed local copies in phase 3",
+    # Plan 03-26 (CR-01): a transient outage IS dead-lettered, as TransientExhausted, once the cap is reached.
+    r"outage[^.]{0,120}is never dead-lettered",
+    r"retried and never dead-lettered",
+    r"the message is never dead-lettered",
+    r"an outage delays an event and never drops it",
 )
 
 STALE_DOCS = ("README.md", "architecture.md", "architecture.html")
@@ -492,3 +497,41 @@ def test_every_document_is_free_of_the_claims_phase3_made_false(name: str) -> No
     for claim in STALE_CLAIMS:
         assert not re.search(claim, text), f"{name} still claims {claim!r}"
     assert "sweeper picks it up" not in text and "lets the sweeper find" not in text
+
+
+# --------------------------------------------------------------------------- plan 03-26: gap closure
+
+PHASE3_TERMS = (
+    "TransientExhausted",
+    "event_commit_failures_total",
+    "restart_lost_triggers",
+    "replay_dlq",
+    "MultiProcessCollector",
+)
+
+
+@pytest.mark.parametrize("term", PHASE3_TERMS)
+def test_the_phase3_architecture_text_names_the_gap_closure_mechanisms(term: str) -> None:
+    assert term in phase3_markdown(), f"architecture.md section 10 no longer names {term!r}"
+    assert term.lower() in source_corpus(), f"{term!r} is named in the docs but nothing in the code has it"
+
+
+def test_every_script_the_phase3_section_names_exists() -> None:
+    """W4: nothing aspirational: a `scripts/<name>.py` the docs name must be a file in the repository."""
+    named = set(re.findall(r"scripts/([A-Za-z0-9_]+\.(?:py|sh))", phase3_markdown()))
+    assert {"replay_dlq.py", "backfill_visit_completed_events.py"} <= named
+    for name in sorted(named):
+        assert (REPO_ROOT / "scripts" / name).is_file(), f"architecture.md names scripts/{name}; the file does not exist"
+
+
+def test_the_stale_outage_guard_bites() -> None:
+    """The guard patterns reject the claim in the three phrasings it used to have, and not the unrelated sentence."""
+    old = (
+        "an infrastructure outage (schema registry, postgres, temporal, rabbitmq) is never dead-lettered: the offset is held",
+        "an infrastructure outage is retried and never dead-lettered.",
+        "and the message is never dead-lettered, so an outage delays an event and never drops it.",
+    )
+    for sentence in old:
+        assert any(re.search(claim, sentence) for claim in STALE_CLAIMS), sentence
+    unrelated = "an event for an id the projection has never seen is absorbed, never dead-lettered."
+    assert not any(re.search(claim, unrelated) for claim in STALE_CLAIMS)

@@ -464,6 +464,8 @@ mode 0600, delivered as Compose secrets, never environment values).
 | `NOTIFICATION_FAKE_FAIL_PREFIX` | `.env` (optional) | `FAIL-` | A dedupe key starting with it makes the fake provider fail (a demo and test lever, like `DENY-` for billing) |
 | `NOTIFICATION_FAKE_CRASH_ENABLED` | tests only | `false` | Test-only crash switch for the worker-kill proof; **never set in Compose** (a test asserts it) |
 | `NOTIFICATION_METRICS_PORT` / `NOTIFICATION_CONSUMER_HEARTBEAT_PATH` / `NOTIFICATION_TEMPORAL_HEARTBEAT_PATH` | `.env` (optional) | `9100` / `/tmp/notification-consumer.alive` / `/tmp/notification-temporal-worker.alive` | Metrics port (internal only) and healthcheck files |
+| `DB_POOL_SIZE` | `.env` (optional); Compose sets `5` (APIs and Temporal workers) and `2` (the visit and analytics consumers) | `5` | Connections kept open per process by the shared async engine; part of the Compose connection budget (241 of 297, see `docs/architecture.md` 10.9) |
+| `DB_MAX_OVERFLOW` | `.env` (optional); Compose sets `5` (APIs and Temporal workers) and `2` (the two consumers) | `10` | Extra connections a process may open above `DB_POOL_SIZE` under load |
 | `WORKER_METRICS_PORT` / `TEMPORAL_SDK_METRICS_BIND` | `.env` (optional) | `9100` / `0.0.0.0:9464` | Application and Temporal SDK metrics of each Temporal worker (internal only; Prometheus scrapes both) |
 
 Retired in Phase 1.1 and no longer read by any service: a shared `DATABASE_URL`, any shared
