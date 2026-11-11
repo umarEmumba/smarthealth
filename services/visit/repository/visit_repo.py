@@ -15,6 +15,10 @@ Duplicate safety (D-15, research Pattern 9):
     insert is additionally guarded by `uq_visit_history_visit_to`; if that
     ever raises, the `IntegrityError` propagates and the route rolls the whole
     transaction back and answers as a no-op.
+  * Plan 03-09 (D-03): the applied COMPLETED branch also writes one
+    `visit.completed` outbox row in the same transaction. That event, relayed by
+    Debezium and consumed by the visit-downstream consumer, is the trigger of the
+    downstream workflow; no other target and no no-op writes an event.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from sqlalchemy import func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.visit import events as visit_events
 from services.visit.domain.states import ORDER, PREVIOUS, TransitionOutcome, VisitStatus
 from services.visit.repository.models import Visit, VisitStateHistory
 
@@ -124,17 +129,32 @@ async def transition_visit(
     if target == VisitStatus.IN_PROGRESS:
         values["started_at"] = func.now()
     elif target == VisitStatus.COMPLETED:
-        # downstream_started_at deliberately stays NULL (plan 02-11 sweeper).
+        # downstream_started_at deliberately stays NULL here: the downstream trigger
+        # is the `visit.completed` outbox event committed below (plan 03-09, D-03);
+        # the visit-downstream consumer sets the marker once the workflow is started.
         values["completed_at"] = func.now()
 
+    returning: tuple[object, ...] = (Visit.id,)
+    if target == VisitStatus.COMPLETED:
+        returning = (
+            Visit.id,
+            Visit.appointment_id,
+            Visit.clinic_id,
+            Visit.patient_id,
+            Visit.provider_id,
+            Visit.checked_in_at,
+            Visit.started_at,
+            Visit.completed_at,
+        )
     moved = await db.execute(
         update(Visit)
         .where(Visit.id == visit_id, Visit.status == expected)
         .values(**values)
-        .returning(Visit.id)
+        .returning(*returning)
         .execution_options(synchronize_session=False)
     )
-    if moved.first() is None:
+    row = moved.first()
+    if row is None:
         current = await _current_status(db, visit_id)
         if ORDER[current] >= ORDER[target]:
             return TransitionOutcome.NOOP
@@ -146,6 +166,9 @@ async def transition_visit(
         )
     )
     await db.flush()
+    if target == VisitStatus.COMPLETED:
+        # Same transaction as the status change and history row: all commit or none.
+        await visit_events.emit_visit_completed(db, row)
     return TransitionOutcome.APPLIED
 
 

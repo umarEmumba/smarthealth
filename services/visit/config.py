@@ -33,8 +33,9 @@ class VisitSettings(SharedSettings):
     )
     # Downstream sweeper (plan 02-11, D-16): the Temporal Schedule's interval,
     # and how old a completed visit with no started downstream workflow must be
-    # before the sweeper treats its trigger as lost (the API normally starts the
-    # workflow right after the commit; the grace keeps the two from racing).
+    # before the sweeper treats its trigger as lost (since plan 03-09 the
+    # visit-downstream consumer starts the workflow from the `visit.completed`
+    # event; the grace keeps the sweeper from racing it until plan 03-12 retires it).
     sweeper_interval_seconds: int = Field(
         default=60, ge=1, validation_alias="VISIT_SWEEPER_INTERVAL_SECONDS"
     )
@@ -51,6 +52,15 @@ class VisitSettings(SharedSettings):
     )
     reconcile_grace_minutes: int = Field(
         default=10, ge=0, validation_alias="VISIT_RECONCILE_GRACE_MINUTES"
+    )
+    # visit-downstream consumer (plan 03-09): the Prometheus metrics port it serves
+    # on (internal to the Compose network, never published to the host) and the
+    # heartbeat file the Compose healthcheck reads.
+    consumer_metrics_port: int = Field(
+        default=9100, ge=1, le=65535, validation_alias="VISIT_CONSUMER_METRICS_PORT"
+    )
+    consumer_heartbeat_path: str = Field(
+        default="/tmp/visit-consumer.alive", validation_alias="VISIT_CONSUMER_HEARTBEAT_PATH"
     )
 
 

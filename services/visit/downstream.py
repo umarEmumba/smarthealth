@@ -1,18 +1,20 @@
 """Starting a completed visit's downstream workflow, exactly once (plan 02-11;
 VISIT-04, D-06, D-16, research Pattern 2 / Pattern 8).
 
-Commit-then-start: the API commits the `completed` transition with
-`downstream_started_at IS NULL`, then calls `ensure_downstream_started`, which
-starts `visit-completed-{visit_id}` with `start_once` (deterministic id,
-USE_EXISTING + REJECT_DUPLICATE) and only then sets the marker with a
-conditional UPDATE. A crash or a Temporal outage between the commit and the
-start leaves the marker NULL; `sweep_unstarted` (run once when the visit worker
-starts and then by the `visit-downstream-sweeper` Temporal Schedule) finds
-those visits and calls the same function. Every path is idempotent: a repeated
+Outbox trigger (plan 03-09, D-03): the API commits the `completed` transition
+with `downstream_started_at IS NULL` and a `visit.completed` outbox row; the
+visit-downstream consumer (`services.visit.consumer`) calls
+`ensure_downstream_started`, which starts `visit-completed-{visit_id}` with
+`start_once` (deterministic id, USE_EXISTING + REJECT_DUPLICATE) and only then
+sets the marker with a conditional UPDATE. A Temporal outage leaves the marker
+NULL and the event is retried by the consumer; until plan 03-12 retires it,
+`sweep_unstarted` (run once when the visit worker starts and then by the
+`visit-downstream-sweeper` Temporal Schedule) finds such visits and calls the
+same function. Every path is idempotent: a repeated
 or concurrent start attaches to the running execution or is refused once it
 closed, and the marker update is conditional.
 
-Shared by the API route, the sweep activity and the worker's start-up sweep.
+Shared by the visit-downstream consumer, the sweep activity and the worker's start-up sweep.
 No execution/run timeout is ever passed (see `libs.temporal`). Logs carry ids
 only.
 
@@ -64,7 +66,7 @@ async def ensure_downstream_started(client: Client, db: AsyncSession, visit: Vis
     """Start the visit's downstream workflow (unless it already ran or runs),
     then set and COMMIT `downstream_started_at`. Returns True once the marker
     is set. Temporal RPC/connection errors propagate before anything is
-    written; the caller decides (the API defers to the sweeper)."""
+    written; the caller decides (the consumer retries the event, the sweeper skips the visit)."""
     inp = VisitCompletedInput(
         visit_id=str(visit.id),
         appointment_id=str(visit.appointment_id),

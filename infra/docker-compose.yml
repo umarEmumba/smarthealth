@@ -577,8 +577,9 @@ services:
     depends_on: *app-depends-on
     healthcheck: *app-healthcheck
 
-  # Visit (D-15/D-16): check-in -> start -> complete; a completion starts the
-  # VisitCompletedWorkflow after its commit. Reached via /api/visits; no host port.
+  # Visit (D-15/D-16): check-in -> start -> complete; a completion commits a
+  # visit.completed outbox row that the visit-consumer turns into the
+  # VisitCompletedWorkflow start (plan 03-09). Reached via /api/visits; no host port.
   visit:
     build:
       context: ..
@@ -624,6 +625,41 @@ services:
         - python
         - -c
         - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/visit-worker.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # Visit's downstream consumer (plan 03-09, D-03): the visit-downstream group reads
+  # smarthealth.visit.events and starts VisitCompletedWorkflow for each visit.completed
+  # (deterministic workflow id, so a redelivered event starts nothing new). The Visit API
+  # no longer starts downstream work itself. Same image as `visit`, command override.
+  # Its Prometheus metrics server (VISIT_CONSUMER_METRICS_PORT, 9100) binds 0.0.0.0 inside
+  # the container and is deliberately NOT published to the host.
+  visit-consumer:
+    build:
+      context: ..
+      dockerfile: services/visit/Dockerfile
+    command: ["python", "-m", "services.visit.consumer"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *visit-env
+    depends_on:
+      visit:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    secrets: *visit-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/visit-consumer.alive') < 30 else 1)"
       interval: 10s
       timeout: 5s
       retries: 6
