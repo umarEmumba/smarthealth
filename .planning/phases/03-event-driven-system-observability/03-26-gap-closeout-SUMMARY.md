@@ -12,7 +12,7 @@ provides:
   - "the final gate on the finished stack: full non-e2e and full e2e clean, connection peak 105"
   - "gateway back on its default budget (20 and 300)"
 affects: []
-status: checkpoint pending
+status: complete
 requirements-completed: []
 actuals:
   tokens: 6500
@@ -22,9 +22,9 @@ plan_head_before: 4a889713dc369ab2a57d47f37c12f02f53d8a403
 plan_head_after: a2ec6c6
 ---
 
-# Phase 3 Plan 26: Gap Closeout Summary (PARTIAL: checkpoint pending)
+# Phase 3 Plan 26: Gap Closeout Summary
 
-Status `checkpoint pending`: Tasks 1 and 2 (automated) are complete; Task 3 (the user's re-check of exactly the three changed dashboard sentences, and the decision on the fourth) is outstanding. Nothing is marked complete, the phase is not complete, REQUIREMENTS.md was not edited (`git diff HEAD -- .planning/REQUIREMENTS.md` is empty) and no requirement was ticked. The orchestrator finalizes this file after the user's answer.
+Status `complete` (human sign-off recorded 2026-11-12). Tasks 1 and 2 (automated) and Task 3 (the user's re-check of exactly the three changed dashboard sentences) are done; the phase is NOT marked complete by this plan, REQUIREMENTS.md was not edited (`git diff HEAD -- .planning/REQUIREMENTS.md` is empty) and no requirement was ticked.
 
 `plan_head_after` is the last task commit; the commit that adds this summary and STATE.md follows it. Two task commits measured: febde67 (Task 1) and a2ec6c6 (the gate's connection peak recorded in 10.9).
 
@@ -158,7 +158,7 @@ Failures to classify: none (0 failed, 0 errors in both runs).
 
 ## Follow-ups recorded (STATE.md and here; out of scope by D-14)
 
-WR-01 (reminder reschedule-signal race; needs `workflow.patched` plus a replay test); WR-04 (debezium role privileges, unauthenticated Connect REST, FileConfigProvider allowed.paths; PHI-relevant, local-dev scope); WR-06 (backfill / replay sends follow-ups for old visits); IN-02..IN-06; `scripts/compose_healthcheck.sh` does not flag a stopped required container; no memory limit on Kafka in Compose (OOM-killed during seven concurrent image builds); Temporal's connection count (40) is observed, not derived (`SQL_MAX_CONNS` / `SQL_VIS_MAX_CONNS` not set); head-of-line effect of the transient cap (replay is a required step after a long outage); ten root-user Dockerfiles; k6 `sustained`, `burst`, `contention` after Phase 3 (accept-path overhead of multiprocess metrics not isolated by an A/B run); EVENT-04 wording decision (REQUIREMENTS.md untouched); dev `max_connections` not raised (less urgent after WR-05); Jaeger memory not capped; the SIGTRAP fork class; identity migration test on the live DB; provider specialty-ordering test (deselected by node id); the dashboard's understated decode-time "Not verified" sentence (pending the user's reply); the live `visit-downstream` DLQ holds 100+ `NonRetryableEventError` records for deleted test visits (do not `--apply` an unfiltered replay).
+WR-01 (reminder reschedule-signal race; needs `workflow.patched` plus a replay test); WR-04 (debezium role privileges, unauthenticated Connect REST, FileConfigProvider allowed.paths; PHI-relevant, local-dev scope); WR-06 (backfill / replay sends follow-ups for old visits); IN-02..IN-06; `scripts/compose_healthcheck.sh` does not flag a stopped required container; no memory limit on Kafka in Compose (OOM-killed during seven concurrent image builds); Temporal's connection count (40) is observed, not derived (`SQL_MAX_CONNS` / `SQL_VIS_MAX_CONNS` not set); head-of-line effect of the transient cap (replay is a required step after a long outage); ten root-user Dockerfiles; k6 `sustained`, `burst`, `contention` after Phase 3 (accept-path overhead of multiprocess metrics not isolated by an A/B run); EVENT-04 wording decision (REQUIREMENTS.md untouched); dev `max_connections` not raised (less urgent after WR-05); Jaeger memory not capped; the SIGTRAP fork class; identity migration test on the live DB; provider specialty-ordering test (deselected by node id); the live `visit-downstream` DLQ holds 814 `NonRetryableEventError` records for deleted test visits (the replay script now skips poison by default and `--apply` needs a selector).
 
 ## Deviations from Plan
 
@@ -180,7 +180,7 @@ None new. T-3-82 (gateway restore, verified by `printenv`), T-3-83 (guard tests,
 
 ## Human sign-off
 
-PENDING (Task 3). The orchestrator records the user's reply here: "approved" for the three sentences above, and "leave it" or "update it" for the fourth (decode-time "Not verified") sentence.
+User reply (verbatim answers to the checkpoint questions, 2026-11-12): dashboard re-check = "Approved; update the fourth (Recommended)"; gap-review warnings = "Fix WR-01, WR-02, WR-07 now (Recommended)". The three changed sentences were approved. The fourth "Not verified" sentence was updated afterwards in quick task 261112-8r6 (commit 62fc0a3), which also fixed WR-01 (lost-trigger pass starved by the settle pass), WR-07 (age ceiling, kill switch, per-visit backoff) and WR-02 (`replay_dlq.py --apply` needs an explicit selector, poison skipped by default; live dry run on the visit DLQ: 814 NonRetryableEventError records skipped, 0 selected). Still open as recorded follow-ups: gap-review WR-03..WR-06 and IN-01..IN-06, the dashboard "Failure paths:" sentence that still repeats the old decode-time claim, and the first-review WR-01, WR-04 and WR-06. Code-review gates over the gap-closure code: Atlas security/compliance APPROVED (3 low notes); GSD review 0 critical, 7 warning, 6 info (03-REVIEW-GAP.md).
 
 ## Self-Check: PASSED (automated tasks)
 
