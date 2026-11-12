@@ -453,6 +453,7 @@ mode 0600, delivered as Compose secrets, never environment values).
 | `ANALYTICS_DEFAULT_WINDOW_DAYS` | `.env` (optional) | `30` | Default reporting window of the analytics API |
 | `ANALYTICS_CONSUMER_METRICS_PORT` / `ANALYTICS_CONSUMER_HEARTBEAT_PATH` | `.env` (optional) | `9100` / `/tmp/analytics-consumer.alive` | Consumer metrics port (internal only) and healthcheck file |
 | `VISIT_CONSUMER_METRICS_PORT` / `VISIT_CONSUMER_HEARTBEAT_PATH` | `.env` (optional) | `9100` / `/tmp/visit-consumer.alive` | Visit consumer metrics port (internal only) and healthcheck file |
+| `VISIT_LOST_TRIGGER_RESTART_ENABLED` / `VISIT_LOST_TRIGGER_MAX_AGE_HOURS` | `.env` (optional) | `true` / `24` | Visit reconciler's lost-trigger pass: the kill switch, and the age after which a lost trigger is only reported (recover it with `scripts/backfill_visit_completed_events.py`) |
 | `NOTIFICATION_BROKER_HOST` / `NOTIFICATION_BROKER_PORT` / `NOTIFICATION_BROKER_VHOST` | `.env` (optional) | `localhost` / `5672` / `smarthealth` | RabbitMQ address and vhost for Celery |
 | `NOTIFICATION_BROKER_USER` / `NOTIFICATION_BROKER_PASSWORD_FILE` | `.env` (optional) | `smarthealth_notification` / `infra/secrets/infra/notification_broker.secret` | Non-admin broker user and its password **file** |
 | `NOTIFICATION_RABBITMQ_MANAGEMENT_URL` | `.env` (optional) | `http://localhost:15672` | Read by `rabbitmq-init` to provision the broker user |

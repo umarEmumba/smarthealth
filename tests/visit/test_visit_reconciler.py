@@ -44,6 +44,7 @@ from pymongo import AsyncMongoClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from temporalio.client import WorkflowExecutionStatus
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 
 from libs.audit.mongo_indexes import ensure_audit_indexes
@@ -68,6 +69,7 @@ from tests.visit.conftest import (
 )
 from tests.visit.test_downstream import (
     _activities,
+    _age_completion,
     _appointment_status,
     _billing_status,
     _completed_visit,
@@ -813,3 +815,238 @@ async def test_a_failing_start_up_reconcile_is_logged_and_never_stops_the_worker
     failed = [json.loads(x) for x in out.splitlines() if x.startswith("{") and "startup_reconcile_failed" in x]
     assert [e["error"] for e in failed] == ["RuntimeError"]
     assert "boom-detail" not in out
+
+
+# --- WR-07 (gap review): age ceiling, kill switch, per-visit backoff, systemic RPC abort ---------
+
+
+class _StartStub:
+    """A Temporal client stand-in: records every start; raises `error` for the ids in `failing`."""
+
+    def __init__(self, error: Exception | None = None, failing: set[str] | None = None) -> None:
+        self.error = error
+        self.failing = failing
+        self.ids: list[str] = []
+
+    async def start_workflow(self, workflow: Any, arg: Any, *, id: str, **kwargs: Any) -> None:
+        self.ids.append(id)
+        if self.error is not None and (self.failing is None or id in self.failing):
+            raise self.error
+
+
+def _rpc_unavailable() -> RPCError:
+    return RPCError("temporal unavailable", RPCStatusCode.UNAVAILABLE, b"")
+
+
+async def _aged_visits(
+    client: AsyncClient, mesh: httpx.AsyncClient, vw: VisitWorld, ages: list[int]
+) -> list[str]:
+    ids = []
+    for age in ages:
+        visit, _, done = await _completed_visit(client, mesh, vw)
+        assert done.status_code == 200, done.text
+        await _age_completion(visit["id"], age)
+        ids.append(visit["id"])
+    return ids
+
+
+async def _restart_stub(
+    vw: VisitWorld, stub: Any, backoff: downstream.LostTriggerBackoff, **kwargs: Any
+) -> int:
+    return await downstream.restart_lost_triggers(
+        get_session_factory(visit_settings.database_url),
+        stub,
+        grace_minutes=0,
+        backoff=backoff,
+        clinic_id=vw.clinic_id,
+        **kwargs,
+    )
+
+
+async def test_a_lost_trigger_older_than_the_ceiling_is_reported_and_never_restarted(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old, fresh = await _aged_visits(client, mesh, visit_world, [180, 5])
+    configure_logging()
+    monkeypatch.setattr(downstream, "log", structlog.get_logger("test-visit-downstream"))
+    capsys.readouterr()
+    backoff = downstream.LostTriggerBackoff()
+    stub = _StartStub()
+
+    assert await _restart_stub(visit_world, stub, backoff, max_age_minutes=2) == 1
+    assert stub.ids == [f"visit-completed-{fresh}"]
+    assert await _marker(old) is None
+    events = _events(capsys)
+    warned = [e for e in events if e.get("event") == "visit.lost_triggers_beyond_max_age"]
+    assert [(e["count"], e["max_age_minutes"]) for e in warned] == [(1, 2)]
+
+    assert await _restart_stub(visit_world, stub, backoff, max_age_minutes=2) == 0
+    events = _events(capsys)
+    assert not [e for e in events if e.get("event") == "visit.lost_triggers_beyond_max_age"]
+    summary = [e for e in events if e.get("event") == "visit.lost_triggers"]
+    assert summary and summary[-1]["beyond_max_age"] == 1
+
+    # Positive control: a wider ceiling restarts the old one.
+    assert await _restart_stub(visit_world, stub, backoff, max_age_minutes=10) == 1
+    assert stub.ids[-1] == f"visit-completed-{old}"
+    assert await _marker(old) is not None
+
+
+@pytest.mark.parametrize("error_factory", [_rpc_unavailable, lambda: ValueError("x")], ids=["rpc", "value"])
+async def test_a_persistently_failing_visit_does_not_starve_a_newer_one_through_reconcile(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    mongo_client: AsyncMongoClient,
+    visit_world: VisitWorld,
+    monkeypatch: pytest.MonkeyPatch,
+    error_factory: Any,
+) -> None:
+    a, b = await _aged_visits(client, mesh, visit_world, [120, 60])
+    stub = _StartStub(error=error_factory(), failing={f"visit-completed-{a}"})
+    real = downstream.restart_lost_triggers
+
+    async def settle_recorder(factory: Any, **kwargs: Any) -> int:
+        return 0
+
+    async def scoped(factory: Any, client: Any, **kwargs: Any) -> int:
+        return await real(factory, client, limit=1, clinic_id=visit_world.clinic_id, **kwargs)
+
+    monkeypatch.setattr(downstream, "reconcile_unsettled", settle_recorder)
+    monkeypatch.setattr(downstream, "restart_lost_triggers", scoped)
+    acts = _reconcile_activities(mesh, mongo_client, stub)
+    acts._reconcile_grace = 0
+
+    assert await acts.reconcile() == 0  # pass 1: A failed
+    assert await acts.reconcile() == 1  # pass 2: A backed off, B is not starved
+    assert await _marker(b) is not None
+    assert await acts.reconcile() == 0  # pass 3: A is tried again
+    assert stub.ids.count(f"visit-completed-{a}") == 2
+    assert await acts.reconcile() == 0  # pass 4: A is backed off again
+    assert stub.ids.count(f"visit-completed-{a}") == 2
+
+
+async def test_three_consecutive_rpc_errors_stop_the_pass_and_back_off_only_attempted_visits(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    v1, v2, v3 = await _aged_visits(client, mesh, visit_world, [180, 120, 60])
+    monkeypatch.setattr(downstream, "LOST_TRIGGER_MAX_CONSECUTIVE_RPC_ERRORS", 2, raising=False)
+    configure_logging()
+    monkeypatch.setattr(downstream, "log", structlog.get_logger("test-visit-downstream"))
+    capsys.readouterr()
+    backoff = downstream.LostTriggerBackoff()
+    down = _StartStub(error=_rpc_unavailable())
+
+    assert await _restart_stub(visit_world, down, backoff) == 0
+    assert down.ids == [f"visit-completed-{v1}", f"visit-completed-{v2}"]
+    assert len(backoff) == 2
+    assert [e for e in _events(capsys) if e.get("event") == "visit.lost_trigger_pass_aborted"]
+
+    up = _StartStub()
+    assert await _restart_stub(visit_world, up, backoff) == 1  # V3 was never attempted
+    assert up.ids == [f"visit-completed-{v3}"]
+    up2 = _StartStub()
+    assert await _restart_stub(visit_world, up2, backoff) == 2  # V1 and V2 are eligible again
+    assert sorted(up2.ids) == sorted([f"visit-completed-{v1}", f"visit-completed-{v2}"])
+
+
+async def test_the_kill_switch_and_the_settings_reach_the_lost_trigger_pass(
+    mesh: httpx.AsyncClient,
+    mongo_client: AsyncMongoClient,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[dict[str, Any]] = []
+    settled: list[int] = []
+
+    async def settle_recorder(factory: Any, **kwargs: Any) -> int:
+        settled.append(1)
+        return 0
+
+    async def lost_recorder(factory: Any, client: Any, *, clinic_id: Any = None, **kwargs: Any) -> int:
+        seen.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(downstream, "reconcile_unsettled", settle_recorder)
+    monkeypatch.setattr(downstream, "restart_lost_triggers", lost_recorder)
+    configure_logging()
+    monkeypatch.setattr(activities_module, "log", structlog.get_logger("test-visit-activities"))
+    tokens_acts = _activities(mesh, mongo_client)
+
+    def build(**kw: Any) -> VisitActivities:
+        return VisitActivities(
+            tokens_acts._session_factory, mesh, tokens_acts._tokens, mongo_client, object(),
+            reconcile_grace_minutes=7, lost_trigger_max_age_hours=3, **kw,
+        )
+
+    acts = build()
+    await acts.reconcile()
+    await acts.reconcile()
+    assert [k["max_age_minutes"] for k in seen] == [180, 180]
+    assert seen[0]["backoff"] is seen[1]["backoff"]
+    assert isinstance(seen[0]["backoff"], downstream.LostTriggerBackoff)
+
+    seen.clear()
+    capsys.readouterr()
+    await build(lost_trigger_restart_enabled=False).reconcile()
+    assert seen == [] and len(settled) == 3
+    assert [e for e in _events(capsys) if e.get("event") == "visit.lost_trigger_pass_disabled"]
+
+
+def test_the_lost_trigger_settings_default_and_validate(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from services.visit.config import VisitSettings  # noqa: PLC0415
+
+    for name in (
+        "VISIT_LOST_TRIGGER_RESTART_ENABLED",
+        "VISIT_LOST_TRIGGER_MAX_AGE_HOURS",
+        "VISIT_RECONCILE_GRACE_MINUTES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    defaults = VisitSettings(_env_file=None)
+    assert defaults.lost_trigger_restart_enabled is True
+    assert defaults.lost_trigger_max_age_hours == 24
+    assert 24 * 60 == downstream.DEFAULT_LOST_TRIGGER_MAX_AGE_MINUTES
+    monkeypatch.setenv("VISIT_LOST_TRIGGER_RESTART_ENABLED", "false")
+    assert VisitSettings(_env_file=None).lost_trigger_restart_enabled is False
+    monkeypatch.setenv("VISIT_LOST_TRIGGER_MAX_AGE_HOURS", "1")
+    monkeypatch.setenv("VISIT_RECONCILE_GRACE_MINUTES", "60")
+    with pytest.raises(ValidationError):
+        VisitSettings(_env_file=None)
+
+
+def test_the_lost_trigger_backoff_doubles_caps_forgets_and_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backoff = downstream.LostTriggerBackoff()
+    visit = uuid.uuid4()
+    backoff.start_pass()
+    expected_skips = [1, 2, 4, 8, 16, 32, 32]
+    for skips in expected_skips:
+        backoff.record_failure(visit)
+        for _ in range(skips):
+            assert visit in backoff.start_pass()
+        assert visit not in backoff.start_pass()
+    backoff.record_failure(visit)
+    backoff.record_success(visit)
+    assert visit not in backoff.start_pass() and len(backoff) == 0
+
+    monkeypatch.setattr(downstream, "LOST_TRIGGER_BACKOFF_MAX_ENTRIES", 3, raising=False)
+    small = downstream.LostTriggerBackoff()
+    small.start_pass()
+    for _ in range(6):
+        small.record_failure(uuid.uuid4())
+    assert len(small) <= 3
+
+    seen = downstream.LostTriggerBackoff()
+    assert [seen.note_beyond_max_age(n) for n in (0, 1, 1, 2, 2, 0, 1)] == [
+        False, True, False, True, False, False, True,
+    ]

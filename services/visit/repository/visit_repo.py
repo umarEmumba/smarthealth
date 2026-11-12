@@ -24,6 +24,7 @@ Duplicate safety (D-15, research Pattern 9):
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import func, insert, or_, select, text, update
@@ -247,11 +248,17 @@ async def list_lost_triggers(
     older_than_minutes: int,
     limit: int = 100,
     clinic_id: uuid.UUID | None = None,
+    max_age_minutes: int | None = None,
+    exclude_ids: Collection[uuid.UUID] = (),
 ) -> list[Visit]:
     """Completed visits whose downstream trigger was lost (plan 03-22, CR-01): `status =
     'completed' AND downstream_started_at IS NULL AND completed_at < now() - older_than`
     (optionally of one clinic), oldest first, at most `limit`. Served by the partial
     index `ix_visits_downstream_pending`. No row lock.
+
+    `max_age_minutes` (gap review WR-07) adds an age ceiling, `completed_at >= now() -
+    max_age`: an older lost trigger is not listed (see `count_lost_triggers_beyond`).
+    `exclude_ids` leaves out the visits the reconciler is backing off.
 
     The outbox consumer starts the workflow within seconds of the completion; a visit
     still unmarked after the grace had its `visit.completed` event dead-lettered or
@@ -270,9 +277,42 @@ async def list_lost_triggers(
         .order_by(Visit.completed_at, Visit.id)
         .limit(limit)
     )
+    if max_age_minutes is not None:
+        query = query.where(
+            Visit.completed_at
+            >= text("now() - make_interval(secs => :max_age)").bindparams(
+                max_age=float(max_age_minutes) * 60.0
+            )
+        )
+    if exclude_ids:
+        query = query.where(Visit.id.not_in(list(exclude_ids)))
     if clinic_id is not None:
         query = query.where(Visit.clinic_id == clinic_id)
     return list((await db.scalars(query)).all())
+
+
+async def count_lost_triggers_beyond(
+    db: AsyncSession, *, older_than_minutes: int, clinic_id: uuid.UUID | None = None
+) -> int:
+    """How many completed visits with a NULL `downstream_started_at` completed MORE than
+    `older_than_minutes` ago (optionally of one clinic): the lost triggers the reconciler
+    no longer restarts by itself (gap review WR-07). Served by the partial index
+    `ix_visits_downstream_pending`. No row lock."""
+    query = (
+        select(func.count())
+        .select_from(Visit)
+        .where(
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.downstream_started_at.is_(None),
+            Visit.completed_at
+            < text("now() - make_interval(secs => :beyond)").bindparams(
+                beyond=float(older_than_minutes) * 60.0
+            ),
+        )
+    )
+    if clinic_id is not None:
+        query = query.where(Visit.clinic_id == clinic_id)
+    return int(await db.scalar(query) or 0)
 
 
 async def _mark_settled(

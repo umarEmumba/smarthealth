@@ -126,6 +126,8 @@ class VisitActivities:
         client: Client | None,
         *,
         reconcile_grace_minutes: int | None = None,
+        lost_trigger_restart_enabled: bool | None = None,
+        lost_trigger_max_age_hours: int | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._http = http
@@ -137,6 +139,18 @@ class VisitActivities:
             if reconcile_grace_minutes is None
             else reconcile_grace_minutes
         )
+        self._lost_restart_enabled = (
+            settings.lost_trigger_restart_enabled
+            if lost_trigger_restart_enabled is None
+            else lost_trigger_restart_enabled
+        )
+        self._lost_max_age_hours = (
+            settings.lost_trigger_max_age_hours
+            if lost_trigger_max_age_hours is None
+            else lost_trigger_max_age_hours
+        )
+        # Per-process backoff of the visits whose lost-trigger restart keeps failing (WR-07).
+        self._lost_backoff = downstream.LostTriggerBackoff()
 
     def all(self) -> list[Callable[..., Any]]:
         """Every activity, for `Worker(activities=...)`."""
@@ -308,11 +322,17 @@ class VisitActivities:
         restarted = 0
         if self._client is None:
             log.warning("visit.lost_trigger_pass_skipped")
+        elif not self._lost_restart_enabled:
+            log.info("visit.lost_trigger_pass_disabled")
         else:
             try:
                 async with asyncio.timeout(LOST_TRIGGER_PASS_BUDGET_SECONDS):
                     restarted = await downstream.restart_lost_triggers(
-                        self._session_factory, self._client, grace_minutes=self._reconcile_grace
+                        self._session_factory,
+                        self._client,
+                        grace_minutes=self._reconcile_grace,
+                        max_age_minutes=self._lost_max_age_hours * 60,
+                        backoff=self._lost_backoff,
                     )
             except TimeoutError:
                 log.warning(

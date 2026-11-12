@@ -14,7 +14,7 @@ client secret of its own.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from libs.config import SharedSettings
 
@@ -42,6 +42,18 @@ class VisitSettings(SharedSettings):
     reconcile_grace_minutes: int = Field(
         default=10, ge=0, validation_alias="VISIT_RECONCILE_GRACE_MINUTES"
     )
+    # Lost-trigger pass (plan 03-22; gap review WR-07): a completed visit whose
+    # `downstream_started_at` is still NULL after the grace is restarted automatically only
+    # while it completed within `lost_trigger_max_age_hours` (an older one, e.g. after a
+    # database restored from a snapshot, is only counted and reported; recover it with
+    # scripts/backfill_visit_completed_events.py). `lost_trigger_restart_enabled=false` is
+    # the kill switch: the pass is skipped and the settle pass keeps running.
+    lost_trigger_restart_enabled: bool = Field(
+        default=True, validation_alias="VISIT_LOST_TRIGGER_RESTART_ENABLED"
+    )
+    lost_trigger_max_age_hours: int = Field(
+        default=24, ge=1, validation_alias="VISIT_LOST_TRIGGER_MAX_AGE_HOURS"
+    )
     # visit-downstream consumer (plan 03-09): the Prometheus metrics port it serves
     # on (internal to the Compose network, never published to the host) and the
     # heartbeat file the Compose healthcheck reads.
@@ -51,6 +63,15 @@ class VisitSettings(SharedSettings):
     consumer_heartbeat_path: str = Field(
         default="/tmp/visit-consumer.alive", validation_alias="VISIT_CONSUMER_HEARTBEAT_PATH"
     )
+
+    @model_validator(mode="after")
+    def _window_is_not_empty(self) -> VisitSettings:
+        if self.lost_trigger_max_age_hours * 60 <= self.reconcile_grace_minutes:
+            raise ValueError(
+                "VISIT_LOST_TRIGGER_MAX_AGE_HOURS must exceed VISIT_RECONCILE_GRACE_MINUTES "
+                "(an empty window silently disables the lost-trigger restart)"
+            )
+        return self
 
 
 settings = VisitSettings()
