@@ -35,11 +35,14 @@ registered under its `ACT_*` name; the workflows call them by name.
   key are therefore identical whether the workflow or the reconciler runs the
   step, and the two can race without a double effect.
 * `reconcile_unsettled`'s activity body also runs the lost-trigger pass (plan 03-22,
-  CR-01): after the settle pass it restarts, with the worker's Temporal client, every
-  completed visit whose `downstream_started_at` is still NULL after the reconcile grace
-  (its `visit.completed` event was dead-lettered or dropped) through the same idempotent
-  `ensure_downstream_started` the outbox consumer calls. No workflow or activity name
-  changes; the retired sweeper Schedule is not involved.
+  CR-01): it restarts, with the worker's Temporal client, every completed visit whose
+  `downstream_started_at` is still NULL after the reconcile grace (its `visit.completed`
+  event was dead-lettered or dropped) through the same idempotent
+  `ensure_downstream_started` the outbox consumer calls. The lost-trigger pass runs FIRST
+  under its own wall-clock budget (`LOST_TRIGGER_PASS_BUDGET_SECONDS`), the settle pass
+  SECOND under `SETTLE_PASS_BUDGET_SECONDS`, and each is isolated from the other, so a
+  slow settle pass (a slow Billing) can no longer starve the lost-trigger pass (gap review
+  WR-01). No workflow or activity name changes; the retired sweeper Schedule is not involved.
 * `record_followup_intent` / `record_analytics_intent` - Phase 2 stubs (D-11):
   a log line and an audit entry, ids only. They are the single Phase 3 seams
   (Celery follow-up job, Kafka `visit.completed` event).
@@ -54,6 +57,7 @@ logs carry no values.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -97,6 +101,13 @@ AUDIT_ACTOR_ID = "service:visit"
 AUDIT_ACTOR_ROLE = "service"
 ENTITY_TYPE = "visit"
 FINALIZE_REASON_CODE = "visit_completed"
+
+# Wall-clock budgets of the two reconcile passes. The reconcile activity does not
+# heartbeat and runs under MAINTENANCE_ACTIVITY's 60 s start_to_close, so both budgets
+# plus a margin must fit inside it: a timed-out attempt would otherwise keep running
+# beside its Temporal retry.
+LOST_TRIGGER_PASS_BUDGET_SECONDS = 20.0
+SETTLE_PASS_BUDGET_SECONDS = 30.0
 
 
 def _workflow_id() -> str:
@@ -281,25 +292,52 @@ class VisitActivities:
         return SweepResult(processed=0)
 
     async def reconcile(self) -> int:
-        """One reconciler pass (also run once by the worker at start-up): settle
-        completed visits whose markers are still empty after the grace period, then
-        restart the downstream workflow of completed visits whose trigger was lost
-        (marker still NULL after the grace). The settle pass runs first so a pass never
-        races a workflow it just started. Without a Temporal client the lost-trigger pass
-        is skipped and logged. Returns settled plus restarted."""
-        settled = await downstream.reconcile_unsettled(
-            self._session_factory,
-            finalize_billing=self._finalize_billing,
-            complete_appointment=self._complete_appointment,
-            grace_minutes=self._reconcile_grace,
-        )
+        """One reconciler pass (also run once by the worker at start-up). The lost-trigger
+        pass runs FIRST under `LOST_TRIGGER_PASS_BUDGET_SECONDS`: it restarts the downstream
+        workflow of completed visits whose trigger was lost (marker still NULL after the
+        grace). The settle pass then runs under `SETTLE_PASS_BUDGET_SECONDS` and settles
+        completed visits whose markers are still empty after the grace. Neither pass can
+        delay or prevent the other: a timeout or an exception in the lost-trigger pass is
+        logged (class name only) and the settle pass still runs; a timeout in the settle
+        pass is logged, any other settle exception propagates as before (the activity fails
+        and Temporal retries it, the lost-trigger pass has already run). Cancelling a pass
+        at its budget is safe because every step is idempotent (`start_once` on a
+        deterministic id with a conditional marker, Billing's Idempotency-Key, conditional
+        settlement markers). Without a Temporal client the lost-trigger pass is skipped and
+        logged. Returns restarted plus settled."""
+        restarted = 0
         if self._client is None:
             log.warning("visit.lost_trigger_pass_skipped")
-            return settled
-        restarted = await downstream.restart_lost_triggers(
-            self._session_factory, self._client, grace_minutes=self._reconcile_grace
-        )
-        return settled + restarted
+        else:
+            try:
+                async with asyncio.timeout(LOST_TRIGGER_PASS_BUDGET_SECONDS):
+                    restarted = await downstream.restart_lost_triggers(
+                        self._session_factory, self._client, grace_minutes=self._reconcile_grace
+                    )
+            except TimeoutError:
+                log.warning(
+                    "visit.reconcile_pass_timed_out",
+                    pass_name="lost_trigger",
+                    budget_seconds=LOST_TRIGGER_PASS_BUDGET_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 - the settle pass must still run
+                log.warning("visit.lost_trigger_pass_failed", error=type(exc).__name__)
+        settled = 0
+        try:
+            async with asyncio.timeout(SETTLE_PASS_BUDGET_SECONDS):
+                settled = await downstream.reconcile_unsettled(
+                    self._session_factory,
+                    finalize_billing=self._finalize_billing,
+                    complete_appointment=self._complete_appointment,
+                    grace_minutes=self._reconcile_grace,
+                )
+        except TimeoutError:
+            log.warning(
+                "visit.reconcile_pass_timed_out",
+                pass_name="settle",
+                budget_seconds=SETTLE_PASS_BUDGET_SECONDS,
+            )
+        return restarted + settled
 
     @activity.defn(name=ACT_RECONCILE)
     async def reconcile_unsettled(self) -> SweepResult:

@@ -14,9 +14,13 @@ every 2 s for up to 60 s; after that the process exits non-zero and the
 orchestrator restarts it. Then `ensure_visit_schedules(client)` registers the
 `visit-reconciler` Schedule and `retire_sweeper_schedule(client)` deletes the retired
 `visit-downstream-sweeper` Schedule (D-03; both idempotent; a failure exits 1),
-followed by one reconcile pass (a failure is logged, never fatal: the Schedule
-retries), which also restarts completed visits whose `visit.completed` trigger was lost
-(marker still NULL after the grace, plan 03-22). There is no start-up sweep: the outbox
+followed by the heartbeat task and then one reconcile pass, which also restarts completed
+visits whose `visit.completed` trigger was lost (marker still NULL after the grace, plan
+03-22). The start-up pass runs as a BACKGROUND task created after the heartbeat task (gap
+review WR-01): its failure is logged and never raised (the Schedule retries), it is
+cancelled at shutdown if it is still running, and a slow, hanging or failing pass can
+neither delay nor stop the heartbeat or keep the Worker from polling. It may overlap the
+Schedule's first pass; both are idempotent. There is no start-up sweep: the outbox
 consumer is the trigger and the reconcile pass is its safety net.
 It never runs database migrations: the API container owns them.
 
@@ -25,7 +29,9 @@ running activities `graceful_shutdown_timeout` to finish (every activity is
 idempotent, so an interrupted one is simply retried).
 
 Liveness: a heartbeat file (`HEARTBEAT_PATH`) is touched every 10 s while the
-worker runs, for the Compose healthcheck (plan 02-12).
+worker runs, for the Compose healthcheck (plan 02-12). It starts after the pre-Worker
+steps (connection, audit indexes, Schedules), so a hang there still leaves it stale; the
+background start-up reconcile pass cannot delay or stop it.
 """
 
 from __future__ import annotations
@@ -96,6 +102,15 @@ async def _heartbeat(stop: asyncio.Event) -> None:
             await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
 
 
+async def _startup_reconcile(activities: VisitActivities) -> None:
+    """The start-up reconcile pass, run as a background task: a failure is logged
+    (class name only) and never raised; the Schedule reconciles again."""
+    try:
+        await activities.reconcile()
+    except Exception as exc:  # noqa: BLE001 - the Schedule reconciles again; never fatal
+        log.warning("visit.startup_reconcile_failed", error=type(exc).__name__)
+
+
 def build_activities(client: Client) -> VisitActivities:
     """Production wiring: visit_db sessions, the process-default
     timeout-bounded HTTP client, Visit's service tokens, Mongo and the
@@ -148,13 +163,10 @@ async def main() -> int:
 
     # No start-up sweep any more (plan 03-12, D-03): the visit.completed outbox event,
     # consumed by the visit-downstream consumer, is the only downstream trigger.
-    try:
-        await activities.reconcile()
-    except Exception as exc:  # noqa: BLE001 - the Schedule reconciles again; never fatal
-        log.warning("visit.startup_reconcile_failed", error=type(exc).__name__)
-
     heartbeat = asyncio.create_task(_heartbeat(stop))
+    startup: asyncio.Task[None] | None = None
     try:
+        startup = asyncio.create_task(_startup_reconcile(activities))
         async with Worker(
             client,
             task_queue=VISIT_TASK_QUEUE,
@@ -167,6 +179,10 @@ async def main() -> int:
             log.info("worker.stopping")
     finally:
         stop.set()
+        if startup is not None and not startup.done():
+            startup.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await startup
         await heartbeat
     log.info("worker.stopped")
     return 0

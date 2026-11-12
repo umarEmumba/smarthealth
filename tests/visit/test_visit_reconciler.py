@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 import uuid
+import os
 from typing import Any
 
 import httpx
@@ -48,6 +50,7 @@ from libs.audit.mongo_indexes import ensure_audit_indexes
 from libs.db.postgres import get_session_factory
 from libs.observability.logging import configure_logging
 from services.visit import downstream
+from services.visit import worker as visit_worker_module
 from services.visit.activities import downstream as activities_module
 from services.visit.activities.downstream import VisitActivities
 from services.visit.config import settings as visit_settings
@@ -76,6 +79,17 @@ from tests.visit.test_downstream import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+def _events(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
+    """The JSON log lines written to stdout since the last read."""
+    events: list[dict[str, Any]] = []
+    for line in capsys.readouterr().out.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
 
 
 async def _started(visit_id: str) -> None:
@@ -395,15 +409,15 @@ async def test_a_delivery_after_the_restart_attaches_to_the_same_execution(
     await handle.terminate(reason="test clean-up")
 
 
-async def test_reconcile_runs_the_settle_pass_then_the_lost_trigger_pass(
+async def test_reconcile_runs_the_lost_trigger_pass_first_then_the_settle_pass(
     mesh: httpx.AsyncClient,
     mongo_client: AsyncMongoClient,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Wiring only, no visit_db row is touched (W5): both pass functions are replaced by
-    recorders. The settle pass runs first; the lost-trigger pass gets the activity's
-    Temporal client and grace and NO clinic id; the activity returns the sum. Without a
+    recorders. The lost-trigger pass runs first (WR-01) and gets the activity's Temporal
+    client and grace and NO clinic id; the settle pass runs second; the activity returns the sum. Without a
     client the lost-trigger pass is skipped and logged."""
     calls: list[tuple[Any, ...]] = []
 
@@ -433,7 +447,7 @@ async def test_reconcile_runs_the_settle_pass_then_the_lost_trigger_pass(
         )
 
     assert await build(sentinel).reconcile() == 5
-    assert calls == [("settle", 7), ("lost", sentinel, 7, None)]
+    assert calls == [("lost", sentinel, 7, None), ("settle", 7)]
 
     configure_logging()
     monkeypatch.setattr(activities_module, "log", structlog.get_logger("test-visit-activities"))
@@ -441,13 +455,7 @@ async def test_reconcile_runs_the_settle_pass_then_the_lost_trigger_pass(
     calls.clear()
     assert await build(None).reconcile() == 2
     assert calls == [("settle", 7)]  # the lost-trigger recorder was never called
-    events = []
-    for line in capsys.readouterr().out.splitlines():
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    assert [e for e in events if e.get("event") == "visit.lost_trigger_pass_skipped"]
+    assert [e for e in _events(capsys) if e.get("event") == "visit.lost_trigger_pass_skipped"]
 
 
 async def test_a_settled_visit_is_not_selected_and_not_called(
@@ -603,3 +611,205 @@ async def test_list_unsettled_only_selects_completed_visits_with_an_open_marker(
     assert stuck in ids
     assert in_progress["id"] not in ids
     assert uuid.UUID(stuck)  # ids are visit uuids only
+
+
+# --- WR-01 (gap review): the lost-trigger pass first, both passes bounded and isolated ----------
+
+
+def _reconcile_activities(mesh: httpx.AsyncClient, mongo_client: AsyncMongoClient, client: Any) -> VisitActivities:
+    """Activities with grace 7 and `client` as the Temporal client (set after construction;
+    callers replace both pass functions by recorders, see the isolation gate)."""
+    tokens_acts = _activities(mesh, mongo_client)
+    acts = VisitActivities(
+        tokens_acts._session_factory,
+        mesh,
+        tokens_acts._tokens,
+        mongo_client,
+        None,
+        reconcile_grace_minutes=7,
+    )
+    acts._client = client
+    return acts
+
+
+async def test_a_slow_settle_pass_cannot_starve_the_lost_trigger_pass(
+    mesh: httpx.AsyncClient,
+    mongo_client: AsyncMongoClient,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    order: list[str] = []
+
+    async def settle_recorder(factory: Any, **kwargs: Any) -> int:
+        order.append("settle-start")
+        await asyncio.sleep(60)
+        return 2
+
+    async def lost_recorder(factory: Any, client: Any, *, clinic_id: Any = None, **kwargs: Any) -> int:
+        order.append("lost")
+        return 3
+
+    monkeypatch.setattr(downstream, "reconcile_unsettled", settle_recorder)
+    monkeypatch.setattr(downstream, "restart_lost_triggers", lost_recorder)
+    monkeypatch.setattr(activities_module, "SETTLE_PASS_BUDGET_SECONDS", 0.2, raising=False)
+    configure_logging()
+    monkeypatch.setattr(activities_module, "log", structlog.get_logger("test-visit-activities"))
+    capsys.readouterr()
+
+    result = await asyncio.wait_for(_reconcile_activities(mesh, mongo_client, object()).reconcile(), timeout=5)
+
+    assert result == 3
+    assert order == ["lost", "settle-start"]
+    timed_out = [e for e in _events(capsys) if e.get("event") == "visit.reconcile_pass_timed_out"]
+    assert [e["pass_name"] for e in timed_out] == ["settle"]
+
+
+async def test_a_failing_or_slow_lost_trigger_pass_never_skips_the_settle_pass(
+    mesh: httpx.AsyncClient,
+    mongo_client: AsyncMongoClient,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mode = {"value": "raise"}
+
+    async def settle_recorder(factory: Any, **kwargs: Any) -> int:
+        return 2
+
+    async def lost_recorder(factory: Any, client: Any, *, clinic_id: Any = None, **kwargs: Any) -> int:
+        if mode["value"] == "raise":
+            raise RuntimeError("secret-detail-must-not-be-logged")
+        await asyncio.sleep(60)
+        return 3
+
+    monkeypatch.setattr(downstream, "reconcile_unsettled", settle_recorder)
+    monkeypatch.setattr(downstream, "restart_lost_triggers", lost_recorder)
+    monkeypatch.setattr(activities_module, "LOST_TRIGGER_PASS_BUDGET_SECONDS", 0.2, raising=False)
+    configure_logging()
+    monkeypatch.setattr(activities_module, "log", structlog.get_logger("test-visit-activities"))
+    capsys.readouterr()
+    acts = _reconcile_activities(mesh, mongo_client, object())
+
+    assert await asyncio.wait_for(acts.reconcile(), timeout=5) == 2
+    failed = [e for e in _events(capsys) if e.get("event") == "visit.lost_trigger_pass_failed"]
+    assert [e["error"] for e in failed] == ["RuntimeError"]
+    assert "secret-detail" not in json.dumps(failed)
+
+    mode["value"] = "sleep"
+    assert await asyncio.wait_for(acts.reconcile(), timeout=5) == 2
+    timed_out = [e for e in _events(capsys) if e.get("event") == "visit.reconcile_pass_timed_out"]
+    assert [e["pass_name"] for e in timed_out] == ["lost_trigger"]
+
+
+def test_the_two_pass_budgets_fit_inside_the_reconcile_activity_timeout() -> None:
+    from libs.temporal_policies import MAINTENANCE_ACTIVITY  # noqa: PLC0415
+
+    lost = activities_module.LOST_TRIGGER_PASS_BUDGET_SECONDS
+    settle = activities_module.SETTLE_PASS_BUDGET_SECONDS
+    assert lost > 0 and settle > 0
+    assert lost + settle + 5 <= MAINTENANCE_ACTIVITY["start_to_close_timeout"].total_seconds()
+
+
+class _StubActivities:
+    """Stands in for VisitActivities in worker.main(): reconcile() hangs or raises."""
+
+    def __init__(self, behavior: str, heartbeat: Any, seen: dict[str, Any]) -> None:
+        self._behavior = behavior
+        self._heartbeat = heartbeat
+        self._seen = seen
+
+    def all(self) -> list[Any]:
+        return []
+
+    async def reconcile(self) -> int:
+        end = asyncio.get_running_loop().time() + 2
+        while not self._heartbeat.exists() and asyncio.get_running_loop().time() < end:
+            await asyncio.sleep(0.02)
+        self._seen["heartbeat_during_pass"] = self._heartbeat.exists()
+        if self._behavior == "raise":
+            raise RuntimeError("boom-detail")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self._seen["cancelled"] = True
+            raise
+        return 0
+
+
+async def _drive_worker_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, behavior: str
+) -> tuple[int, dict[str, Any], Any]:
+    heartbeat = tmp_path / "visit-worker.alive"
+    seen: dict[str, Any] = {"worker_entered": False}
+
+    class _FakeWorker:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeWorker:
+            seen["worker_entered"] = True
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    async def _connect() -> object:
+        return object()
+
+    async def _noop(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def _retired(*args: Any, **kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(visit_worker_module, "HEARTBEAT_PATH", heartbeat)
+    monkeypatch.setattr(visit_worker_module, "configure_tracer_provider", lambda name: None)
+    monkeypatch.setattr(visit_worker_module, "start_worker_metrics_server", lambda: None)
+    monkeypatch.setattr(visit_worker_module, "_connect_with_retry", _connect)
+    monkeypatch.setattr(
+        visit_worker_module, "build_activities", lambda client: _StubActivities(behavior, heartbeat, seen)
+    )
+    monkeypatch.setattr(visit_worker_module, "get_mongo_client", lambda: None)
+    monkeypatch.setattr(visit_worker_module, "ensure_audit_indexes", _noop)
+    monkeypatch.setattr(visit_worker_module, "ensure_visit_schedules", _noop)
+    monkeypatch.setattr(visit_worker_module, "retire_sweeper_schedule", _retired)
+    monkeypatch.setattr(visit_worker_module, "Worker", _FakeWorker)
+
+    main_task = asyncio.ensure_future(visit_worker_module.main())
+    deadline = asyncio.get_running_loop().time() + 5
+    while not main_task.done() and asyncio.get_running_loop().time() < deadline:
+        if heartbeat.exists() and seen["worker_entered"]:
+            break
+        await asyncio.sleep(0.05)
+    if not main_task.done():
+        os.kill(os.getpid(), signal.SIGTERM)  # main's loop handler turns it into stop.set()
+    rc = await asyncio.wait_for(main_task, timeout=10)
+    return rc, seen, heartbeat
+
+
+async def test_a_hanging_start_up_reconcile_never_blocks_the_heartbeat_or_the_poll_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    rc, seen, heartbeat = await _drive_worker_main(monkeypatch, tmp_path, "hang")
+    assert rc == 0
+    assert heartbeat.exists()
+    assert seen["heartbeat_during_pass"] is True  # the pass started after the heartbeat task existed
+    assert seen["worker_entered"] is True  # the Worker polled while the pass still hung
+    assert seen.get("cancelled") is True  # cancelled at shutdown
+
+
+async def test_a_failing_start_up_reconcile_is_logged_and_never_stops_the_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    monkeypatch.setattr(visit_worker_module, "log", structlog.get_logger("test-visit-worker"))
+    capsys.readouterr()
+    rc, seen, heartbeat = await _drive_worker_main(monkeypatch, tmp_path, "raise")
+    assert rc == 0
+    assert heartbeat.exists()
+    assert seen["worker_entered"] is True
+    out = capsys.readouterr().out
+    failed = [json.loads(x) for x in out.splitlines() if x.startswith("{") and "startup_reconcile_failed" in x]
+    assert [e["error"] for e in failed] == ["RuntimeError"]
+    assert "boom-detail" not in out
