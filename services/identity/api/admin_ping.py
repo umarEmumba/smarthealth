@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from services.identity.domain.enums import Role
-from services.identity.security.current_user import AuthenticatedUser
-from services.identity.security.rbac import require_role
+from libs.auth.current_user import AuthenticatedUser
+from libs.auth.rbac import require_role
+from libs.auth.roles import Role
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 

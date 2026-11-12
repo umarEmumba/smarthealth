@@ -1,7 +1,42 @@
 global:
   scrape_interval: 15s
 
+# One scrape job per application service (each exposes /metrics on :8000 inside
+# the Compose network and reports its own OTel service name, smarthealth-<service>).
+# The gateway is the exception: it is the only published application port, so its
+# /metrics is served on an internal-only listener (:9100) and is a 404 on :8000.
 scrape_configs:
-  - job_name: "smarthealth-api"
+  - job_name: "smarthealth-gateway"
     static_configs:
-      - targets: ["api:8000"]
+      - targets: ["gateway:9100"]
+
+  - job_name: "smarthealth-identity"
+    static_configs:
+      - targets: ["identity:8000"]
+
+  - job_name: "smarthealth-organization"
+    static_configs:
+      - targets: ["organization:8000"]
+
+  - job_name: "smarthealth-provider"
+    static_configs:
+      - targets: ["provider:8000"]
+
+  - job_name: "smarthealth-patient"
+    static_configs:
+      - targets: ["patient:8000"]
+
+  - job_name: "smarthealth-scheduling"
+    static_configs:
+      - targets: ["scheduling:8000"]
+
+  - job_name: "smarthealth-billing"
+    static_configs:
+      - targets: ["billing:8000"]
+
+  - job_name: "smarthealth-visit"
+    static_configs:
+      - targets: ["visit:8000"]
+
+# scheduling-worker and visit-worker have no HTTP listener in Phase 2, so no
+# scrape job: Temporal SDK metrics and worker dashboards are Phase 3 (OBS) work.

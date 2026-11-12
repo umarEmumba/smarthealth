@@ -1,0 +1,416 @@
+"""Async repository for providers, specialties and weekly availability templates
+(Provider service, provider_db).
+
+Every provider is reached through its own id or its `department_id`, which is a
+bare id owned by Organization: this module never looks a department up and holds
+no department or clinic data (D-01, D-07). Callers (the routers) validate the
+department and the account reference with their owning services BEFORE calling
+the write functions here (D-05).
+
+Nothing in this module touches another service's database or a concrete-slot
+table: availability is stored as weekly templates only (Phase 1 Decision 2).
+
+Schedule-change events (M2): a template edit that changes a schedule-affecting
+field, a template deactivation and a provider deactivation each add ONE
+`ScheduleChangeEvent` to the session BEFORE the function's existing commit, so the
+event and the change commit atomically (a change is never committed without its
+event, nor an event without its change). A change that alters nothing records
+nothing. Scheduling drains the events through `list_pending_changes` /
+`mark_change_delivered`, exposed on Provider's internal API.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime, time, timezone as dt_timezone
+
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from services.provider.repository.models import (
+    AvailabilityTemplate,
+    Provider,
+    ScheduleChangeEvent,
+    ScheduleChangeType,
+    Specialty,
+)
+
+
+async def get_specialties_by_ids(
+    db: AsyncSession, specialty_ids: list[uuid.UUID]
+) -> list[Specialty]:
+    if not specialty_ids:
+        return []
+    result = await db.execute(select(Specialty).where(Specialty.id.in_(specialty_ids)))
+    return list(result.scalars().all())
+
+
+async def get_or_create_specialty(db: AsyncSession, name: str) -> Specialty:
+    """Look up a specialty by name, creating it if it doesn't exist yet.
+
+    Specialties have no admin-facing "manage specialties" endpoint (PPL-02 only
+    requires a provider to carry >=1 specialty), so get-or-create by name keeps
+    provider registration self-contained.
+
+    Race-free: the insert is `ON CONFLICT (name) DO NOTHING`, so two concurrent
+    creations introducing the same new name cannot make two rows nor raise a
+    unique violation — `specialties.name UNIQUE` is the backstop and the select
+    that follows sees the winner's row. Nothing is committed here; the caller's
+    transaction commits the specialty together with whatever it is attached to.
+    """
+    await db.execute(
+        pg_insert(Specialty).values(name=name).on_conflict_do_nothing(index_elements=["name"])
+    )
+    result = await db.execute(select(Specialty).where(Specialty.name == name))
+    return result.scalar_one()
+
+
+async def _specialties_for(db: AsyncSession, names: list[str]) -> list[Specialty]:
+    """Specialties for `names` (get-or-create), de-duplicated in order so a
+    repeated name cannot attach the same specialty to one provider twice."""
+    return [await get_or_create_specialty(db, name) for name in dict.fromkeys(names)]
+
+
+async def create_provider(
+    db: AsyncSession,
+    *,
+    department_id: uuid.UUID,
+    full_name: str,
+    specialty_names: list[str],
+    user_id: uuid.UUID | None = None,
+) -> Provider:
+    """Create a provider under `department_id`, attaching one-or-more
+    specialties by name (get-or-create, see `get_or_create_specialty`).
+
+    The department is NOT checked here: it belongs to Organization and the router
+    has already validated it (D-05). Always returns the provider re-selected with
+    `specialties` eagerly loaded — touching the lazy relationship after commit in
+    an async session raises `MissingGreenlet`, and a fresh SELECT with
+    `selectinload` is the correct async-ORM pattern, not a workaround.
+    """
+    specialties = await _specialties_for(db, specialty_names)
+
+    provider = Provider(
+        department_id=department_id,
+        full_name=full_name,
+        user_id=user_id,
+        specialties=specialties,
+    )
+    db.add(provider)
+    await db.commit()
+
+    created = await get_provider(db, provider.id)
+    assert created is not None  # just committed
+    return created
+
+
+async def get_provider(db: AsyncSession, provider_id: uuid.UUID) -> Provider | None:
+    result = await db.execute(
+        select(Provider)
+        .where(Provider.id == provider_id)
+        .options(selectinload(Provider.specialties))
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_provider_by_user(db: AsyncSession, user_id: uuid.UUID) -> Provider | None:
+    """Fetch the provider profile linked to login account `user_id` (unique), if any."""
+    result = await db.execute(
+        select(Provider)
+        .where(Provider.user_id == user_id)
+        .options(selectinload(Provider.specialties))
+    )
+    return result.scalar_one_or_none()
+
+
+def _provider_filter(stmt, department_id: uuid.UUID | None, include_inactive: bool):
+    if department_id is not None:
+        stmt = stmt.where(Provider.department_id == department_id)
+    if not include_inactive:
+        stmt = stmt.where(Provider.is_active.is_(True))
+    return stmt
+
+
+async def list_providers(
+    db: AsyncSession,
+    department_id: uuid.UUID | None = None,
+    *,
+    include_inactive: bool = False,
+    limit: int,
+    offset: int,
+) -> list[Provider]:
+    """One page of providers, optionally scoped to a single department.
+
+    Ordered by `(created_at, id)` (a total order, so paging never repeats or
+    skips a row — C5). `department_id=None` lists across all departments —
+    reserved for admin-only call sites (the router always passes an explicit
+    `department_id`). The `selectinload` of specialties is kept: it runs as its
+    own query for just the page's providers.
+    """
+    stmt = _provider_filter(
+        select(Provider).options(selectinload(Provider.specialties)),
+        department_id,
+        include_inactive,
+    )
+    stmt = stmt.order_by(Provider.created_at, Provider.id).limit(limit).offset(offset)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def count_providers(
+    db: AsyncSession,
+    department_id: uuid.UUID | None = None,
+    *,
+    include_inactive: bool = False,
+) -> int:
+    """Total providers matching the same filters as `list_providers`."""
+    subquery = _provider_filter(select(Provider), department_id, include_inactive).subquery()
+    result = await db.execute(select(func.count()).select_from(subquery))
+    return int(result.scalar_one())
+
+
+async def update_provider(
+    db: AsyncSession,
+    provider_id: uuid.UUID,
+    *,
+    full_name: str | None = None,
+    specialty_names: list[str] | None = None,
+) -> Provider | None:
+    """Partial-update a provider. `specialty_names`, when supplied, REPLACES
+    the provider's full specialty set (get-or-create by name, same as
+    `create_provider` — no separate specialty-management endpoint exists).
+    Returns `None` if `provider_id` does not exist.
+    """
+    provider = await get_provider(db, provider_id)
+    if provider is None:
+        return None
+
+    if full_name is not None:
+        provider.full_name = full_name
+    if specialty_names is not None:
+        provider.specialties = await _specialties_for(db, specialty_names)
+
+    await db.commit()
+
+    # Re-select with `specialties` eagerly loaded — see create_provider's
+    # docstring for why a post-commit lazy-load is unsafe here.
+    return await get_provider(db, provider.id)
+
+
+async def deactivate_provider(db: AsyncSession, provider_id: uuid.UUID) -> Provider | None:
+    """Soft-delete a provider. Idempotent — deactivating an already-inactive
+    provider is a no-op success.
+    """
+    provider = await get_provider(db, provider_id)
+    if provider is None:
+        return None
+
+    if provider.is_active:
+        provider.is_active = False
+        provider.deactivated_at = datetime.now(dt_timezone.utc)
+        await record_schedule_change(
+            db,
+            provider_id=provider.id,
+            change_type=ScheduleChangeType.PROVIDER_DEACTIVATED,
+        )
+        await db.commit()
+        provider = await get_provider(db, provider_id)
+    return provider
+
+
+async def create_availability_template(
+    db: AsyncSession,
+    *,
+    provider_id: uuid.UUID,
+    department_id: uuid.UUID,
+    day_of_week: int,
+    start_time,
+    end_time,
+    slot_duration_minutes: int,
+    effective_from: date,
+    effective_to: date | None = None,
+) -> AvailabilityTemplate:
+    """Persist a weekly availability template row.
+
+    Validation (day_of_week range, end_time > start_time, positive
+    duration, effective_from <= effective_to) happens in the router's
+    Pydantic schema BEFORE this is called — this function trusts its
+    caller and only persists (RESEARCH Decision 2: templates only, no
+    concrete provider_slots rows are generated here).
+    """
+    template = AvailabilityTemplate(
+        provider_id=provider_id,
+        department_id=department_id,
+        day_of_week=day_of_week,
+        start_time=start_time,
+        end_time=end_time,
+        slot_duration_minutes=slot_duration_minutes,
+        effective_from=effective_from,
+        effective_to=effective_to,
+    )
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    return template
+
+
+async def list_availability(
+    db: AsyncSession, provider_id: uuid.UUID, *, include_inactive: bool = False
+) -> list[AvailabilityTemplate]:
+    stmt = select(AvailabilityTemplate).where(AvailabilityTemplate.provider_id == provider_id)
+    if not include_inactive:
+        stmt = stmt.where(AvailabilityTemplate.is_active.is_(True))
+    stmt = stmt.order_by(AvailabilityTemplate.day_of_week, AvailabilityTemplate.start_time)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_availability_template(
+    db: AsyncSession, template_id: uuid.UUID, provider_id: uuid.UUID
+) -> AvailabilityTemplate | None:
+    """Fetch a single availability template scoped to `provider_id` — the
+    provider-ownership PATCH/deactivate routes need to load-then-check
+    ownership on the parent provider, so this stays id+provider scoped
+    rather than id-only (mirrors the clinic/department scoping pattern).
+    """
+    result = await db.execute(
+        select(AvailabilityTemplate).where(
+            AvailabilityTemplate.id == template_id,
+            AvailabilityTemplate.provider_id == provider_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_availability_template(
+    db: AsyncSession,
+    template_id: uuid.UUID,
+    provider_id: uuid.UUID,
+    *,
+    day_of_week: int | None = None,
+    start_time: time | None = None,
+    end_time: time | None = None,
+    slot_duration_minutes: int | None = None,
+    effective_from: date | None = None,
+    effective_to: date | None = None,
+) -> AvailabilityTemplate | None:
+    """Partial-update an availability template, scoped to `provider_id`.
+
+    Window-consistency validation (end after start, effective_from <=
+    effective_to) against the RESULTING row (existing values merged with
+    the supplied partial update) happens in the router BEFORE this is
+    called — mirrors `create_availability_template`'s trust-the-caller
+    contract. Returns `None` if the template does not exist or does not
+    belong to `provider_id`.
+    """
+    template = await get_availability_template(db, template_id, provider_id)
+    if template is None:
+        return None
+
+    supplied = {
+        "day_of_week": day_of_week,
+        "start_time": start_time,
+        "end_time": end_time,
+        "slot_duration_minutes": slot_duration_minutes,
+        "effective_from": effective_from,
+        "effective_to": effective_to,
+    }
+    # Compare BEFORE assigning: a PATCH that supplies the stored values changes
+    # nothing and must not tell Scheduling to revisit its slots (M2).
+    changed = False
+    for field, value in supplied.items():
+        if value is not None and getattr(template, field) != value:
+            setattr(template, field, value)
+            changed = True
+
+    if changed:
+        await record_schedule_change(
+            db,
+            provider_id=template.provider_id,
+            change_type=ScheduleChangeType.TEMPLATE_UPDATED,
+            template_id=template.id,
+        )
+
+    await db.commit()
+    await db.refresh(template)
+    return template
+
+
+async def deactivate_availability_template(
+    db: AsyncSession, template_id: uuid.UUID, provider_id: uuid.UUID
+) -> AvailabilityTemplate | None:
+    """Soft-delete an availability template, scoped to `provider_id`.
+    Idempotent — deactivating an already-inactive template is a no-op
+    success.
+    """
+    template = await get_availability_template(db, template_id, provider_id)
+    if template is None:
+        return None
+
+    if template.is_active:
+        template.is_active = False
+        template.deactivated_at = datetime.now(dt_timezone.utc)
+        await record_schedule_change(
+            db,
+            provider_id=template.provider_id,
+            change_type=ScheduleChangeType.TEMPLATE_DEACTIVATED,
+            template_id=template.id,
+        )
+        await db.commit()
+        await db.refresh(template)
+    return template
+
+
+async def record_schedule_change(
+    db: AsyncSession,
+    *,
+    provider_id: uuid.UUID,
+    change_type: str,
+    template_id: uuid.UUID | None = None,
+) -> ScheduleChangeEvent:
+    """Add one schedule-change event to the caller's transaction (M2).
+
+    Flush only, never commit: the caller's existing commit makes the event atomic
+    with the change that caused it. The row carries ids and a change type only.
+    """
+    event = ScheduleChangeEvent(
+        provider_id=provider_id, change_type=change_type, template_id=template_id
+    )
+    db.add(event)
+    await db.flush()
+    return event
+
+
+async def list_pending_changes(db: AsyncSession, *, limit: int) -> list[ScheduleChangeEvent]:
+    """Undelivered events, oldest first by `(created_at, id)` (a total order)."""
+    result = await db.execute(
+        select(ScheduleChangeEvent)
+        .where(ScheduleChangeEvent.delivered_at.is_(None))
+        .order_by(ScheduleChangeEvent.created_at, ScheduleChangeEvent.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def mark_change_delivered(db: AsyncSession, event_id: uuid.UUID) -> str:
+    """Acknowledge an event. Returns `"delivered"` when this call flipped it,
+    `"already"` when it was acknowledged earlier (idempotent) and `"not_found"`
+    for an unknown id. The flip is a conditional `UPDATE ... WHERE delivered_at IS
+    NULL`, so two concurrent acknowledgements cannot both report `"delivered"`.
+    """
+    flipped = await db.execute(
+        update(ScheduleChangeEvent)
+        .where(ScheduleChangeEvent.id == event_id, ScheduleChangeEvent.delivered_at.is_(None))
+        .values(delivered_at=func.now())
+        .returning(ScheduleChangeEvent.id)
+    )
+    if flipped.first() is not None:
+        await db.commit()
+        return "delivered"
+    exists = await db.execute(
+        select(ScheduleChangeEvent.id).where(ScheduleChangeEvent.id == event_id)
+    )
+    await db.rollback()
+    return "already" if exists.first() is not None else "not_found"

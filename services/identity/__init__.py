@@ -1,1 +1,1 @@
-"""Identity service — auth, RBAC, patient/provider/clinic/department management."""
+"""Identity service — accounts, credentials, token issuance (RS256) and JWKS."""

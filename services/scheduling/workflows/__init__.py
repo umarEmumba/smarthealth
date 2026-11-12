@@ -1,0 +1,6 @@
+"""Scheduling's Temporal workflows (sandbox-safe: temporalio, stdlib and the
+pure `domain.contracts` / `libs.temporal_policies` only): `booking`
+(`BookingWorkflow`) and `maintenance` (`HoldReaperWorkflow`,
+`PendingBookingStarterWorkflow`, plan 02-07), `cancel` (`CancelWorkflow`) and
+`reschedule` (`RescheduleWorkflow`, plan 02-08) and `waitlist_advance`
+(`WaitlistAdvanceWorkflow`, plan 02-09)."""

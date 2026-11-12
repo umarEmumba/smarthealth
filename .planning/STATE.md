@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 2
-current_phase_name: Scheduling + Service Workflow
-status: planning
-stopped_at: Phase 01 gap-closure plan 01-07 complete, ready to plan Phase 2
-last_updated: "2026-09-10T10:58:38.971Z"
-last_activity: 2026-09-10
-last_activity_desc: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
-state_head: a6bfaa2a4333b351edbc9c0d21e7a77612dca660
+current_phase: "02.1"
+current_phase_name: Week 1-2 mentor review remediation
+status: verifying
+stopped_at: Completed 02.1-13-docs-closeout-PLAN.md
+last_updated: "2026-10-27T05:08:46.310Z"
+last_activity: 2026-10-24
+last_activity_desc: Phase 02.1 execution started
+state_head: 2fb042f73c09d04de395966a7e6b7070b9ff3dc8
 progress:
-  total_phases: 3
+  total_phases: 5
   completed_phases: 1
-  total_plans: 7
-  completed_plans: 7
-  percent: 33
+  total_plans: 42
+  completed_plans: 42
+  percent: 20
 ---
 
 # Project State
@@ -23,22 +23,26 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-09)
 
 **Core value:** Booking, updating, and completing an appointment is reliable and consistent under load — partial failures never corrupt scheduling state, and every operational data model stays accurate, durable, and queryable.
-**Current focus:** Phase 01 — Foundation + Core Services
+**Current focus:** Phase 02.1 — Week 1-2 mentor review remediation
 
 ## Current Position
 
-Phase: 2 — Scheduling + Service Workflow
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-09-10 — Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
+Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
+Plan: 13 of 13
+Status: Phase complete — ready for verification
+(`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
+tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
+human visual check of the dashboard/docs.
+Last activity: 2026-10-24 — Phase 02.1 execution started
+real-stack e2e 7 passed, demo 1 winner of 50, docs + dashboard v3
 
-Progress: [███░░░░░░░] 33%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 7
+- Total plans completed: 29 (Phase 2 plans executed, phase verification pending)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -47,6 +51,8 @@ Progress: [███░░░░░░░] 33%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 7 | - | - |
+| 1.1 | 10 | - | - |
+| 02 | 12 (executed) | - | - |
 
 **Recent Trend:**
 
@@ -65,6 +71,29 @@ Progress: [███░░░░░░░] 33%
 | Phase 01 P05 | 35min | 3 tasks | 9 files |
 | Phase 01 P06 | 3min | 2 tasks | 1 files |
 | Phase 01 P07 | 40min | 4 tasks | 15 files |
+| Phase 01.1 P01 | 19min | 2 tasks | 59 files |
+| Phase 01.1 P02 | 9 min | 2 tasks | 13 files |
+| Phase 01.1 P03 | 17 min | 2 tasks | 33 files |
+| Phase 01.1 P04 | 30 min | 3 tasks | 13 files |
+| Phase 01.1 P05 | 14 min | 2 tasks | 12 files |
+| Phase 01.1 P06 | 11 min | 2 tasks | 20 files |
+| Phase 01.1 P07 | 20 min | 3 tasks | 27 files |
+| Phase 01.1 P08 | 75min | 2 tasks | 30 files |
+| Phase 01.1 P09 | 27 min | 2 tasks | 22 files |
+| Phase 01.1 P10 | 66min | 2 tasks | 7 files |
+| Phase 02.1 P01 | 19 min | 3 tasks | 10 files |
+| Phase 02.1 P02 | 20min | 3 tasks | 14 files |
+| Phase 02.1 P03 | 25 min | 3 tasks | 16 files |
+| Phase 02.1 P04 | 16 min | 3 tasks | 13 files |
+| Phase 02.1 P05 | 25min | 2 tasks | 7 files |
+| Phase 02.1 P06 | 55min | 3 tasks | 6 files |
+| Phase 02.1 P07 | 45min | 3 tasks | 23 files |
+| Phase 02.1 P08 | 31min | 3 tasks | 21 files |
+| Phase 02.1 P09 | 41min | 3 tasks | 13 files |
+| Phase 02.1 P10 | 20min | 3 tasks | 16 files |
+| Phase 02.1 P11 | 35min | 3 tasks | 17 files |
+| Phase 02.1 P12 | 40min | 2 tasks | 7 files |
+| Phase 02.1 P13 | 78 min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -94,16 +123,91 @@ Recent decisions affecting current work:
 - [Phase 01]: [Phase 01] (01-07 gap-closure) Provider `specialties` on PATCH REPLACES the full set (not append/merge) when supplied — consistent PATCH field-level semantics, reuses the create-path get-or-create-by-name logic
 - [Phase 01]: [Phase 01] (01-07 gap-closure) Availability PATCH validates the RESULTING window (existing values merged with the partial update), not just the supplied fields in isolation — a single-field PATCH can never silently create an inverted start/end or effective_from>effective_to window
 - [Phase 01]: [Phase 01] (01-07 gap-closure) No hard deletes anywhere in the codebase — every "delete" is a status flip (is_active=false + deactivated_at=now()); migration 0002 added these columns to all five Phase-1 resource tables with a verified upgrade/downgrade round-trip
+- [Phase 01.1]: [Phase 01.1] (01.1-01) All services write to the ONE shared audit_log collection in the shared Mongo database (MONGO_DB_NAME); audit is cross-cutting infra owned by the future Audit service (D-02), not a per-service database
+- [Phase 01.1]: [Phase 01.1] (01.1-01) SharedSettings binds aliased fields by alias only (validate_by_name=False): pydantic-settings 2.15.0 populate_by_name=True also reads the bare field-name env var, which leaked a stale DATABASE_URL into IdentitySettings.database_url
+- [Phase 01.1]: [Phase 01.1] (01.1-01) JwksClient: miss-backoff applies to unknown-kid and stale-TTL refreshes alike, an empty/garbled JWKS is a failed refresh (cache kept), stale keys are served when Identity is down; get_current_user returns 401 for missing creds and fails closed with 503 if Redis/JWKS unavailable
+- [Phase 01.1]: [Phase 01.1] (01.1-01) Database-per-service bootstrap is an idempotent db-init compose job (not initdb.d) so it runs on existing volumes; legacy single database left untouched. Stray empty users/alembic_version objects exist in legacy smarthealth DB from a pre-fix migration run awaiting user cleanup
+- [Phase 01.1]: Duplicate-email registration race closed via users.email unique constraint + IntegrityError -> rollback -> 409 + failure audit (no app lock)
+- [Phase 01.1]: HS256-with-public-key forgery test is hand-built (hmac) because python-jose refuses to HMAC with a PEM
+- [Phase 01.1]: Gateway exposes no OpenAPI/docs of its own: every path outside the route table (including /openapi.json and /docs) is a plain 404
+- [Phase 01.1]: Gateway proxy drops Connection-listed and client accept-encoding headers, appends response headers (Set-Cookie survives), and never retries an upstream call (a retried POST could double-apply)
+- [Phase 01.1]: Internal lookups report inactive rows as is_active=false and return one identical 404 for missing and out-of-clinic-scope ids; require_internal_caller carries its own ACCESS_ONLY decode so plan 01.1-05 can widen to service tokens
+- [Phase 01.1]: 01.1-04: Gateway rate limiter fails OPEN on Redis outage (visibly: warning log + gateway_ratelimit_fail_open_total); limiter keys on socket peer address only, X-Forwarded-For never trusted
+- [Phase 01.1]: 01.1-04: tenacity==9.1.4 and opentelemetry-instrumentation-httpx==0.65b0 pinned after human approval ('Approved, both'); test harness mesh hops run in empty contextvars Context so traces connect only via traceparent headers
+- [Phase 01.1]: 01.1-05: a 401/403/5xx or unreadable answer from an owning service is a 503, never a 422, so auth misconfiguration is not mistaken for a missing reference — Reference checks must fail closed (D-05); only a clean 404 or is_active=false means the reference is invalid
+- [Phase 01.1]: 01.1-05: service tokens (type=service, sub=service:identity, 60s) are accepted only by require_internal_caller; public routes reject them — Anonymous registration has no user token to forward to Organization; the token is never returned to a client
+- [Phase 01.1]: 01.1-05: Identity validates users.clinic_id before the duplicate-email check on both account-creation paths — A bad clinic_id must not be usable to learn whether an email is registered; nothing is written on refusal
+- [Phase 01.1]: 01.1-06: a second patient profile for an already-linked account is a 409 (unique constraint arbiter, rollback, failure audit) instead of an unhandled unique violation
+- [Phase 01.1]: 01.1-06: Patient validates clinic_id (Organization) then user_id (Identity) in one helper before the insert; internal calls are GET-only with ids in the URL, proven by the recording mesh
+- [Phase 01.1]: 01.1-07: Missing or inactive department on provider create is 422 (D-05 supersedes the Phase 1 404); duplicate provider account link is 409 with providers.user_id UNIQUE as arbiter
+- [Phase 01.1]: 01.1-07: Specialty get-or-create uses INSERT ON CONFLICT DO NOTHING plus SELECT (race-free, no mid-request commit); availability department reference validated at create only so a deactivated department never blocks PATCH/list/deactivate (D-06)
+- [Phase 01.1]: 01.1-07: GET /internal/providers/{id} serves ADMIN and service tokens only, returns id/department_id/is_active, applies no clinic scope (Provider holds no clinic data)
+- [Phase 01.1]: Plan 01.1-08: provider_slots and its exclusion constraint live in Scheduling's scheduling_db (no FK on provider_id); Phase 2 never moves the table
+- [Phase 01.1]: Plan 01.1-08: application containers run as root (Phase 1 parity) because the bind-mounted key secret would be unreadable to a non-root user; harden later with explicit secret uid/mode
+- [Phase 01.1]: Plan 01.1-08: Postgres max_connections raised to 300 in Compose (Temporal ~40 idle connections plus per-worker pools exhausted the default 100)
+- [Phase 01.1]: Plan 01.1-08: get_internal_http_client is async def (sync dependencies run in a worker thread with no running loop)
+- [Phase 01.1]: Plan 01.1-09: isolation invariants scan live code via ast (docstrings may mention HS256); role isolation is proven against live Postgres with the refusal reason pinned
+- [Phase 01.1]: Plan 01.1-09: gateway /metrics is served only on an internal :9100 listener decided by the ASGI server scope, 404 on the published :8000; Prometheus scrapes gateway:9100
+- [Phase 01.1]: Plan 01.1-09: gateway body-size cap, shared-Redis and service-token aud gap deferred to deferred-items.md; .env.example edit blocked by harness, variable table in the 01.1-09 SUMMARY
+- [Phase 02]: 02-12: workers reuse their API image with a command override, no host port, heartbeat-file healthcheck, depend on their API (so Alembic ran); per-service client secrets only as Compose secrets (identity reads /run/secrets); Billing has no client secret and workers no Prometheus job
+- [Phase 02]: 02-12: e2e/demo runs need the gateway auth budget raised (GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000) as well as the default budget
+- [Phase 02]: 02-12: booking saga order as built is validate -> reserve hold -> billing pre-check -> notification intent (best-effort) -> confirm (D-09 vs SCHED-02 order note recorded in docs and dashboard)
+- [Phase 01.1]: 01.1-10: Documentation lists unverified items (real-socket outages, cold start, Jaeger UI view, key rotation, bootstrap creation branch) beside the claims they qualify; nothing is described as production-hardened
+- [Phase 02.1]: 02.1-01: appointment states checked_in/completed/no_show hold their slot via widened uq_appointments_active_slot and ex_appointments_patient_no_overlap predicates (resolves the Phase 2 'completed frees the slot' question)
+- [Phase 02.1]: 02.1-01: check-in window opens 60 min before slot_start and closes at slot_end (DB clock); no-show grace 30 min; no_show only via the 02.1-11 sweep; internal check-in/complete routes are Visit-service-token only
+- [Phase 02.1]: Refresh tokens are single-use via atomic Redis SET NX EX claim; logout revokes paired refresh jti through access-token rjti claim
+- [Phase 02.1]: bcrypt runs on a bounded dedicated thread pool (IDENTITY_BCRYPT_THREADS); prepared RSA signing key cached to keep the loop free
+- [Phase 02.1]: Email identity is case-insensitive via normalizer, lower(email) lookups and uq_users_email_lower; identity_0002 refuses over duplicates reporting counts only and does not rewrite rows
+- [Phase 02.1]: 02.1-03: list pagination uses one libs.pagination.page_params dependency (limit 1..200 default 50, offset >= 0, 422 outside), a plain-array body, an X-Total-Count header and a stable (created_at, id) order on patient, clinic and provider lists
+- [Phase 02.1]: 02.1-04: NFR-01..08 are targets justified from an explicit demand model (50,000 requests/day, 60% in a 2h peak, 25 req/s sustained, 100 req/s burst) with one numeric source loadtest/nfr.json that the PRD table, docs/nfr.md and the k6 thresholds are tested against; measuring them is Phase 3
+- [Phase 02.1]: 02.1-04: load test is k6 from the pinned grafana/k6:1.8.2 image (no new dependency); each profile starts at its own booking-plan offset and one seed serves one run of each; the seed defaults to 5 providers so the plan holds the 21,150 entries smoke+sustained+burst need
+- [Phase 02.1]: 02.1-05: Provider schedule changes use a pull-based outbox (schedule_change_events written in the change's own transaction, drained by Scheduling over /internal/schedule-changes with an explicit ack) instead of a push or a cursor, so no event is lost when Scheduling or Temporal is down
+- [Phase 02.1]: 02.1-06: Visit check-in calls Scheduling's internal check-in FIRST and inserts the visit second; a failure between them converges on retry (Scheduling answers already), no compensating call
+- [Phase 02.1]: 02.1-07: BookingWorkflow notify-after-confirm and failure-time waitlist re-offer are separate workflow.patched ids; S3 uses non-fatal audits (history row durable) until Phase 3 outbox; SlotInPast stays out of the NON_RETRYABLE preset
+- [Phase 02.1]: [02.1-08] Affected set by set difference over the re-expanded templates (not slot-to-template tracking); inactive or unknown provider is the empty set
+- [Phase 02.1]: [02.1-08] Held slots skipped in pass 1 and re-evaluated by pass 2 after the hold TTL (durable timer)
+- [Phase 02.1]: [02.1-08] Cancel and reschedule of a flagged appointment withdraw the stale slot instead of freeing it; reschedule clears the flag
+- [Phase 02.1]: [02.1-08] Apply audit and notification intents are best effort (S3 pattern) so Mongo cannot fail the workflow before pass 2
+- [Phase 02.1]: [02.1-08] Poller acknowledges after the workflow is durably started; MAINTENANCE_ACTIVITY preset kept separate from the saga presets
+- [Phase 02.1]: [Phase 02.1-09]: The appointment-completion step is a fourth concurrent VisitCompletedWorkflow branch behind workflow.patched(visit-complete-appointment-v1), not a sequential step, so a slow billing branch cannot starve it
+- [Phase 02.1]: [Phase 02.1-09]: Downstream steps leave conditional settlement markers (timestamp + outcome) in visit_db; a business refusal writes its terminal marker before raising a non-retryable error
+- [Phase 02.1]: [Phase 02.1-09]: The older visit recorder skips instead of overwriting visit_completed_v1.json once the workflow records patch markers; the patched history lives in visit_completed_p21.json
+- [Phase 02.1]: [02.1-10] Visit billing finalize retries open-endedly (unlimited attempts, backoff capped at 5 min, BillingNotFinalizable terminal) behind workflow.patched visit-billing-retry-v1; replay ignores activity options so the patch is convention, a reordered marker is what breaks replay
+- [Phase 02.1]: [02.1-10] Visit reconciler is a Schedule + workflow that calls the workflow's own step bodies under visit-completed-{visit_id}; never-started visits stay with the sweeper; reconcile tests use grace 0 on fresh visits because a live reconciler shares the Compose databases
+- [Phase 02.1]: [02.1-11] Reconciler offers a reconciled booking's freed slot under waitlist-advance-booking-{appointment_id} (idempotent with 02.1-07's re-offer); after describe() shows the workflow gone the appointment is re-read before billing is voided
+- [Phase 02.1]: [02.1-11] Reconciler convergence uses no new columns: billing_void_checked history note, void-then-fail in one transaction, no-show Billing no_refund then mark_no_show; slot-then-appointment lock order matches the reaper
+- [Phase 02.1]: 02.1-12: provider appointment ownership is resolved through Provider's by-user lookup before the appointment is read, so foreign, missing and unlinked all return the identical 404; the history tie is fixed with a CASE (note after transition) rather than a column
+- [Phase 02.1]: 02.1-12: GET /api/patients/me takes identity only from the token and answers one 'patient profile not found' for every miss; provider reads are scoped by provider id, not the token's clinic claim
+- [Phase 02.1]: Docs state only what the code does; the Phase 2.1 roadmap block is not marked active while Phase 2 verification is pending
+- [Phase 02.1]: First real-stack k6 smoke runs crossed latency thresholds, so the docs say NFRs are unmeasured and the smoke result is unfavourable; DASH-04 left unticked for Phase 3
+- [Phase 02.1]: Audit dedupe index is restored by test_audit_indexes and ensured by the concurrent-finalize test, so test order no longer decides
 
 ### Pending Todos
 
-None yet.
+- Phase 2 verification (deferred at the user's request): run the full regression
+  `pytest tests -m "not e2e"` (background + poll, ~17+ min) and `SMARTHEALTH_E2E_REQUIRE_STACK=1 pytest tests/e2e -m e2e`
+  with the stack up (gateway with `GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000`).
+- Write the deferred tests listed under "Deferred tests" in 02-11-SUMMARY.md and 02-12-SUMMARY.md (and any earlier SUMMARY that lists them).
+- 02-12 Task 5: human visual check of docs/architecture-dashboard.html (offline, narrow width), README demo run.
+- Semgrep has not been run in the executor environment (not installed).
 
 ### Blockers/Concerns
 
-- Phase 2 planning: Temporal SDK↔server version compatibility has no official strict matrix per research (ARCHITECTURE.md/SUMMARY.md) — re-verify against docs.temporal.io/develop/python/versioning before locking a submission version.
+- Phase 2: temporalio 1.34.0 SDK runs against the auto-setup 1.29.7 server in Compose (in-process suites, worker-crash e2e and the 02-12 real-stack flows all pass); there is still no official compatibility matrix.
 - Phase 3 planning: Outbox relay mechanism (Debezium CDC vs. custom polling publisher) is an open architectural tradeoff per research — decide explicitly and document in the Architecture & Decision dashboard, not a default assumption.
 - Phase 1 planning: Decide auto-setup vs. production-shaped Temporal deployment (temporalio/auto-setup vs. temporalio/server + schema-setup) even though Temporal isn't wired until Phase 2 — affects the Phase 1 Docker Compose skeleton.
+- Deferred from 01.1-04: gateway request-body size cap (proxy.forward buffers whole body) and unauthenticated /metrics on public ingress (plan 01.1-09)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 261027-bfy | Phase 2.1 validation UI (tools/validation-ui: stdlib loopback proxy, 7-panel static page, demo seeder; live walkthrough partial, no admin creds) | 2026-10-27 | 2fb042f | Needs Review | [261027-bfy-phase-2-1-validation-ui-static-html-js-s](./quick/261027-bfy-phase-2-1-validation-ui-static-html-js-s/) |
+
+### Roadmap Evolution
+
+- Phase 01.1 inserted after Phase 1: Microservice Re-architecture — week-1 mentor review required true microservices; Phase 1 monolith to be split (URGENT)
+- Phase 02.1 inserted after Phase 2: Week 1-2 mentor review remediation (see phase FEEDBACK.md) (URGENT)
 
 ## Deferred Items
 
@@ -116,6 +220,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-10T10:56:38.971Z
-Stopped at: Phase 01 gap-closure plan 01-07 (PATCH + soft-delete) complete
+Last session: 2026-10-25T10:01:50.435Z
+Stopped at: Completed 02.1-13-docs-closeout-PLAN.md
 Resume file: None

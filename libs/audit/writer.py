@@ -24,6 +24,13 @@ PHI boundary: `changes` records which fields changed, never their values.
 Passing a PHI value (patient name/dob/phone/address) into `changes` is a
 caller bug this helper does not attempt to auto-redact — callers must only
 ever pass field names.
+
+Idempotent writes (plan 02-01, research Pitfall 7): Temporal activities retry,
+and the design wants exactly one audit entry per workflow step. Passing
+`dedupe_key` (e.g. `f"{workflow_id}:{step}"`, never PHI) stores it on the
+document and upserts with `$setOnInsert` behind the partial unique index
+`ix_audit_dedupe_key`, so a retried or concurrently duplicated step leaves one
+document. Without `dedupe_key` the writer inserts exactly as before.
 """
 
 from __future__ import annotations
@@ -32,9 +39,10 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from pymongo import AsyncMongoClient
+from pymongo.errors import DuplicateKeyError
 
+from libs.config import shared_settings
 from libs.observability.otel import current_trace_id
-from smarthealth.config import settings
 
 AUDIT_COLLECTION_NAME = "audit_log"
 
@@ -53,14 +61,26 @@ async def write_audit(
     outcome: Outcome,
     trace_id: str | None = None,
     changed_fields: list[str] | None = None,
+    dedupe_key: str | None = None,
 ) -> None:
-    """Insert one audit_log document. `trace_id` defaults to the active OTel
+    """Write one audit_log document. `trace_id` defaults to the active OTel
     span's trace_id if not explicitly supplied (so most call sites don't
     need to thread it through manually).
 
     `changed_fields` must be field NAMES ONLY — never pass PHI values here.
+
+    `dedupe_key`: when set, the write is idempotent — the first write for a key
+    wins and later writes with the same key are no-ops (a concurrent upsert
+    race surfaces as `DuplicateKeyError`, treated as success). The audit write
+    is NOT atomic with the caller's Postgres commit (review WR-04), so an
+    activity writes its audit entry as its LAST step, after the idempotent
+    business write has committed.
     """
-    db = mongo_client[settings.mongo_db_name]
+    # Every service writes to the ONE shared `audit_log` collection in the
+    # shared Mongo database (`MONGO_DB_NAME`): the audit trail is cross-cutting
+    # infrastructure owned by the future Audit service (D-02), not a service
+    # database, and actor/clinic queries span services.
+    db = mongo_client[shared_settings.mongo_db_name]
     collection = db[AUDIT_COLLECTION_NAME]
 
     document = {
@@ -76,4 +96,15 @@ async def write_audit(
         "changes": {"fields": changed_fields} if changed_fields else None,
     }
 
-    await collection.insert_one(document)
+    if dedupe_key is None:
+        await collection.insert_one(document)
+        return
+
+    document["dedupe_key"] = dedupe_key
+    try:
+        await collection.update_one(
+            {"dedupe_key": dedupe_key}, {"$setOnInsert": document}, upsert=True
+        )
+    except DuplicateKeyError:
+        # A concurrent writer inserted the same dedupe_key first: the entry exists.
+        pass
