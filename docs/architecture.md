@@ -1111,19 +1111,24 @@ for as long as the outage lasts. That is the price of never blocking a partition
 
 | Group | Recovery |
 |---|---|
-| `visit-downstream` | Automatic: the visit reconciler's lost-trigger pass restarts the visit after `VISIT_RECONCILE_GRACE_MINUTES` (4f, 10.4). By hand: `scripts/backfill_visit_completed_events.py --apply` (its `stale_queued` / `restarted` path) or `scripts/replay_dlq.py --group visit-downstream` |
+| `visit-downstream` | Automatic: the visit reconciler's lost-trigger pass restarts the visit after `VISIT_RECONCILE_GRACE_MINUTES` and within `VISIT_LOST_TRIGGER_MAX_AGE_HOURS` (24 h), unless `VISIT_LOST_TRIGGER_RESTART_ENABLED` is false; older visits are counted in a warning and recovered with the backfill (4f, 10.4). By hand: `scripts/backfill_visit_completed_events.py --apply` (its `stale_queued` / `restarted` path) or `scripts/replay_dlq.py --group visit-downstream` |
 | `analytics-projection` | `scripts/replay_dlq.py --group analytics-projection`, or `services.analytics.rebuild` (10.6) |
 | `notification-trigger` | `scripts/replay_dlq.py --group notification-trigger` |
 
 `scripts/replay_dlq.py` is a dry run by default (it reads and prints coordinates, the error type and the event id,
 never a key or a payload). `--apply` re-produces each selected record's original key, value and original headers
 (every `dlq.*` header removed) to its `dlq.original_topic`, only if that is a catalogue topic (or one named with
-`--allow-topic`; anything else is counted `refused`). It filters by `--error-type`, `--key`, `--event-id` and
-`--limit` (default 100), and it never moves a consumer group's offsets. A replay reaches every group that reads
-that topic, and each absorbs the duplicate through its own idempotency key (D-08), so replaying an event a group
-already handled changes nothing; a record that fails again is dead-lettered again. Replaying the live
-`visit-downstream` DLQ unfiltered is not advised: it holds `NonRetryableEventError` records for deleted test
-visits, so select by `--error-type TransientExhausted`.
+`--allow-topic`; anything else is counted `refused`). It filters by `--error-type`, `--key`, `--event-id` and `--limit` (default 100), and it never moves a consumer
+group's offsets. `--apply` needs a selector (`--event-id`, `--key`, `--error-type`, or `--all` with an explicit
+`--limit`); an unfiltered `--apply` exits 2 before any Kafka client is opened. Records whose `dlq.error_type` is
+`NonRetryableEventError` or `DeserializationError` are skipped by default and counted per type on
+`skipped_poison` lines; `--include-poison`, or an `--error-type` that names the type, selects them, so the
+harness's `NonRetryableEventError` records at the head of the live `visit-downstream` DLQ no longer block a
+replay. A replay reaches every group that reads that topic: a group that already recorded the event id absorbs
+the duplicate through its own idempotency key (D-08), but a group that never handled it (it dead-lettered the
+event, or the event predates its start offset) processes it as new. WR-06 of the first review is open:
+notification-trigger's `visit.completed` handler has no staleness guard, so replaying an old visit can send a
+follow-up for it; select narrowly, ideally by `--event-id`. A record that fails again is dead-lettered again.
 
 **Ordering.** Kafka orders only within a partition, and the key is the aggregate id, so the events of one
 appointment are ordered; events of different aggregates, and events on different topics, are not. The
@@ -1212,6 +1217,23 @@ live test proves it (`test_lost_visit_trigger_is_recovered_by_the_reconciler`: t
 event's offset is moved past the visit, and the Schedule's own pass starts exactly one `visit-completed-<id>`
 execution and sets the marker). The retired sweeper Schedule is not involved.
 
+**The recovery pass is bounded** (gap review WR-01, WR-07). The lost-trigger pass runs first under a 20 s budget
+and the settle pass second under 30 s, each isolated from the other, inside the activity's 60 s limit, so a slow
+Billing cannot starve the restart and a failing restart cannot skip the settle pass. The worker's start-up pass
+runs as a background task created after the heartbeat task: its failure is logged and never raised, and it is
+cancelled at shutdown, so a slow or failing start-up pass cannot delay or stop the heartbeat. The heartbeat's
+position is unchanged: it still starts after the pre-Worker steps (connection, audit indexes, Schedules), so a
+hang in those steps still makes the container unhealthy. The restart has an age ceiling,
+`VISIT_LOST_TRIGGER_MAX_AGE_HOURS` (default 24): an older lost trigger (a database restored from a snapshot, old
+harness rows) is never restarted automatically, every pass line reports the count, and a warning fires when the
+count changes; the operator recovers those visits with the backfill below. `VISIT_LOST_TRIGGER_RESTART_ENABLED=false`
+turns the automatic restart off and leaves the settle pass running. A visit whose restart fails on every pass, a
+Temporal RPC error included, is backed off in process (skipped for the next 1, 2, 4 ... up to 32 passes; ids only,
+lost on a restart), so newer lost triggers still get restarted under the 100-per-pass cap. Three consecutive
+Temporal RPC errors stop the pass (a systemic outage); only the visits it attempted are backed off, so after a
+long Temporal outage those visits can wait up to 32 passes while every other lost trigger is restarted on the
+first healthy pass.
+
 Visits that were completed before Phase 3 and never had their downstream work started have no outbox row.
 `scripts/backfill_visit_completed_events.py` writes the missing `visit.completed` rows with the same event id
 the live code would have used: `.venv/bin/python scripts/backfill_visit_completed_events.py` is a dry run
@@ -1224,7 +1246,7 @@ this needs Temporal, from the host `TEMPORAL_ADDRESS=localhost:7233`). The count
 against the live `visit_db` found 0 candidates before and after plan 03-22, so it was never applied there. Run
 `--apply` only after a dry run shows candidates; each written or restarted visit starts one downstream workflow
 and, through analytics, one projection update. WR-06 stays open: a backfill (or a replay) of an old visit can
-still lead to a follow-up notification for it (a replay keeps the event id and is absorbed).
+still lead to a follow-up notification for it (a replay keeps the event id, which only a group that already handled it absorbs).
 
 ### 10.5 Notifications and reminders
 
@@ -1567,7 +1589,15 @@ each stays because events do not subsume it:
   key and `dlq.error_type`, committed offset moved on); a failed offset commit is proven with a stand-in only.
 - **Not verified:** the reminder's later firing inside the same trace (10.7); the Schema Registry 408 / 429 / 5xx
   path of the consumer base is unit-tested (including the decode path) but was never exercised against a live
-  registry outage; a Kafka broker outage on its own; and the connector after the slot cap is exceeded.
+  registry outage; the path after a message exceeds its retry cap (`TransientExhausted` and the recovery routes) is
+  covered by unit and live dead-letter tests but not by a live long outage; a Kafka broker outage on its own; and the
+  connector after the slot cap is exceeded.
+- **Gap-closure review follow-ups** (`03-REVIEW-GAP.md`, numbered separately from the first review). WR-01, WR-02
+  and WR-07 are closed by quick 261112-8r6 (the WR-02 remainder stays open: no dedupe of repeated DLQ copies within
+  a run and no replayed marker). Still open: WR-03 (the transient retry sleeps on the single poll thread and stalls
+  the other partitions); WR-04 (blanket exception families are classified transient); WR-05 (pool settings are
+  unbounded, the 5+5 API pool is untested against a burst, 30 s pool_timeout); WR-06 (the 241 of 297 connection
+  budget is not a bound); IN-01 to IN-06.
 - **Open follow-ups (out of scope for the gap closure, D-14).** WR-01: a reminder `reschedule` signal that
   arrives while the last lead's enqueue activity runs can be dropped (the fix needs `workflow.patched` and a
   replay test). WR-04: the `debezium` role's privileges, the unauthenticated Connect REST API and an

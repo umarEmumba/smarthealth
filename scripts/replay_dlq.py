@@ -10,13 +10,16 @@ been fixed (the database is back, a bug is deployed) needs this tool.
 
 What a replay does: it re-produces the record's original key, value bytes and original
 headers (every `dlq.*` header removed, so the event id header and `traceparent` are the
-original ones) to the record's `dlq.original_topic`, which every consumer group on that
-topic then reads. Each group absorbs the duplicate through its idempotency key (D-08:
-processed-event claims for analytics-projection, dedupe keys and deterministic workflow
-ids for notification-trigger, `start_once` plus the conditional marker for
-visit-downstream), so replaying an event a group already handled changes nothing. A record
-that fails again is dead-lettered again. WR-06 (follow-ups for old visits after a backfill)
-is unaffected: a replay keeps the original event id.
+original ones) to the record's `dlq.original_topic`, which EVERY consumer group on that
+topic then reads (for smarthealth.visit.events: visit-downstream, analytics-projection and
+notification-trigger). A group that already recorded the event id absorbs the duplicate
+through its idempotency key (D-08: processed-event claims for analytics-projection, dedupe
+keys and deterministic workflow ids for notification-trigger, `start_once` plus the
+conditional marker for visit-downstream). A group that never handled it (it dead-lettered
+the event, or the event predates the group's pinned start offset) processes it as NEW.
+notification-trigger's visit.completed handler has no staleness guard (first-review WR-06,
+still open), so replaying an old visit.completed can send a follow-up for an old visit.
+Select narrowly, ideally by `--event-id`. A record that fails again is dead-lettered again.
 
 Recovery map per group:
   visit-downstream      the visit-reconciler's lost-trigger pass restarts the visit after
@@ -25,12 +28,18 @@ Recovery map per group:
   analytics-projection  this script, or `services.analytics.rebuild`.
   notification-trigger  this script.
 
-Safety: dry run by default (it reads and prints, produces nothing). It reads with partitions
+Safety: dry run by default (it reads and prints, produces nothing). `--apply` needs a
+selector: `--event-id`, `--key`, `--error-type`, or `--all` with an explicit `--limit`; an
+unfiltered `--apply` exits 2 before any Kafka client is opened. Records whose
+`dlq.error_type` is NonRetryableEventError or DeserializationError (poison: replaying them
+only dead-letters them again) are skipped by default and counted per type on
+`skipped_poison error_type=<type> count=<n>` lines; `--include-poison`, or an `--error-type`
+that names the type, selects them. It reads with partitions
 `assign`ed explicitly and never commits, so no consumer group's offsets change, and it stops
 at the high watermark captured at start. A record is only replayed to a catalogue topic
 (`libs.events.catalog.AGGREGATE_TOPICS`) or to a topic named with `--allow-topic`; a forged
 `dlq.original_topic` header is counted `refused` and nothing is produced for it. `--limit`
-(default 100) bounds a run. The producer is idempotent with `acks=all`.
+(default 100) bounds a run (the poison records skipped do not count against it). The producer is idempotent with `acks=all`.
 
 Output is DLQ coordinates, the error type, the event id and counts only: never a key, a
 value or any other header value (a header that is not plain text is shown as `?`).
@@ -40,13 +49,15 @@ Usage (repo root; the broker comes from the shared settings, `KAFKA_BOOTSTRAP_SE
     .venv/bin/python scripts/replay_dlq.py --group visit-downstream             # dry run
     .venv/bin/python scripts/replay_dlq.py --dlq-topic smarthealth.dlq.analytics-projection
         [--error-type TransientExhausted] [--key <record key>] [--event-id <uuid>]
-        [--limit N] [--allow-topic <topic>] [--apply]
+        [--all] [--include-poison] [--limit N] [--allow-topic <topic>] [--apply]
+    .venv/bin/python scripts/replay_dlq.py --group analytics-projection --all --limit 20 --apply
 
 One line per selected record, `dlq_partition=P dlq_offset=O original=<topic>:<p>:<o>
 error_type=<type> event_id=<uuid or ->` (a refused record ends with ` refused`), then
-`mode=dry-run|apply scanned=N selected=M replayed=R refused=F`. Exit codes: 0 on success
-(including a dry run), 1 on a Kafka or registry error (the error name only is printed), 2 on
-bad arguments.
+`mode=dry-run|apply scanned=N selected=M replayed=R refused=F` (the skipped_poison lines come
+just before it). Exit codes: 0 on success (including a dry run), 1 on a Kafka or registry
+error (the error name only is printed), 2 on bad arguments (including an unfiltered
+`--apply`).
 """
 
 from __future__ import annotations
@@ -57,7 +68,7 @@ import re
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 # Repo root on sys.path so this works as `python scripts/replay_dlq.py` from the repo root.
@@ -70,6 +81,9 @@ from libs.config import shared_settings  # noqa: E402
 from libs.events.catalog import AGGREGATE_TOPICS, DLQ_TOPICS  # noqa: E402
 
 DEFAULT_LIMIT = 100
+# dlq.error_type values of records a replay cannot fix (libs.events.consumer: the base's
+# DESERIALIZATION_ERROR and NonRetryableEventError): skipped unless asked for.
+POISON_ERROR_TYPES = frozenset({"NonRetryableEventError", "DeserializationError"})
 DLQ_PREFIX = "dlq."
 IDLE_SECONDS = 10.0
 FLUSH_SECONDS = 30.0
@@ -139,6 +153,7 @@ class Counts:
     selected: int = 0
     replayed: int = 0
     refused: int = 0
+    skipped_poison: dict[str, int] = field(default_factory=dict)
     lines: list[str] = field(default_factory=list)
 
     def final(self, *, apply: bool) -> str:
@@ -156,10 +171,17 @@ class Selection:
     key: bytes | None
     event_id: str | None
     limit: int
+    include_poison: bool = False
 
 
 def matches(record: Record, sel: Selection) -> bool:
     if record.original_topic is None:
+        return False
+    if (
+        sel.error_type is None
+        and not sel.include_poison
+        and record.header("dlq.error_type") in POISON_ERROR_TYPES
+    ):
         return False
     if sel.group is not None and record.header("dlq.consumer_group") != sel.group:
         return False
@@ -235,6 +257,9 @@ def read_dlq(
             )
             if matches(record, sel):
                 selected.append(record)
+            elif matches(record, replace(sel, include_poison=True)):
+                error_type = _safe(record.header("dlq.error_type"))
+                counts.skipped_poison[error_type] = counts.skipped_poison.get(error_type, 0) + 1
     finally:
         consumer.close()
     return selected
@@ -342,7 +367,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--error-type", default=None, help="only records with this dlq.error_type")
     parser.add_argument("--key", default=None, help="only records with this key")
     parser.add_argument("--event-id", default=None, help="only the record of this event id")
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="most records per run")
+    parser.add_argument(
+        "--limit", type=int, default=None, help=f"most records per run (default {DEFAULT_LIMIT})"
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="no further filter; required with --apply when no --event-id/--key/--error-type "
+        "is given; needs an explicit --limit",
+    )
+    parser.add_argument(
+        "--include-poison",
+        action="store_true",
+        help="also select NonRetryableEventError and DeserializationError records",
+    )
     parser.add_argument(
         "--allow-topic",
         action="append",
@@ -352,8 +390,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="produce the records (default: dry run)")
     parser.add_argument("--bootstrap-servers", default=None, help="override the shared setting")
     args = parser.parse_args(argv)
-    if args.limit < 1:
+    if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.all and args.limit is None:
+        parser.error("--all needs an explicit --limit")
+    if args.apply and not (args.event_id or args.key is not None or args.error_type or args.all):
+        parser.error(
+            "--apply needs a selector: --event-id, --key, --error-type, or --all with an "
+            "explicit --limit (run without --apply first to see what would be replayed)"
+        )
     event_id = None
     if args.event_id is not None:
         event_id = _as_uuid(args.event_id)
@@ -365,7 +410,8 @@ def main(argv: list[str] | None = None) -> int:
         error_type=args.error_type,
         key=args.key.encode() if args.key is not None else None,
         event_id=event_id,
-        limit=args.limit,
+        limit=args.limit if args.limit is not None else DEFAULT_LIMIT,
+        include_poison=args.include_poison,
     )
     dlq_topic = DLQ_TOPICS[args.group] if args.group else args.dlq_topic
     allowed = set(AGGREGATE_TOPICS.values()) | set(args.allow_topic)
@@ -387,6 +433,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for line in counts.lines:
         print(line)
+    for error_type, count in sorted(counts.skipped_poison.items()):
+        print(f"skipped_poison error_type={error_type} count={count}")
     print(counts.final(apply=args.apply))
     return 0
 

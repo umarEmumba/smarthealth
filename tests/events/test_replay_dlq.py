@@ -275,7 +275,7 @@ def test_neither_a_payload_nor_a_key_reaches_the_output(
 ) -> None:
     source, dlq, records = setup
 
-    for extra in ((), ("--apply", "--allow-topic", source)):
+    for extra in ((), ("--apply", "--all", "--limit", "10", "--allow-topic", source)):
         code, _, everything = _run(capsys, dlq, *extra)
         assert code == 0
         assert MARKER not in everything
@@ -312,6 +312,11 @@ def test_arguments_are_validated(capsys: pytest.CaptureFixture[str]) -> None:
         ["--group", "no-such-group"],
         ["--dlq-topic", "x", "--limit", "0"],
         ["--dlq-topic", "x", "--event-id", "not-a-uuid"],
+        ["--dlq-topic", "x", "--apply"],
+        ["--group", "visit-downstream", "--apply"],
+        ["--dlq-topic", "x", "--apply", "--all"],  # --all needs an explicit --limit
+        ["--dlq-topic", "x", "--all"],
+        ["--dlq-topic", "x", "--apply", "--include-poison"],  # not a selector
     ):
         with pytest.raises(SystemExit) as exc_info:
             replay_dlq.main(argv)
@@ -325,3 +330,82 @@ def test_a_missing_dlq_topic_is_an_empty_one(capsys: pytest.CaptureFixture[str])
 
     assert code == 0
     assert lines == ["mode=dry-run scanned=0 selected=0 replayed=0 refused=0"]
+
+
+def test_apply_without_a_selector_is_refused_before_anything_is_produced(
+    setup: tuple[str, str, list[Dead]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    source, dlq, _ = setup
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc_info:
+        replay_dlq.main(
+            ["--dlq-topic", dlq, "--bootstrap-servers", KAFKA_BOOTSTRAP, "--apply", "--allow-topic", source]
+        )
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    for name in ("--event-id", "--key", "--error-type", "--all"):
+        assert name in err
+    assert _read_all(source) == []
+
+
+@pytest.fixture
+def poison_setup(unique_topic: str, dlq_topic: str) -> tuple[str, str, list[Dead]]:
+    """The live head-of-queue shape: poison first, then a replayable record."""
+    records = [
+        Dead(unique_topic, error_type="NonRetryableEventError"),
+        Dead(unique_topic, error_type="NonRetryableEventError"),
+        Dead(unique_topic, error_type="DeserializationError"),
+        Dead(unique_topic, error_type="TransientExhausted"),
+    ]
+    _produce(dlq_topic, records)
+    return unique_topic, dlq_topic, records
+
+
+def test_poison_is_skipped_by_default_and_counted(
+    poison_setup: tuple[str, str, list[Dead]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    source, dlq, records = poison_setup
+
+    code, lines, _ = _run(capsys, dlq, "--limit", "1", "--allow-topic", source)
+
+    assert code == 0
+    assert f"event_id={records[3].event_id}" in lines[0]
+    assert "skipped_poison error_type=NonRetryableEventError count=2" in lines
+    assert "skipped_poison error_type=DeserializationError count=1" in lines
+    assert lines[-1] == "mode=dry-run scanned=4 selected=1 replayed=0 refused=0"
+
+    _, lines, _ = _run(capsys, dlq, "--include-poison", "--allow-topic", source)
+    assert lines[-1] == "mode=dry-run scanned=4 selected=4 replayed=0 refused=0"
+    _, lines, _ = _run(capsys, dlq, "--error-type", "NonRetryableEventError", "--allow-topic", source)
+    assert lines[-1] == "mode=dry-run scanned=4 selected=2 replayed=0 refused=0"
+
+
+def test_all_with_an_explicit_limit_applies_every_non_poison_record(
+    unique_topic: str, dlq_topic: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    records = [
+        Dead(unique_topic, error_type="NonRetryableEventError"),
+        Dead(unique_topic, error_type="TransientExhausted"),
+        Dead(unique_topic, error_type="HandlerError"),
+    ]
+    _produce(dlq_topic, records)
+
+    code, lines, _ = _run(capsys, dlq_topic, "--apply", "--all", "--limit", "10", "--allow-topic", unique_topic)
+
+    assert code == 0
+    assert lines[-1] == "mode=apply scanned=3 selected=2 replayed=2 refused=0"
+    assert [m.key() for m in _read_all(unique_topic)] == [records[1].key, records[2].key]
+
+
+def test_the_poison_types_match_the_consumer_base() -> None:
+    from libs.events import consumer  # noqa: PLC0415
+
+    assert replay_dlq.POISON_ERROR_TYPES == {
+        consumer.DESERIALIZATION_ERROR,
+        consumer.NonRetryableEventError.__name__,
+    }
+    doc = replay_dlq.__doc__ or ""
+    assert "WR-06" in doc and "notification-trigger" in doc
+    assert "is unaffected" not in doc

@@ -256,7 +256,7 @@ Recent decisions affecting current work:
   - Temporal's connection count (40 in the budget) is observed, not derived: set `SQL_MAX_CONNS` / `SQL_VIS_MAX_CONNS` on the temporal service to make it derivable.
   - WR-01: the reminder workflow drops a `reschedule` signal that arrives while the last lead's enqueue activity runs (needs `workflow.patched` plus a replay test).
   - WR-04: the debezium role's privileges, the unauthenticated Connect REST API and an unrestricted FileConfigProvider (PHI-relevant; local-dev scope).
-  - WR-06: a backfill or replay can send follow-up notifications for old visits (a replay keeps the event id and is absorbed).
+  - WR-06: a backfill or replay can send follow-up notifications for old visits (a replay keeps the event id, which only a group that already handled it absorbs; notification-trigger has no staleness guard).
   - IN-02..IN-06 of 03-REVIEW.md (notification duplicate code, consumer metric cardinality, Compose / RabbitMQ hygiene, metrics servers that record "started" when the bind failed, slot invalidation and Grafana scoping).
   - The head-of-line effect of the transient cap: during an outage longer than 15 minutes each message gets its own 900 s cap, so healthy events are dead-lettered one per 15 minutes per partition; a `scripts/replay_dlq.py` run is a required operational step afterwards (docs/architecture.md 10.2).
   - The flaky SIGTRAP class: subprocess tests that fork from the threaded pytest process on macOS crash with exit -5 (identity/visit tests, tests/visit/test_backfill.py); each passes alone.
@@ -265,8 +265,9 @@ Recent decisions affecting current work:
   - Add a non-root `USER` to all ten Dockerfiles (the eight above plus services/analytics and services/notification, accepted for now at the gate).
   - Run k6 `sustained`, `burst` and `contention` after Phase 3 (NFR-01..08 are still unmeasured targets); accept-path overhead of the multiprocess metrics was not isolated by an A/B run.
   - Decide whether to reword EVENT-04 in REQUIREMENTS.md (the user accepted the Debezium/Kafka-consumer design in 03-01; projections are not Celery tasks). REQUIREMENTS.md is not edited.
-  - The dashboard's Q&A sentence "Not verified: the consumer's decode-time registry-outage path has no automated test ..." now understates the coverage (unit tests since 03-21; still no live registry outage); left unchanged under the three-sentence limit, the user decides at the 03-26 checkpoint.
-  - Provider specialty-ordering test (above) and the dev-data DLQ: the live `visit-downstream` DLQ holds 100+ `NonRetryableEventError` records for deleted test visits; do not `--apply` an unfiltered replay of it.
+  - DONE (quick 261112-8r6): the outage Q&A answer's sentence now says what was and was not tested (decode path unit-tested, no live registry outage). The "Failure paths:" sentence of the not-yet-verified answer still understates the decode-path coverage; it was not covered by the one-sentence approval.
+  - Provider specialty-ordering test (above) and the dev-data DLQ: the live `visit-downstream` DLQ holds 100+ `NonRetryableEventError` records for deleted test visits; since quick 261112-8r6 `scripts/replay_dlq.py` skips poison (`NonRetryableEventError`, `DeserializationError`) by default and refuses an unfiltered `--apply`; never `--apply` against the live DLQ without an `--event-id` or `--error-type`.
+  - Gap-closure review (03-REVIEW-GAP.md): WR-01 (bounded lost-trigger pass first, start-up pass in the background), WR-02 (replay selector, poison skipped) and WR-07 (24 h ceiling, kill switch, backoff) closed by quick 261112-8r6. Open: WR-02 remainder (no dedupe of repeated DLQ copies, no replayed marker); WR-03 (transient retry sleeps on the poll thread); WR-04 (blanket exception families classified transient); WR-05 (pool settings unbounded, 5+5 API pool untested against burst); WR-06 (241/297 connection budget not a bound); IN-01..IN-06.
 
 ### Blockers/Concerns
 

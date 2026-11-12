@@ -393,3 +393,25 @@ def test_qa_outage_answer_states_the_cap_and_the_recovery_tools(html: str) -> No
     for tool in ("visit reconciler", "analytics rebuild", "DLQ replay script"):
         assert tool in qa, tool
     assert "outage" in qa.lower()
+
+
+def test_qa_outage_answer_states_what_was_and_was_not_tested(html: str) -> None:
+    """The outage Q&A answer (gap review, D-14: one approved sentence) says what was and was
+    not tested: the decode-time classification is unit-tested, no live outage was injected."""
+    blocks = re.findall(r'<details class="qa">(.*?)</details>', html, re.DOTALL)
+    (block,) = [b for b in blocks if "What happens when Kafka Connect, Schema Registry, RabbitMQ" in b]
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", block)).replace("’", "'")
+    text = text.replace("&rsquo;", "'")
+    for needle in (
+        "unit-tested against the real consumer path",
+        "408, 429 and 5xx",
+        "corrupt Avro",
+        "no live registry outage was injected",
+        "Kafka broker outage on its own was not exercised",
+        "TransientExhausted",
+        "not by a live long outage",
+        "replication slot exceeds its WAL cap was not exercised",
+        "cached write-path dependency",
+    ):
+        assert needle in text, needle
+    assert "has no automated test" not in text
