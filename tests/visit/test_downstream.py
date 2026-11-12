@@ -1,23 +1,32 @@
 """Non-blocking visit completion and its downstream workflow (plan 02-11;
-VISIT-04, BILL-02, D-16).
+VISIT-04, BILL-02, D-16; trigger moved to the outbox by plan 03-09, D-03).
 
-Completing a visit commits first and returns 200; `visit-completed-{id}` then
-runs on `visit-tq` (the `visit_worker` fixture), finalizes the billing record
-and records the follow-up and analytics intents. A lost start (Temporal down)
-leaves `downstream_started_at` NULL and the sweeper recovers it.
+Completing a visit commits first (with a `visit.completed` outbox row) and returns
+200; the API makes no Temporal call. `visit-completed-{id}` is started by the
+visit-downstream consumer, which these harness tests (no Kafka, no running consumer)
+stand in for with `deliver_visit_events`; it then runs on `visit-tq` (the
+`visit_worker` fixture), finalizes the billing record and records the follow-up and
+analytics intents. Plan 03-12 (D-03) retired the Phase 2 sweeper: nothing in a worker
+start-up path restarts a completed visit whose marker is NULL within the reconcile grace
+(only the outbox event starts its workflow), and the sweeper workflow remains as a
+no-op tombstone. Plan 03-22 gave the reconciler a lost-trigger pass for visits still
+unmarked AFTER the grace; its tests are in `test_visit_reconciler.py`.
+
+Isolation from the live reconciler (plan 03-22, W5/W6): the Compose visit worker scans the
+same visit_db every 60 s with a 10 minute grace, so no test here ages a NULL-marker
+completed visit past 5 minutes, and `VisitActivities.reconcile()` is only called with
+both pass functions replaced by recorders.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from dataclasses import replace
 from typing import Any
 
 import httpx
 import pytest
-import structlog
 from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -30,18 +39,20 @@ from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 from libs.auth.service_tokens import ServiceTokenProvider, load_client_secret
 from libs.db.postgres import get_session_factory
 from libs.internal_client import UpstreamServiceUnavailable
-from libs.observability.logging import configure_logging
 from libs.temporal_policies import VISIT_TASK_QUEUE
+from services.visit import downstream
 from services.visit.api import visits as visits_api
 from services.visit.config import settings as visit_settings
 from services.visit.activities.downstream import VisitActivities
 from services.visit.domain.contracts import (
+    ACT_SWEEP,
+    SWEEPER_WORKFLOW,
     VISIT_COMPLETED_WORKFLOW,
+    SweepResult,
     VisitCompletedInput,
     VisitCompletedResult,
     visit_completed_workflow_id,
 )
-from services.visit.downstream import sweep_unstarted
 from services.visit.repository import visit_repo
 from tests.conftest import degraded_mesh, harness_apps
 from tests.scheduling.seed import auth
@@ -50,7 +61,9 @@ from tests.visit.conftest import (
     audit_count,
     check_in,
     confirmed_appointment,
+    deliver_visit_events,
     history_rows,
+    outbox_rows,
 )
 
 
@@ -170,6 +183,10 @@ async def test_complete_returns_200_and_downstream_finalizes_billing(
     visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "completed"
+    assert await _marker(visit["id"]) is None  # the API started nothing (plan 03-09)
+
+    # The visit-downstream consumer's job: turn the committed event into the start.
+    assert await deliver_visit_events(None, visit["id"], client=temporal_env.client) == 1
 
     result = await _result(temporal_env, visit["id"])
     assert result == VisitCompletedResult(
@@ -191,15 +208,14 @@ async def test_complete_does_not_wait_for_downstream_work(
     visit_world: VisitWorld,
     temporal_env: WorkflowEnvironment,
 ) -> None:
-    """No worker polls `visit-tq`: the completion still answers 200, the
-    workflow is RUNNING (started, not awaited) and billing is untouched."""
-    app = harness_apps()["visit"]
-    app.state.temporal_client = temporal_env.client  # the autouse fixture restores it
-
+    """No worker polls `visit-tq`: the completion still answers 200, the workflow
+    the consumer starts is RUNNING (started, not awaited) and billing is untouched."""
     visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
 
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "completed"
+    assert await _marker(visit["id"]) is None
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)
     handle = temporal_env.client.get_workflow_handle(visit_completed_workflow_id(visit["id"]))
     assert (await handle.describe()).status == WorkflowExecutionStatus.RUNNING
     assert await _billing_status(client, visit_world, appointment_id) == "verified"
@@ -207,74 +223,117 @@ async def test_complete_does_not_wait_for_downstream_work(
     await handle.terminate(reason="test clean-up")
 
 
-async def test_lost_trigger_is_recovered_by_the_sweep_exactly_once(
+async def test_null_marker_visit_is_not_touched_by_any_worker_start_up_path(
     client: AsyncClient,
     mesh: httpx.AsyncClient,
     visit_world: VisitWorld,
-    visit_worker: object,
+    mongo_client: AsyncMongoClient,
     temporal_env: WorkflowEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Temporal down at completion -> 200 with the marker NULL; once the visit
-    is past the grace window the sweep starts the workflow (billing ends
-    finalized), and a second sweep finds nothing."""
-    app = harness_apps()["visit"]
-    worker_client = app.state.temporal_client
-    from tests.visit.conftest import _DownTemporal  # noqa: PLC0415
+    """D-03: a completed visit whose marker is NULL is left alone by the worker's
+    start-up work that has no Temporal client (the reconcile pass without a client, the
+    sweep tombstone): no workflow starts, billing is untouched. Only the outbox event
+    starts it (positive control), so the absence above is attributable to the retirement.
+    The reconcile pass runs with its two pass functions replaced by recorders (W5: a real
+    pass would act on every visit in the shared visit_db), and the visit is never aged
+    past 5 minutes (the live reconciler's grace is 10), so this test cannot race it."""
+    called: list[str] = []
 
-    app.state.temporal_client = _DownTemporal()
-    try:
-        visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
-    finally:
-        app.state.temporal_client = worker_client
+    async def unsettled_recorder(*args: Any, **kwargs: Any) -> int:
+        called.append("unsettled")
+        return 0
+
+    async def lost_recorder(*args: Any, **kwargs: Any) -> int:
+        called.append("lost")
+        return 0
+
+    monkeypatch.setattr(downstream, "reconcile_unsettled", unsettled_recorder)
+    monkeypatch.setattr(downstream, "restart_lost_triggers", lost_recorder)
+
+    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
-    assert completed.json()["status"] == "completed"
     assert await _marker(visit["id"]) is None
+    await _age_completion(visit["id"], 120)
 
-    # Not yet past the grace window: the sweep leaves it alone.
-    factory = get_session_factory(visit_settings.database_url)
-    await sweep_unstarted(factory, temporal_env.client, grace_seconds=30)
+    acts = _activities(mesh, mongo_client)  # no Temporal client
+    assert await acts.reconcile() == 0  # the worker's start-up reconcile pass
+    assert called == ["unsettled"]  # no client: the lost-trigger pass is skipped
+    assert await _run_sweep_tombstone(acts, visit["id"]) == SweepResult(processed=0)
+
     assert await _marker(visit["id"]) is None
+    handle = temporal_env.client.get_workflow_handle(visit_completed_workflow_id(visit["id"]))
+    with pytest.raises(RPCError) as exc_info:
+        await handle.describe()
+    assert exc_info.value.status == RPCStatusCode.NOT_FOUND
+    assert await _billing_status(client, visit_world, appointment_id) == "verified"
 
-    # The database clock never skips (Pitfall 8): age the completion by SQL.
-    engine = create_async_engine(visit_settings.database_url)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(
-                text("UPDATE visits SET completed_at = completed_at - interval '60 seconds' WHERE id = :v"),
-                {"v": visit["id"]},
-            )
-    finally:
-        await engine.dispose()
-
-    assert await sweep_unstarted(factory, temporal_env.client, grace_seconds=30) >= 1
+    # Positive control: the consumer path starts it.
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)
     assert await _marker(visit["id"]) is not None
-    result = await _result(temporal_env, visit["id"])
-    assert result.billing == "finalized"
-    assert await _billing_status(client, visit_world, appointment_id) == "finalized"
-    # Second sweep: this visit is no longer a candidate.
-    await sweep_unstarted(factory, temporal_env.client, grace_seconds=30)
-    assert await audit_count(visit["id"], "visit.billing_finalize_requested") == 1
+    assert (await handle.describe()).status == WorkflowExecutionStatus.RUNNING
+    await handle.terminate(reason="test clean-up")
 
 
-async def test_repeat_complete_with_null_marker_starts_workflow(
+async def test_sweeper_workflow_is_a_no_op_tombstone_that_still_runs(
     client: AsyncClient,
     mesh: httpx.AsyncClient,
     visit_world: VisitWorld,
     visit_worker: object,
     temporal_env: WorkflowEnvironment,
 ) -> None:
-    """The first start was lost (Temporal down), so the marker is NULL; a
-    repeated complete is a no-op transition but retries the start, and the
-    workflow then finalizes billing exactly once."""
-    from tests.visit.conftest import _DownTemporal  # noqa: PLC0415
+    """`VisitDownstreamSweeperWorkflow` stays registered (replay safety, T-3-40): a run
+    executes its one activity, which returns zero processed and starts nothing, even
+    with an old NULL-marker completed visit in the database."""
+    visit, _, completed = await _completed_visit(client, mesh, visit_world)
+    assert completed.status_code == 200, completed.text
+    await _age_completion(visit["id"], 120)
 
-    app = harness_apps()["visit"]
-    worker_client = app.state.temporal_client
-    app.state.temporal_client = _DownTemporal()  # Temporal down for the first completion only
-    try:
-        visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
-    finally:
-        app.state.temporal_client = worker_client
+    result = await temporal_env.client.execute_workflow(
+        SWEEPER_WORKFLOW,
+        id=f"sweeper-{uuid.uuid4().hex}",
+        task_queue=VISIT_TASK_QUEUE,
+        result_type=SweepResult,
+    )
+
+    assert result == SweepResult(processed=0)
+    assert await _marker(visit["id"]) is None
+    handle = temporal_env.client.get_workflow_handle(visit_completed_workflow_id(visit["id"]))
+    with pytest.raises(RPCError) as exc_info:
+        await handle.describe()
+    assert exc_info.value.status == RPCStatusCode.NOT_FOUND
+
+
+def test_no_sweep_code_path_or_settings_remain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sweep function and the two sweeper settings are gone; the old environment
+    variables are accepted and ignored (extra env is ignored by the settings config)."""
+    import services.visit.downstream as downstream_module  # noqa: PLC0415
+    import services.visit.worker as worker_module  # noqa: PLC0415
+    from services.visit.config import VisitSettings  # noqa: PLC0415
+
+    monkeypatch.setenv("VISIT_SWEEPER_INTERVAL_SECONDS", "5")
+    monkeypatch.setenv("VISIT_SWEEPER_GRACE_SECONDS", "5")
+    fresh = VisitSettings()
+
+    assert not hasattr(fresh, "sweeper_interval_seconds")
+    assert not hasattr(fresh, "sweeper_grace_seconds")
+    assert not hasattr(downstream_module, "sweep_unstarted")
+    assert not hasattr(worker_module, "sweep_unstarted")
+    assert any(w.__name__ == "VisitDownstreamSweeperWorkflow" for w in worker_module.WORKFLOWS)
+
+
+async def test_repeat_complete_is_a_noop_and_the_event_starts_the_workflow_once(
+    client: AsyncClient,
+    mesh: httpx.AsyncClient,
+    visit_world: VisitWorld,
+    visit_worker: object,
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """A repeated complete is a no-op transition: it writes no second event and
+    starts nothing (the Phase 2 opportunistic retry of the API start is gone, D-03).
+    The one committed event, delivered (and redelivered), starts the workflow once
+    and billing is finalized exactly once."""
+    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "completed"
     assert await _marker(visit["id"]) is None
@@ -284,7 +343,10 @@ async def test_repeat_complete_with_null_marker_starts_workflow(
     )
     assert repeat.status_code == 200, repeat.text
     assert repeat.json()["status"] == "completed"
+    assert await _marker(visit["id"]) is None  # a repeat starts nothing
+    assert len(await outbox_rows(visit["id"])) == 1
 
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)
     assert await _marker(visit["id"]) is not None
     assert await _result(temporal_env, visit["id"]) == VisitCompletedResult(
         outcome="completed",
@@ -293,39 +355,12 @@ async def test_repeat_complete_with_null_marker_starts_workflow(
         analytics="recorded",
         appointment="completed",
     )
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)  # redelivery
+
     assert await _billing_status(client, visit_world, appointment_id) == "finalized"
     assert await _finalized_rows(appointment_id) == 1
     assert [to for _, to in await history_rows(visit["id"]) if to == "completed"] == ["completed"]
     assert await audit_count(visit["id"], "visit.complete") == 1
-
-
-async def test_grace_window_skips_recent_completion(
-    client: AsyncClient,
-    mesh: httpx.AsyncClient,
-    visit_world: VisitWorld,
-    temporal_env: WorkflowEnvironment,
-) -> None:
-    """A completion 5 s old is inside a 30 s grace window: the sweep leaves it
-    alone and no workflow exists. With a 1 s grace the same visit is started,
-    so the skip is attributable to the grace window alone."""
-    visit, _, completed = await _completed_visit(client, mesh, visit_world)
-    assert completed.status_code == 200, completed.text
-    assert await _marker(visit["id"]) is None
-    await _age_completion(visit["id"], 5)
-
-    factory = get_session_factory(visit_settings.database_url)
-    await sweep_unstarted(factory, temporal_env.client, grace_seconds=30)
-    assert await _marker(visit["id"]) is None
-    handle = temporal_env.client.get_workflow_handle(visit_completed_workflow_id(visit["id"]))
-    with pytest.raises(RPCError) as exc_info:
-        await handle.describe()
-    assert exc_info.value.status == RPCStatusCode.NOT_FOUND
-
-    # Positive control: past a 1 s grace the sweep starts it (no worker polls visit-tq).
-    await sweep_unstarted(factory, temporal_env.client, grace_seconds=1)
-    assert await _marker(visit["id"]) is not None
-    assert (await handle.describe()).status == WorkflowExecutionStatus.RUNNING
-    await handle.terminate(reason="test clean-up")
 
 
 async def test_repeat_complete_after_success_is_noop_single_run(
@@ -339,6 +374,7 @@ async def test_repeat_complete_after_success_is_noop_single_run(
     same run, same marker, one finalization, one completed history row."""
     visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)
     result = await _result(temporal_env, visit["id"])
     assert result.billing == "finalized"
     marker = await _marker(visit["id"])
@@ -358,37 +394,25 @@ async def test_repeat_complete_after_success_is_noop_single_run(
     assert await audit_count(visit["id"], "visit.billing_finalize_requested") == 1
 
 
-async def test_concurrent_sweeps_start_one_run_one_finalization(
+async def test_concurrent_deliveries_start_one_run_one_finalization(
     client: AsyncClient,
     mesh: httpx.AsyncClient,
     visit_world: VisitWorld,
     visit_worker: object,
     temporal_env: WorkflowEnvironment,
 ) -> None:
-    """Two sweeps racing over the same NULL-marker visit share the deterministic
-    workflow id (USE_EXISTING), so there is one run and one finalization."""
-    from tests.visit.conftest import _DownTemporal  # noqa: PLC0415
-
-    app = harness_apps()["visit"]
-    worker_client = app.state.temporal_client
-    app.state.temporal_client = _DownTemporal()  # Temporal down for the completion only
-    try:
-        visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
-    finally:
-        app.state.temporal_client = worker_client
+    """Two deliveries of the same visit.completed racing each other (a redelivery after a
+    consumer restart, or two consumers) share the deterministic workflow id
+    (USE_EXISTING), so there is one run and one finalization."""
+    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
     assert await _marker(visit["id"]) is None
-    await _age_completion(visit["id"], 60)
 
-    factory = get_session_factory(visit_settings.database_url)
-    results = await asyncio.gather(
-        sweep_unstarted(factory, temporal_env.client, grace_seconds=30),
-        sweep_unstarted(factory, temporal_env.client, grace_seconds=30),
+    delivered = await asyncio.gather(
+        deliver_visit_events(None, visit["id"], client=temporal_env.client),
+        deliver_visit_events(None, visit["id"], client=temporal_env.client),
     )
-    # Both sweeps may count this visit (the loser attaches and its conditional
-    # marker UPDATE is a no-op), and other stale rows may be counted too, so the
-    # count is only a lower bound; the stable run id is the one-run proof.
-    assert sum(results) >= 1
+    assert delivered == [1, 1]
     assert await _marker(visit["id"]) is not None
     handle = temporal_env.client.get_workflow_handle(visit_completed_workflow_id(visit["id"]))
     first_run = (await handle.describe()).run_id
@@ -432,6 +456,7 @@ async def test_voided_billing_reports_not_finalizable_and_intents_still_recorded
         f"/api/visits/{visit['id']}/complete", headers=auth(visit_world.world.provider)
     )
     assert completed.status_code == 200, completed.text
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)
 
     assert await _result(temporal_env, visit["id"]) == VisitCompletedResult(
         outcome="completed",
@@ -448,39 +473,41 @@ async def test_voided_billing_reports_not_finalizable_and_intents_still_recorded
     assert await _marker(visit["id"]) is not None
 
 
-async def test_deferred_start_logs_downstream_start_deferred(
+class _NoTemporalCalls:
+    """A Temporal client double that fails on ANY attribute access, so a single
+    call (or even a lookup) from the Visit API makes the completion fail."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"the Visit API touched Temporal: {name}")
+
+
+async def test_completion_route_makes_no_temporal_call(
     client: AsyncClient,
     mesh: httpx.AsyncClient,
     visit_world: VisitWorld,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Temporal down at completion: 200 plus exactly one warning event carrying
-    the visit id and the error TYPE only (T-02-58 ids-only logging)."""
-    configure_logging()
-    # A logger first used in an earlier test stays bound to that test's stdout.
-    monkeypatch.setattr(visits_api, "log", structlog.get_logger("test-visit-deferred"))
-    capsys.readouterr()
+    """Plan 03-09 (D-03): the completion route starts no downstream work. A Temporal
+    client double that fails on any call is injected into the Visit app; the
+    completion still answers 200, commits the visit.completed event and leaves the
+    marker NULL for the consumer. The Temporal connect factory is poisoned too, so a
+    lazily connecting route would fail as well."""
 
-    visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
+    async def _no_connect(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the Visit API connected to Temporal")
+
+    monkeypatch.setattr("libs.temporal.connect_client", _no_connect)
+    harness_apps()["visit"].state.temporal_client = _NoTemporalCalls()  # autouse fixture restores
+
+    visit, _, completed = await _completed_visit(client, mesh, visit_world)
+
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "completed"
     assert await _marker(visit["id"]) is None
-
-    events = []
-    for line in capsys.readouterr().out.splitlines():
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    deferred = [e for e in events if e.get("event") == "visit.downstream_start_deferred"]
-    assert len(deferred) == 1
-    assert deferred[0]["level"] == "warning"
-    assert deferred[0]["visit_id"] == visit["id"]
-    assert deferred[0]["error"] == "RPCError"
-    serialized = json.dumps(deferred[0])
-    assert appointment_id not in serialized
-    assert "temporal unavailable" not in serialized
+    assert len(await outbox_rows(visit["id"])) == 1
+    # Nothing in the API module can start a workflow any more.
+    assert not hasattr(visits_api, "ensure_downstream_started")
+    assert not hasattr(visits_api, "get_temporal_client")
 
 
 async def test_tracer_completion_completes_the_appointment(
@@ -495,6 +522,7 @@ async def test_tracer_completion_completes_the_appointment(
     markers land in visit_db."""
     visit, appointment_id, completed = await _completed_visit(client, mesh, visit_world)
     assert completed.status_code == 200, completed.text
+    await deliver_visit_events(None, visit["id"], client=temporal_env.client)
 
     result = await _result(temporal_env, visit["id"])
     assert result.appointment == "completed"
@@ -534,6 +562,13 @@ async def _run_activity(method: Any, visit_id: str, appointment_id: str, vw: Vis
             visit_id=visit_id, appointment_id=appointment_id, clinic_id=str(vw.clinic_id)
         ),
     )
+
+
+async def _run_sweep_tombstone(acts: VisitActivities, visit_id: str) -> Any:
+    """Run the retired sweep activity through `ActivityEnvironment`."""
+    environment = ActivityEnvironment()
+    environment.info = replace(environment.info, workflow_id=f"sweeper-test-{visit_id}")
+    return await environment.run(acts.sweep_unstarted)
 
 
 async def _legacy_completed_visit(vw: VisitWorld, appointment_id: str) -> str:

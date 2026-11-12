@@ -24,11 +24,12 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, time, timezone as dt_timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from services.provider.events import emit_schedule_changed
 from services.provider.repository.models import (
     AvailabilityTemplate,
     Provider,
@@ -374,12 +375,20 @@ async def record_schedule_change(
 
     Flush only, never commit: the caller's existing commit makes the event atomic
     with the change that caused it. The row carries ids and a change type only.
+
+    Plan 03-08: the same transaction also gets one `provider.schedule_changed` outbox
+    row (Debezium relays it to Kafka once the transaction commits). The pull feed row
+    stays exactly as it was; the outbox event carries its id as `change_event_id`.
     """
     event = ScheduleChangeEvent(
         provider_id=provider_id, change_type=change_type, template_id=template_id
     )
     db.add(event)
     await db.flush()
+    # The server default `created_at` is not fetched by the flush; the event needs it.
+    if "created_at" in inspect(event).unloaded:
+        await db.refresh(event, ["created_at"])
+    await emit_schedule_changed(db, event)
     return event
 
 

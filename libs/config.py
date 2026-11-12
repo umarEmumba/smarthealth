@@ -64,6 +64,36 @@ class SharedSettings(BaseSettings):
     temporal_address: str = "temporal:7233"
     temporal_namespace: str = "default"
 
+    # --- Postgres connection pool (plan 03-23, WR-05) ---
+    # Per-engine SQLAlchemy pool bounds, read from DB_POOL_SIZE / DB_MAX_OVERFLOW.
+    # The code defaults are SQLAlchemy's own (5 and 10) so host tests and scripts
+    # behave as before; the connection budget for the dev Postgres lives in
+    # infra/docker-compose.yml, where every container sets its own values and a
+    # static test (tests/libs/test_postgres_registry.py) checks the worst case
+    # fits under max_connections.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+
+    # --- Worker metrics (plan 03-15, D-11) ---
+    # Each Temporal worker serves its application metrics (prometheus_client) on
+    # `worker_metrics_port` and the Temporal SDK's own metrics on
+    # `temporal_sdk_metrics_bind`. Both bind inside the container and are never
+    # published to the host; Prometheus scrapes them over the Compose network.
+    # Env: WORKER_METRICS_PORT, TEMPORAL_SDK_METRICS_BIND.
+    worker_metrics_port: int = 9100
+    temporal_sdk_metrics_bind: str = "0.0.0.0:9464"  # noqa: S104 - container-internal, never published
+
+    # --- Kafka + Schema Registry (plan 03-01, D-05/D-06) ---
+    # Services never talk to Kafka on the request path: they write an outbox
+    # row and Debezium relays it. The bootstrap servers are read by the
+    # consumer processes; the registry URL is read by every serializer (a
+    # `mock://` URL selects the in-memory client in tests).
+    kafka_bootstrap_servers: str = "localhost:9092"
+    schema_registry_url: str = "http://localhost:8081"
+
+    # --- Analytics service (plan 03-01; read-only metrics API, D-10) ---
+    analytics_service_url: str = "http://analytics:8000"
+
     # --- JWKS cache + internal HTTP behaviour ---
     jwks_cache_ttl_seconds: int = 300
     jwks_miss_backoff_seconds: int = 30

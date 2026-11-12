@@ -1,19 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: "02.1"
-current_phase_name: Week 1-2 mentor review remediation
-status: verifying
-stopped_at: Completed 02.1-13-docs-closeout-PLAN.md
-last_updated: "2026-10-27T05:08:46.310Z"
-last_activity: 2026-10-24
-last_activity_desc: Phase 02.1 execution started
-state_head: 2fb042f73c09d04de395966a7e6b7070b9ff3dc8
+current_phase: 3
+status: completed
+stopped_at: Phase 3 complete — all phases complete
+last_updated: "2026-11-12T03:14:11.341Z"
+last_activity: 2026-11-12
+last_activity_desc: Phase 3 complete
+state_head: f76f74797e3806aeb226f40ec12c7465c28e26c0
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 42
-  completed_plans: 42
-  percent: 20
+  completed_phases: 4
+  total_plans: 68
+  completed_plans: 68
+  percent: 100
 ---
 
 # Project State
@@ -27,22 +26,22 @@ See: .planning/PROJECT.md (updated 2026-09-09)
 
 ## Current Position
 
-Phase: 02.1 (Week 1-2 mentor review remediation) — EXECUTING
-Plan: 13 of 13
-Status: Phase complete — ready for verification
+Phase: 3
+Plan: Not started
+Status: All phases complete
 (`pytest tests -m "not e2e"`, last full run was after 02-10: 755 passed, 3 skipped), the deferred
 tests listed in the 02-0x SUMMARY files (UPDATE 2 scope cut from 02-11 on), and the 02-12 Task 5
 human visual check of the dashboard/docs.
-Last activity: 2026-10-24 — Phase 02.1 execution started
+Last activity: 2026-11-12 — Phase 3 complete
 real-stack e2e 7 passed, demo 1 winner of 50, docs + dashboard v3
 
-Progress: [██░░░░░░░░] 20%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 29 (Phase 2 plans executed, phase verification pending)
+- Total plans completed: 43 (Phase 2 plans executed, phase verification pending)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -53,6 +52,7 @@ Progress: [██░░░░░░░░] 20%
 | 01 | 7 | - | - |
 | 1.1 | 10 | - | - |
 | 02 | 12 (executed) | - | - |
+| 3 | 26 | - | - |
 
 **Recent Trend:**
 
@@ -94,6 +94,31 @@ Progress: [██░░░░░░░░] 20%
 | Phase 02.1 P11 | 35min | 3 tasks | 17 files |
 | Phase 02.1 P12 | 40min | 2 tasks | 7 files |
 | Phase 02.1 P13 | 78 min | 3 tasks | 13 files |
+| Phase 03 P01 | 21min | 3 tasks | 10 files |
+| Phase 03 P03 | n/a (interrupted) | 3 tasks | 14 files |
+| Phase 3 P04 | not measured | 3 tasks | 7 files |
+| Phase 03 P02 | not measured | 3 tasks | 12 files |
+| Phase 03 P06 | not measured | 3 tasks | 13 files |
+| Phase 03 P05 | 14min | 3 tasks | 12 files |
+| Phase 03 P07 | 75min | 3 tasks | 6 files |
+| Phase 03 P08 | 35min | 3 tasks | 13 files |
+| Phase 03 P09 | 110min | 2 tasks | 19 files |
+| Phase 03 P10 | about 1h20 | 2 tasks | 15 files |
+| Phase 3 P11 | 1h | 3 tasks | 2 files |
+| Phase 03 P12 | 1h | 3 tasks | 14 files |
+| Phase 03 P13 | 1h15m | 3 tasks | 17 files |
+| Phase 03 P14 | about 1h50 | 3 tasks | 14 files |
+| Phase 03 P15 | 1h20m | 2 tasks | 17 files |
+| Phase 03 P16 | 2h | 3 tasks | 19 files |
+| Phase 03 P17 | 3h | 3 tasks | 12 files |
+| Phase 03 P18 | not measured | 3 tasks | 16 files |
+| Phase 03 P19 | not measured | 2 tasks | 3 files |
+| Phase 03 P20 | about 4h | 3 tasks | 5 files |
+| Phase 03 P21 | ~65min | 3 tasks | 11 files |
+| Phase 03 P22 | 40min | 3 tasks | 14 files |
+| Phase 3 P23 | 1h50m | 2 tasks | 4 files |
+| Phase 03 P24 | ~40min | 2 tasks | 7 files |
+| Phase 3 P25 | 40min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -181,15 +206,68 @@ Recent decisions affecting current work:
 - [Phase 02.1]: Docs state only what the code does; the Phase 2.1 roadmap block is not marked active while Phase 2 verification is pending
 - [Phase 02.1]: First real-stack k6 smoke runs crossed latency thresholds, so the docs say NFRs are unmeasured and the smoke result is unfavourable; DASH-04 left unticked for Phase 3
 - [Phase 02.1]: Audit dedupe index is restored by test_audit_indexes and ensured by the concurrent-finalize test, so test order no longer decides
+- [Phase 03]: 03-01: Event contract D-05 confirmed as Avro, one subject per event type by record name, one topic per aggregate; all six veto items accepted; Connect image quay.io/debezium/connect:3.7.1.Final approved
+- [Phase 3]: 03-04: EventEnvelope.payload is the full decoded Avro record; registry outage during decode is transient (retry), not poison
+- [Phase 03]: Notification delivery: ClaimResult(state, attempts) returned from claim_delivery
+- [Phase 03]: Worker declares queue and DLX topology at start (declare_topology) so notifications.dlq exists
+- [Phase 03]: Dead-letter Reject reason is the exception class name only (no payload text in logs)
+- [Phase 03]: 03-06: a failed reminder enqueue is logged and the walk continues with the next lead; a failed follow-up enqueue fails its workflow
+- [Phase 03]: 03-06: reminder dedupe key includes slot epoch; sent_leads of a rescheduled reminder covers the final slot only
+- [Phase 03]: 03-05: Kafka Connect runs on quay.io/debezium/connect:3.7.1.Final; connector password via Compose secret + FileConfigProvider; connector tests parametrized over connector JSON files present
+- [Phase 03]: 03-07: appointment event occurred_at is the row's updated_at (DB transaction time); event id discriminator is the post-transition version
+- [Phase 03]: 03-08: Patient and Provider are outbox producers (patient-outbox, provider-outbox connectors); only registration/deactivation and schedule-affecting changes emit; events PHI-free, proven at table and Kafka bytes
+- [Phase 03]: 03-09: Temporal client in the visit consumer is connected lazily on the consumer's persistent loop (not eagerly in main); unknown or not-completed visit events are non-retryable, Temporal/DB outages transient
+- [Phase 03]: 03-10: analytics appointment slot_start is versioned by (occurred_at, slot_start) across all six appointment events; views hold the metric math (per-visit wait, per-day booked/cancelled)
+- [Phase 3]: 03-11: D-03 gate passed - visit downstream trigger survives API kill, consumer outage and Connect outage (outbox consumer, not sweeper, proven by consumer log); smoke passes (accept p95 29.3 ms, saga p95 0.52 s); gateway left at the user's raised budget
+- [Phase 03]: 03-12: VisitActivities keeps its positional client argument (unused after the sweeper retired); the visit sweeper workflow and activity name stay registered as a no-op tombstone until list_workflows on its type is empty everywhere
+- [Phase 03]: 03-12: backfill_visit_completed_events.py is dry run by default with an optional --clinic-id scope; live dry run found 0 candidates, no apply was run
+- [Phase 03]: 03-13: live analytics consumer group starts at LATEST (ANALYTICS_CONSUMER_START, offsets pinned at container start); rebuild replays retained history and is tested on a throw-away database
+- [Phase 03]: 03-14: notification-trigger consumer starts a new group at latest with a pinned go-live offset (D-13); pin_start_offsets shared via libs/events/start_offsets.py
+- [Phase 03]: 03-15: Temporal workers serve application metrics on :9100 and Temporal SDK metrics on :9464, both scraped under one Prometheus job per worker; no metrics port is published
+- [Phase 03]: 03-15: booking_saga_seconds uses the database clock (now() - appointments.created_at) and labels outcome only
+- [Phase 03]: 03-16: grafana_ro needs no pg_monitor grant (slot query works SELECT-only); HTTP latency buckets owned by libs.observability.http_metrics.instrument_http with an edge on every NFR threshold
+- [Phase 03]: 03-17: Debezium heartbeat needs heartbeat.action.query (logical-decoding message, excluded prefix) to move a quiet slot; heartbeat.interval.ms alone did not
+- [Phase 03]: 03-17: event.consumed is logged inside the consumer processing span so consumer logs carry trace_id
+- [Phase 03]: Phase 3 docs: delivery guarantee stated as no loss, at-least-once on the wire, effect-level exactly-once, with measured duplicates
+- [Phase 03]: Phase 3 docs: EVENT-04 deviation (projections on a Kafka consumer, not Celery) recorded with the user's answer; REQUIREMENTS.md wording left to the user
+- [Phase 03]: Phase 3 docs test (tests/docs/test_phase3_docs.py) ties every topic, group, Compose service, event type, queue, setting, migration and metric name to the code
+- [Phase 03]: 03-19: dashboard v4 states only what the code does or a SUMMARY measured; roadmap shows Phase 3 active with phase gate and visual checks pending; tests reject wire-level exactly-once claims and tie topic and event names to the catalog
+- [Phase 03]: 03-20: Phase gate not clean (known provider failure, Postgres max_connections=300 ceiling, macOS fork SIGTRAP, one Jaeger OOM) accepted and recorded as known test-environment limitations; follow-up not done
+- [Phase 03]: 03-20: the two new root-user Dockerfiles (services/analytics, services/notification) accepted for now, same class as the eight accepted at Phase 2 closeout
+- [Phase 03]: 03-21 W3: WR-03 closed by bounding (10 attempts AND 900 s then TransientExhausted), not narrowing; seven Temporal statuses, RuntimeError, OSError stay transient
+- [Phase 03]: 03-21: one classifier libs/events/classify.py (SQLSTATE 08/53/57/40 first); AST guard with structural detectors forbids a second copy
+- [Phase 03]: 03-22: lost visit.completed triggers are recovered by the existing visit-reconciler lost-trigger pass (no sweeper); DLQ records by scripts/replay_dlq.py (dry run by default)
+- [Phase 3]: 03-23: closed-loop engines retired by shutting down idle connection sockets; pool size/overflow are settings; Compose worst-case budget 241 of 297 enforced by a derived static test; measured suite peak 108 of 300
+- [Phase 03]: 03-24: Prometheus multiprocess mode with two gunicorn workers; PROMETHEUS_MULTIPROC_DIR exported only by the API image default command (never Compose); gateway /metrics renders via render_latest()
+- [Phase 3]: 03-25: all nine APIs run Prometheus multiprocess mode via the image default command; Compose never sets the directory or a worker-count variable (static test); smoke on the corrected stack exit 0, accept p95 41.85 / p99 245.49 ms, no p95 change visible
 
 ### Pending Todos
 
-- Phase 2 verification (deferred at the user's request): run the full regression
-  `pytest tests -m "not e2e"` (background + poll, ~17+ min) and `SMARTHEALTH_E2E_REQUIRE_STACK=1 pytest tests/e2e -m e2e`
-  with the stack up (gateway with `GATEWAY_RATE_LIMIT_AUTH_PER_MINUTE=1000`).
-- Write the deferred tests listed under "Deferred tests" in 02-11-SUMMARY.md and 02-12-SUMMARY.md (and any earlier SUMMARY that lists them).
-- 02-12 Task 5: human visual check of docs/architecture-dashboard.html (offline, narrow width), README demo run.
-- Semgrep has not been run in the executor environment (not installed).
+- Phase 2 verification: DONE 2026-11-10 (see `.planning/phases/02-scheduling-service-workflow/02-CLOSEOUT-RUN.md`): full regression 1349 passed (7 trace tests failed only because the script set `OTEL_SDK_DISABLED`; they pass without it, script fixed), e2e 9 passed, Semgrep run (13 findings triaged: 8 Dockerfile missing-USER accepted for now, 5 false positives).
+- Deferred tests from 02-11/02-12: closed. The 8 tests from 02-11 already existed (quick 261013-mhu) and pass on current code; a gateway reschedule e2e was added (quick 261110-gvd). Only the containerized worker-restart e2e is not written.
+- 02-12 Task 5 human visual check of docs/architecture-dashboard.html: done by the user 2026-11-10.
+- Temporal Schedule `scheduling-schedule-change-poller` is intentionally left paused (user decision 2026-11-10); unpause before any demo or Phase 3 work that relies on schedule-change propagation.
+- Phase 2.1 human checks resolved 2026-11-10: dashboard accepted, k6 smoke passes on a quiet host, DASH-04 ticked. k6 `sustained`/`burst`/`contention` deferred until after Phase 3 (NFR-01..08 stay unmeasured targets).
+- Production hardening deferred: add a non-root `USER` to the service Dockerfiles (Semgrep missing-user x8).
+- Phase 3 follow-ups (from the 03-20 phase gate, 2026-11-11, updated by the 03-26 gap closeout, 2026-11-12):
+  - DONE in the gap closure: the engine registry no longer orphans closed-loop engines (WR-05; 03-23: suite peak 108 of 300 against 304 before) and the gateway rate limits are back on 20 / 300 (03-26, last automated step). CR-01 (03-21, 03-22) and CR-02 (03-24, 03-25) are closed with live evidence.
+  - Raising the dev Postgres `max_connections` (300) is now less urgent after WR-05; not done. Cap Jaeger memory (OOM-killed once in the 7.65 GiB Docker VM): not done. Set a memory limit on Kafka in Compose (it was OOM-killed while seven images were rebuilt at once in 03-25; rebuild fewer images at a time).
+  - `scripts/compose_healthcheck.sh` printed OK while Kafka was down because it checks only running services: make it flag a stopped required container (not changed in 03-26).
+  - Temporal's connection count (40 in the budget) is observed, not derived: set `SQL_MAX_CONNS` / `SQL_VIS_MAX_CONNS` on the temporal service to make it derivable.
+  - WR-01: the reminder workflow drops a `reschedule` signal that arrives while the last lead's enqueue activity runs (needs `workflow.patched` plus a replay test).
+  - WR-04: the debezium role's privileges, the unauthenticated Connect REST API and an unrestricted FileConfigProvider (PHI-relevant; local-dev scope).
+  - WR-06: a backfill or replay can send follow-up notifications for old visits (a replay keeps the event id, which only a group that already handled it absorbs; notification-trigger has no staleness guard).
+  - IN-02..IN-06 of 03-REVIEW.md (notification duplicate code, consumer metric cardinality, Compose / RabbitMQ hygiene, metrics servers that record "started" when the bind failed, slot invalidation and Grafana scoping).
+  - The head-of-line effect of the transient cap: during an outage longer than 15 minutes each message gets its own 900 s cap, so healthy events are dead-lettered one per 15 minutes per partition; a `scripts/replay_dlq.py` run is a required operational step afterwards (docs/architecture.md 10.2).
+  - The flaky SIGTRAP class: subprocess tests that fork from the threaded pytest process on macOS crash with exit -5 (identity/visit tests, tests/visit/test_backfill.py); each passes alone.
+  - The identity migration test (tests/identity/test_email_migration.py) runs alembic on the live identity_db; give it its own database.
+  - The leftover provider specialty-ordering failure in tests/provider/test_provider_tracer.py::test_admin_registers_provider_through_gateway (known since 03-01, deferred-items.md); deselected by node id in the 03-26 gate.
+  - Add a non-root `USER` to all ten Dockerfiles (the eight above plus services/analytics and services/notification, accepted for now at the gate).
+  - Run k6 `sustained`, `burst` and `contention` after Phase 3 (NFR-01..08 are still unmeasured targets); accept-path overhead of the multiprocess metrics was not isolated by an A/B run.
+  - Decide whether to reword EVENT-04 in REQUIREMENTS.md (the user accepted the Debezium/Kafka-consumer design in 03-01; projections are not Celery tasks). REQUIREMENTS.md is not edited.
+  - DONE (quick 261112-8r6): the outage Q&A answer's sentence now says what was and was not tested (decode path unit-tested, no live registry outage). The "Failure paths:" sentence of the not-yet-verified answer still understates the decode-path coverage; it was not covered by the one-sentence approval.
+  - Provider specialty-ordering test (above) and the dev-data DLQ: the live `visit-downstream` DLQ holds 100+ `NonRetryableEventError` records for deleted test visits; since quick 261112-8r6 `scripts/replay_dlq.py` skips poison (`NonRetryableEventError`, `DeserializationError`) by default and refuses an unfiltered `--apply`; never `--apply` against the live DLQ without an `--event-id` or `--error-type`.
+  - Gap-closure review (03-REVIEW-GAP.md): WR-01 (bounded lost-trigger pass first, start-up pass in the background), WR-02 (replay selector, poison skipped) and WR-07 (24 h ceiling, kill switch, backoff) closed by quick 261112-8r6. Open: WR-02 remainder (no dedupe of repeated DLQ copies, no replayed marker); WR-03 (transient retry sleeps on the poll thread); WR-04 (blanket exception families classified transient); WR-05 (pool settings unbounded, 5+5 API pool untested against burst); WR-06 (241/297 connection budget not a bound); IN-01..IN-06.
 
 ### Blockers/Concerns
 
@@ -203,6 +281,7 @@ Recent decisions affecting current work:
 | # | Description | Date | Commit | Status | Directory |
 |---|-------------|------|--------|--------|-----------|
 | 261027-bfy | Phase 2.1 validation UI (tools/validation-ui: stdlib loopback proxy, 7-panel static page, demo seeder; live walkthrough partial, no admin creds) | 2026-10-27 | 2fb042f | Needs Review | [261027-bfy-phase-2-1-validation-ui-static-html-js-s](./quick/261027-bfy-phase-2-1-validation-ui-static-html-js-s/) |
+| 261110-gvd | Phase 2 closeout: re-verified the 8 deferred 02-11 tests (already present, pass) and added a gateway reschedule e2e | 2026-11-10 | 54e6a22 | Complete | [261110-gvd-phase-2-closeout-write-deferred-tests-fr](./quick/261110-gvd-phase-2-closeout-write-deferred-tests-fr/) |
 
 ### Roadmap Evolution
 
@@ -220,6 +299,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T10:01:50.435Z
-Stopped at: Completed 02.1-13-docs-closeout-PLAN.md
+Last session: 2026-11-11T19:59:10.398Z
+Stopped at: Phase 3 complete — all phases complete
 Resume file: None

@@ -15,17 +15,23 @@ Duplicate safety (D-15, research Pattern 9):
     insert is additionally guarded by `uq_visit_history_visit_to`; if that
     ever raises, the `IntegrityError` propagates and the route rolls the whole
     transaction back and answers as a no-op.
+  * Plan 03-09 (D-03): the applied COMPLETED branch also writes one
+    `visit.completed` outbox row in the same transaction. That event, relayed by
+    Debezium and consumed by the visit-downstream consumer, is the trigger of the
+    downstream workflow; no other target and no no-op writes an event.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.visit import events as visit_events
 from services.visit.domain.states import ORDER, PREVIOUS, TransitionOutcome, VisitStatus
 from services.visit.repository.models import Visit, VisitStateHistory
 
@@ -124,17 +130,32 @@ async def transition_visit(
     if target == VisitStatus.IN_PROGRESS:
         values["started_at"] = func.now()
     elif target == VisitStatus.COMPLETED:
-        # downstream_started_at deliberately stays NULL (plan 02-11 sweeper).
+        # downstream_started_at deliberately stays NULL here: the downstream trigger
+        # is the `visit.completed` outbox event committed below (plan 03-09, D-03);
+        # the visit-downstream consumer sets the marker once the workflow is started.
         values["completed_at"] = func.now()
 
+    returning: tuple[object, ...] = (Visit.id,)
+    if target == VisitStatus.COMPLETED:
+        returning = (
+            Visit.id,
+            Visit.appointment_id,
+            Visit.clinic_id,
+            Visit.patient_id,
+            Visit.provider_id,
+            Visit.checked_in_at,
+            Visit.started_at,
+            Visit.completed_at,
+        )
     moved = await db.execute(
         update(Visit)
         .where(Visit.id == visit_id, Visit.status == expected)
         .values(**values)
-        .returning(Visit.id)
+        .returning(*returning)
         .execution_options(synchronize_session=False)
     )
-    if moved.first() is None:
+    row = moved.first()
+    if row is None:
         current = await _current_status(db, visit_id)
         if ORDER[current] >= ORDER[target]:
             return TransitionOutcome.NOOP
@@ -146,6 +167,9 @@ async def transition_visit(
         )
     )
     await db.flush()
+    if target == VisitStatus.COMPLETED:
+        # Same transaction as the status change and history row: all commit or none.
+        await visit_events.emit_visit_completed(db, row)
     return TransitionOutcome.APPLIED
 
 
@@ -178,7 +202,7 @@ async def list_visits(
 async def mark_downstream_started(db: AsyncSession, *, visit_id: uuid.UUID) -> bool:
     """Record that the visit's downstream workflow has been started (plan 02-11,
     D-16). Conditional (`WHERE downstream_started_at IS NULL`), so a repeat or
-    a race with the sweeper is harmless: True when this call set the marker.
+    a race between the consumer's redeliveries is harmless: True when this call set the marker.
     Flushes only; the caller commits."""
     marked = await db.execute(
         update(Visit)
@@ -190,14 +214,56 @@ async def mark_downstream_started(db: AsyncSession, *, visit_id: uuid.UUID) -> b
     return marked.first() is not None
 
 
-async def list_downstream_unstarted(
-    db: AsyncSession, *, older_than_seconds: int, limit: int = 100
+async def list_completed_without_downstream(
+    db: AsyncSession, *, limit: int = 100, clinic_id: uuid.UUID | None = None
 ) -> list[Visit]:
-    """Completed visits whose downstream workflow was never started (plan
-    02-11): `status = 'completed' AND downstream_started_at IS NULL AND
-    completed_at < now() - older_than_seconds`, oldest first, at most `limit`.
-    Served by the partial index `ix_visits_downstream_pending`. No row lock:
-    the sweeper calls Temporal per row, and a duplicate start is a no-op."""
+    """Completed visits whose downstream workflow was never started: `status =
+    'completed' AND downstream_started_at IS NULL` (optionally of one clinic), oldest
+    first, at most `limit`.
+    Served by the partial index `ix_visits_downstream_pending`. No row lock.
+
+    A never-started visit is the outbox consumer's job first and the reconciler's after
+    the grace (`list_lost_triggers`, plan 03-22); this ungraced list is for the manual
+    route, `scripts/backfill_visit_completed_events.py`, which selects the visits that
+    completed before the outbox trigger existed or whose event was dead-lettered. (It
+    also lists a visit whose event is committed but not consumed yet; the backfill is
+    idempotent for those, the outbox primary key is the uuid5 event id.)"""
+    query = (
+        select(Visit)
+        .where(
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.downstream_started_at.is_(None),
+        )
+        .order_by(Visit.completed_at, Visit.id)
+        .limit(limit)
+    )
+    if clinic_id is not None:
+        query = query.where(Visit.clinic_id == clinic_id)
+    return list((await db.scalars(query)).all())
+
+
+async def list_lost_triggers(
+    db: AsyncSession,
+    *,
+    older_than_minutes: int,
+    limit: int = 100,
+    clinic_id: uuid.UUID | None = None,
+    max_age_minutes: int | None = None,
+    exclude_ids: Collection[uuid.UUID] = (),
+) -> list[Visit]:
+    """Completed visits whose downstream trigger was lost (plan 03-22, CR-01): `status =
+    'completed' AND downstream_started_at IS NULL AND completed_at < now() - older_than`
+    (optionally of one clinic), oldest first, at most `limit`. Served by the partial
+    index `ix_visits_downstream_pending`. No row lock.
+
+    `max_age_minutes` (gap review WR-07) adds an age ceiling, `completed_at >= now() -
+    max_age`: an older lost trigger is not listed (see `count_lost_triggers_beyond`).
+    `exclude_ids` leaves out the visits the reconciler is backing off.
+
+    The outbox consumer starts the workflow within seconds of the completion; a visit
+    still unmarked after the grace had its `visit.completed` event dead-lettered or
+    consumed and dropped (or never relayed), and the reconciler restarts it through the
+    same idempotent `ensure_downstream_started`."""
     query = (
         select(Visit)
         .where(
@@ -205,13 +271,48 @@ async def list_downstream_unstarted(
             Visit.downstream_started_at.is_(None),
             Visit.completed_at
             < text("now() - make_interval(secs => :grace)").bindparams(
-                grace=float(older_than_seconds)
+                grace=float(older_than_minutes) * 60.0
             ),
         )
-        .order_by(Visit.completed_at)
+        .order_by(Visit.completed_at, Visit.id)
         .limit(limit)
     )
+    if max_age_minutes is not None:
+        query = query.where(
+            Visit.completed_at
+            >= text("now() - make_interval(secs => :max_age)").bindparams(
+                max_age=float(max_age_minutes) * 60.0
+            )
+        )
+    if exclude_ids:
+        query = query.where(Visit.id.not_in(list(exclude_ids)))
+    if clinic_id is not None:
+        query = query.where(Visit.clinic_id == clinic_id)
     return list((await db.scalars(query)).all())
+
+
+async def count_lost_triggers_beyond(
+    db: AsyncSession, *, older_than_minutes: int, clinic_id: uuid.UUID | None = None
+) -> int:
+    """How many completed visits with a NULL `downstream_started_at` completed MORE than
+    `older_than_minutes` ago (optionally of one clinic): the lost triggers the reconciler
+    no longer restarts by itself (gap review WR-07). Served by the partial index
+    `ix_visits_downstream_pending`. No row lock."""
+    query = (
+        select(func.count())
+        .select_from(Visit)
+        .where(
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.downstream_started_at.is_(None),
+            Visit.completed_at
+            < text("now() - make_interval(secs => :beyond)").bindparams(
+                beyond=float(older_than_minutes) * 60.0
+            ),
+        )
+    )
+    if clinic_id is not None:
+        query = query.where(Visit.clinic_id == clinic_id)
+    return int(await db.scalar(query) or 0)
 
 
 async def _mark_settled(
@@ -264,8 +365,9 @@ async def list_unsettled(
     first, at most `limit`. Served by the partial index `ix_visits_unsettled`.
 
     `downstream_started_at IS NOT NULL` leaves visits whose trigger was never
-    started to the sweeper, which starts the workflow (and the workflow then
-    settles them); the reconciler covers workflows that already ran or were
+    started to the outbox consumer, which starts the workflow (and the workflow
+    then settles them), and, after the grace, to the lost-trigger pass
+    (`list_lost_triggers`); this list covers workflows that already ran or were
     started and did not settle. No row lock: the reconciler re-checks each row
     through the conditional marker functions and the idempotent step bodies."""
     query = (

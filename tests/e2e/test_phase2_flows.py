@@ -1,4 +1,4 @@
-"""Phase 2 flows on the deployed stack (plan 02-12; roadmap SC1, SC4, SC5, SC6; D-19).
+"""Phase 2 flows on the deployed stack (plan 02-12; roadmap SC1, SC4, SC5, SC6; D-19; SCHED-05 reschedule: quick 261110-gvd).
 
 Nothing runs in-process: the scheduling, billing and visit APIs, both Temporal
 workers and the Compose Temporal are separate containers, reached only through
@@ -127,6 +127,63 @@ async def test_cancel_frees_slot_and_waitlist_advances(gateway: httpx.AsyncClien
     assert a_appointment["status"] == "confirmed", a_appointment
     assert a_appointment["slot_id"] == slot_id
     assert a_appointment["patient_id"] == patient_a
+
+
+async def test_reschedule_moves_the_booking_and_keeps_billing_verified(
+    gateway: httpx.AsyncClient, ew: E2EWorld
+) -> None:
+    slots = await day_slots(gateway, ew, ew.world.last_day)
+    assert len(slots) >= 2, slots
+    old_slot, new_slot = slots[0]["id"], slots[1]["id"]
+
+    appointment_id = await book(gateway, ew, slot_id=old_slot, patient_id=ew.patient_ids[0])
+    before = await appointment_in(gateway, ew, appointment_id, {"confirmed", "failed"})
+    assert before["status"] == "confirmed", before
+
+    resp = await gateway.post(
+        f"/api/appointments/{appointment_id}/reschedule",
+        json={"new_slot_id": new_slot},
+        headers=ew.front_desk,
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["operation"] == "reschedule"
+    assert resp.json()["appointment_id"] == appointment_id
+
+    async def swapped() -> dict | None:
+        got = await get_appointment(gateway, ew, appointment_id)
+        if got["slot_id"] == new_slot:
+            return got
+        last = got["history"][-1] if got["history"] else {}
+        return got if str(last.get("reason") or "").startswith("reschedule_failed") else None
+
+    after = await poll(swapped)
+    assert after["slot_id"] == new_slot, after["history"][-1:]
+    assert after["status"] == "confirmed"
+    assert after["version"] == before["version"] + 1
+    last_move = after["history"][-1]
+    assert (last_move["from_status"], last_move["to_status"], last_move["reason"]) == (
+        "confirmed",
+        "confirmed",
+        "rescheduled",
+    )
+
+    # The old slot is freed and the new one is booked (no waitlist in a fresh world).
+    statuses = {s["id"]: s["status"] for s in await day_slots(gateway, ew, ew.world.last_day, status="any")}
+    assert statuses[old_slot] == "available"
+    assert statuses[new_slot] == "booked"
+
+    # Billing is relinked to the new slot, still verified, with no refund moves.
+    async def relinked() -> dict | None:
+        record = await billing_record(gateway, ew, appointment_id)
+        if record and record["history"] and record["history"][-1]["reason_code"] == "rescheduled":
+            return record
+        return None
+
+    record = await poll(relinked)
+    assert record["status"] == "verified", record
+    moves = [(h["from_status"], h["to_status"], h["reason_code"]) for h in record["history"]]
+    assert moves[-1] == ("verified", "verified", "rescheduled")
+    assert not [m for m in moves if m[1] in {"refund_pending", "refunded", "no_refund"}]
 
 
 async def test_visit_lifecycle_finalizes_billing(gateway: httpx.AsyncClient, ew: E2EWorld) -> None:

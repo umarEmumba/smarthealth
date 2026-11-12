@@ -14,9 +14,11 @@ Two data-layer guards make transitions duplicate-safe (research Pattern 9):
     same move cannot exist even if the first guard were bypassed.
 
 `uq_visits_appointment` makes check-in one visit per appointment.
-`downstream_started_at` stays NULL at completion; plan 02-11's sweeper finds
-completed visits whose downstream workflow was never started through the
-partial index `ix_visits_downstream_pending`.
+`downstream_started_at` stays NULL at completion until the visit-downstream consumer
+(plan 03-09) starts the workflow and sets it. The partial index
+`ix_visits_downstream_pending` over completed visits with a NULL marker was built for
+plan 02-11's sweeper (retired in plan 03-12) and is now read only by the backfill
+script `scripts/backfill_visit_completed_events.py`.
 Plan 02.1-09 adds the settlement markers (`billing_settled_at/_outcome`,
 `appointment_settled_at/_outcome`) the downstream activities set and a later
 reconciler reads through `ix_visits_unsettled`.

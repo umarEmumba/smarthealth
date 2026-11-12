@@ -23,11 +23,11 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import CONTENT_TYPE_LATEST
 
 from libs.health import build_health_router
 from libs.http import get_internal_http_client
+from libs.observability.http_metrics import instrument_http, render_latest
 from libs.observability.logging import configure_logging, get_logger
 from libs.observability.otel import setup_tracing
 from services.gateway.config import GatewaySettings
@@ -55,7 +55,7 @@ async def metrics_endpoint(request: Request) -> Response:
     # Fail closed: no server scope (e.g. a unix socket) or any other port -> 404.
     if not server or server[1] != settings.gateway_metrics_port:
         return JSONResponse(status_code=404, content=_NOT_FOUND)
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    return Response(content=render_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 async def gateway_entry(request: Request) -> Response:
@@ -129,7 +129,7 @@ def create_app(settings: GatewaySettings | None = None) -> FastAPI:
     # /metrics must exist BEFORE the catch-all, or the catch-all would proxy it.
     # It is our own route (not Instrumentator.expose) so it can refuse requests
     # that arrive on the public listener.
-    Instrumentator().instrument(app)
+    instrument_http(app)
     app.add_api_route("/metrics", metrics_endpoint, methods=["GET"], include_in_schema=False)
 
     app.add_api_route(

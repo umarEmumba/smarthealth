@@ -1,20 +1,24 @@
-# SmartHealth — Entity-Relationship Diagrams (one schema per service, Phase 2)
+# SmartHealth — Entity-Relationship Diagrams (one schema per service, Phase 3)
 
 Since Phase 1.1 there is no single system-of-record schema. Each service owns one PostgreSQL database
 and one SQLAlchemy `DeclarativeBase`, and each has its own Alembic baseline. Phase 2 extends
 `scheduling_db` (appointments, idempotency keys, history, waitlist) and adds `visit_db` and `billing_db`.
 Phase 2.1 adds five migrations (the appointment state machine, schedule-change flags and feed, visit
-settlement markers and the case-insensitive email index):
+settlement markers and the case-insensitive email index). Phase 3 adds an `outbox` table (and the publication
+`dbz_outbox`) to the four producing services, a new `analytics_db` with its own single baseline, and three
+MongoDB collections for the notification delivery log:
 
 | Service | Database | Models | Baseline migration |
 |---|---|---|---|
 | Identity | `identity_db` | `services/identity/repository/models.py` | `identity_0001_accounts` → `identity_0002_email_lower_unique` (Phase 2.1) |
 | Organization | `organization_db` | `services/organization/repository/models.py` | `organization_0001_org_hierarchy` |
-| Provider | `provider_db` | `services/provider/repository/models.py` | `provider_0001_providers` → `provider_0002_schedule_change_events` (Phase 2.1) |
-| Patient | `patient_db` | `services/patient/repository/models.py` | `patient_0001_patients` |
-| Scheduling | `scheduling_db` | `services/scheduling/repository/models.py` | `scheduling_0001_provider_slots` → `scheduling_0002_appointments` → `scheduling_0003_waitlist` (Phase 2) → `scheduling_0004_appointment_states` → `scheduling_0005_schedule_change_flags` (Phase 2.1) |
-| Visit (Phase 2) | `visit_db` | `services/visit/repository/models.py` | `visit_0001_visits` → `visit_0002_settlement_markers` (Phase 2.1) |
+| Provider | `provider_db` | `services/provider/repository/models.py` | `provider_0001_providers` → `provider_0002_schedule_change_events` (Phase 2.1) → `provider_0003_outbox` (Phase 3) |
+| Patient | `patient_db` | `services/patient/repository/models.py` | `patient_0001_patients` → `patient_0002_outbox` (Phase 3) |
+| Scheduling | `scheduling_db` | `services/scheduling/repository/models.py` | `scheduling_0001_provider_slots` → `scheduling_0002_appointments` → `scheduling_0003_waitlist` (Phase 2) → `scheduling_0004_appointment_states` → `scheduling_0005_schedule_change_flags` (Phase 2.1) → `scheduling_0006_outbox` (Phase 3) |
+| Visit (Phase 2) | `visit_db` | `services/visit/repository/models.py` | `visit_0001_visits` → `visit_0002_settlement_markers` (Phase 2.1) → `visit_0003_outbox` (Phase 3) |
 | Billing (Phase 2) | `billing_db` | `services/billing/repository/models.py` | `billing_0001_billing_records` |
+| Analytics (Phase 3) | `analytics_db` | `services/analytics/repository/models.py` | `analytics_0001_projections` (one baseline: `processed_events`, three projection tables, five views) |
+| Notification (Phase 3) | none (shared MongoDB) | `services/notification/deliveries.py` | collections `notification_deliveries`, `notification_provider_calls`, `notification_appointment_state` with unique indexes created at start |
 
 **Legend:** `PK` primary key · `FK` foreign key (always *within* one service) · `UK` unique · 🔒 PHI-bearing
 (never logged, audited or sent to another service) · soft-deletable tables carry `is_active` + `deactivated_at`.
@@ -78,6 +82,7 @@ erDiagram
     SPECIALTIES ||--o{ PROVIDER_SPECIALTIES : ""
     PROVIDERS |o..o{ SCHEDULE_CHANGE_EVENTS : "provider_id (same db, no FK)"
     AVAILABILITY_TEMPLATES |o..o{ SCHEDULE_CHANGE_EVENTS : "template_id (same db, no FK)"
+    SCHEDULE_CHANGE_EVENTS ||..o| OUTBOX : "change_event_id in the payload (one event per feed row)"
 
     PROVIDERS {
         uuid id PK
@@ -118,6 +123,16 @@ erDiagram
         timestamptz created_at
         timestamptz delivered_at "NULL = pending; set by the consumer's acknowledgement"
     }
+    OUTBOX {
+        uuid id PK "deterministic uuid5 event id; ON CONFLICT (id) DO NOTHING"
+        text aggregatetype "routes the topic: appointment|visit|patient|provider"
+        text aggregateid "message key (the aggregate id)"
+        text type "event type, for example appointment.booked"
+        bytea payload "Avro bytes, ids and timestamps only, never PHI"
+        text traceparent "nullable; W3C trace context of the producing span"
+        int schema_version "default 1"
+        timestamptz occurred_at "default now(); the transition's own time"
+    }
 ```
 
 Provider holds no clinic data; the clinic (and its timezone) is reachable through the department's
@@ -130,8 +145,15 @@ type only, and has no foreign key so it outlives any later cleanup of its subjec
 outbox row → Scheduling's poller Schedule reads the pending rows over `GET /internal/schedule-changes` →
 starts one `ScheduleChangeWorkflow` per event → acknowledges (`delivered_at`) → the workflow withdraws slots
 and flags appointments in `scheduling_db`. Partial index `ix_schedule_change_events_pending (created_at, id)
-WHERE delivered_at IS NULL` serves the feed; delivered rows are never purged. Phase 3 can publish the same
-rows to Kafka.
+WHERE delivered_at IS NULL` serves the feed; delivered rows are never purged. Phase 3 also publishes each of
+these changes as a `provider.schedule_changed` event through the `outbox` below (`provider_0003`), one event per
+feed row, with the feed row's id as `change_event_id`; nothing consumes the event, and the pull feed is unchanged.
+
+`outbox` (`provider_0003`, Phase 3) is the same table in each producing service's own database: the row is
+inserted by the service in the transaction that changes its state and is never updated or deleted, the primary
+key is the deterministic event id, `payload` is the Avro record as `bytea`, and the publication `dbz_outbox`
+covers this table only, so the `debezium` role (replication plus `SELECT` on `outbox`, nothing else) reads
+nothing else. Provider writes `provider.schedule_changed` here.
 
 ## patient_db
 
@@ -149,7 +171,20 @@ erDiagram
         boolean is_active
         timestamptz deactivated_at "nullable"
     }
+    OUTBOX {
+        uuid id PK "deterministic uuid5 event id; ON CONFLICT (id) DO NOTHING"
+        text aggregatetype "routes the topic: appointment|visit|patient|provider"
+        text aggregateid "message key (the aggregate id)"
+        text type "event type, for example appointment.booked"
+        bytea payload "Avro bytes, ids and timestamps only, never PHI"
+        text traceparent "nullable; W3C trace context of the producing span"
+        int schema_version "default 1"
+        timestamptz occurred_at "default now(); the transition's own time"
+    }
 ```
+
+`outbox` (`patient_0002`, Phase 3) holds `patient.registered` and `patient.deactivated`; the payload carries the
+patient id, the clinic id and timestamps, never a name, date of birth, phone or address.
 
 🔒 `full_name`, `date_of_birth`, `phone` and `address` are the only PHI-bearing columns in the platform. They live
 in this database only and are never written to logs, traces, internal-call URLs, headers or bodies, another
@@ -164,6 +199,7 @@ erDiagram
     APPOINTMENTS ||..o{ IDEMPOTENCY_KEYS : "appointment_id (same db, no FK)"
     APPOINTMENTS |o..o| PROVIDER_SLOTS : "held_by_appointment_id (same db, no FK)"
     APPOINTMENTS |o..o{ WAITLIST_ENTRIES : "matched_/booked_appointment_id (same db, no FK)"
+    APPOINTMENTS ||..o{ OUTBOX : "aggregateid = appointment id (same db, no FK)"
     PROVIDER_SLOTS {
         uuid id PK
         uuid provider_id UK "plain UUID (Provider), no FK; UK with start_time"
@@ -224,6 +260,16 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    OUTBOX {
+        uuid id PK "deterministic uuid5 event id; ON CONFLICT (id) DO NOTHING"
+        text aggregatetype "routes the topic: appointment|visit|patient|provider"
+        text aggregateid "message key (the aggregate id)"
+        text type "event type, for example appointment.booked"
+        bytea payload "Avro bytes, ids and timestamps only, never PHI"
+        text traceparent "nullable; W3C trace context of the producing span"
+        int schema_version "default 1"
+        timestamptz occurred_at "default now(); the transition's own time"
+    }
 ```
 
 `ex_provider_slots_no_overlap` (GiST, `btree_gist`) still stops overlapping slots for one provider.
@@ -235,7 +281,11 @@ still holds the slot and cannot be double-booked at the storage layer. The statu
 plus `cancelled` and `failed`; the model builds both from one vocabulary
 (`services/scheduling/domain/enums.py`). `scheduling_0005` adds the two nullable flag columns and the partial
 index `ix_appointments_schedule_flagged (clinic_id, slot_start) WHERE schedule_change_flagged_at IS NOT NULL`
-(the staff worklist). Partial indexes `ix_provider_slots_held_until` (reaper),
+(the staff worklist). `scheduling_0006` adds the `outbox` (publication `dbz_outbox`): one row per applied appointment
+transition (`appointment.booked`, `.cancelled`, `.rescheduled`, `.checked_in`, `.completed`, `.no_show`), written in
+the same transaction as the status change and its `appointment_status_history` row; the event id is a uuid5 of the
+appointment id, the event type and the post-transition `version`, and an early-return branch (a repeat, a refusal, a
+lost hold) writes nothing. Partial indexes `ix_provider_slots_held_until` (reaper),
 `ix_appointments_pending_unstarted` (starter) and `ix_waitlist_fifo` (FIFO claim) serve the background
 workflows.
 
@@ -244,6 +294,7 @@ workflows.
 ```mermaid
 erDiagram
     VISITS ||--o{ VISIT_STATE_HISTORY : "visit_id (FK)"
+    VISITS ||..o{ OUTBOX : "aggregateid = visit id (same db, no FK)"
     VISITS {
         uuid id PK
         uuid appointment_id UK "uq_visits_appointment; plain UUID (Scheduling)"
@@ -254,7 +305,7 @@ erDiagram
         timestamptz checked_in_at
         timestamptz started_at
         timestamptz completed_at
-        timestamptz downstream_started_at "NULL after completion = sweeper picks it up"
+        timestamptz downstream_started_at "NULL after completion until the visit-downstream consumer starts the workflow (the sweeper is retired)"
         timestamptz billing_settled_at "nullable; set once when billing finalize landed or reached a terminal outcome (visit_0002)"
         varchar(32) billing_outcome "nullable; finalized|no_record|not_finalizable|..."
         timestamptz appointment_settled_at "nullable; set once when the appointment completion landed or reached a terminal outcome"
@@ -268,7 +319,24 @@ erDiagram
         varchar(16) to_status UK "with visit_id (uq_visit_history_visit_to)"
         varchar(64) actor
     }
+    OUTBOX {
+        uuid id PK "deterministic uuid5 event id; ON CONFLICT (id) DO NOTHING"
+        text aggregatetype "routes the topic: appointment|visit|patient|provider"
+        text aggregateid "message key (the aggregate id)"
+        text type "event type, for example appointment.booked"
+        bytea payload "Avro bytes, ids and timestamps only, never PHI"
+        text traceparent "nullable; W3C trace context of the producing span"
+        int schema_version "default 1"
+        timestamptz occurred_at "default now(); the transition's own time"
+    }
 ```
+
+`outbox` (`visit_0003`, Phase 3) holds `visit.completed`, committed with the completion (the id is a uuid5 of the
+visit id and the event type). The payload carries the visit, appointment, clinic, patient and provider ids and the
+check-in, start and completion timestamps. The `downstream_started_at` marker is set by the visit-downstream
+consumer once it has started `visit-completed-<visit id>`, and the partial index `ix_visits_downstream_pending`
+(completed visits whose marker is NULL) now serves only the backfill script
+(`scripts/backfill_visit_completed_events.py`), not a sweeper.
 
 The settlement markers (`visit_0002`) record which downstream steps of a completed visit have landed. NULL
 means "not settled yet" and is what the visit reconciler reads, through the partial index `ix_visits_unsettled
@@ -301,6 +369,79 @@ erDiagram
 ```
 
 Billing never stores the coverage reference itself, only the outcome and a coarse `coverage_kind`.
+
+---
+
+## analytics_db (Phase 3)
+
+```mermaid
+erDiagram
+    PROCESSED_EVENTS {
+        uuid event_id PK "with consumer"
+        text consumer PK "analytics-projection"
+        timestamptz processed_at "default now()"
+    }
+    PATIENTS {
+        uuid patient_id PK
+        uuid clinic_id "plain id, indexed: ix_patients_clinic"
+        timestamptz registered_at "nullable; patient.registered"
+        timestamptz deactivated_at "nullable; patient.deactivated"
+    }
+    APPOINTMENTS {
+        uuid appointment_id PK
+        uuid clinic_id "plain id, indexed: ix_appointments_clinic and (clinic_id, booked_at) and (clinic_id, completed_at)"
+        uuid patient_id "nullable"
+        timestamptz booked_at "nullable; appointment.booked"
+        timestamptz slot_start "nullable; versioned by (occurred_at, slot_start)"
+        timestamptz cancelled_at "nullable"
+        timestamptz checked_in_at "nullable"
+        timestamptz completed_at "nullable"
+        timestamptz no_show_at "nullable"
+        int rescheduled_count "default 0"
+        timestamptz last_event_at "latest occurred_at of any appointment event"
+    }
+    VISITS_COMPLETED {
+        uuid visit_id PK
+        uuid appointment_id "nullable"
+        uuid clinic_id "plain id, indexed: ix_visits_completed_clinic and (clinic_id, completed_at)"
+        timestamptz checked_in_at "nullable"
+        timestamptz started_at "nullable"
+        timestamptz completed_at "NOT NULL; visit.completed"
+    }
+```
+
+Everything here is **derived** from Kafka events by the `analytics-projection` consumer and can be rebuilt by
+replay (`python -m services.analytics.rebuild`). The tables hold ids and timestamps only (no free text, no PHI)
+and no foreign keys; the analytics service holds one database URL and imports no other service. The consumer
+claims `(event_id, consumer)` in `processed_events` and applies the upsert in the **same transaction**, so a
+redelivered event changes nothing and a rolled-back effect rolls its claim back; `processed_events` has no
+retention. Upserts create the row if it is absent (an event for an id the projection has never seen is
+absorbed), facts are first-write-wins, and arrival order does not matter. Counts start at the Phase 3 cutover
+(D-13): earlier patients, appointments and visits are not in these tables.
+
+| View | Definition (also its `COMMENT ON VIEW`) |
+|---|---|
+| `v_active_patients` | Per clinic, patients registered and not deactivated; the total-patients metric |
+| `v_appointments_booked_daily` | Per clinic and UTC day of `booked_at`, appointments booked |
+| `v_completed_visits_daily` | Per clinic and UTC day of `completed_at`, completed visits |
+| `v_cancellation` | Per clinic and UTC day of `booked_at`, `booked` and `cancelled` counts; the rate is `sum(cancelled) / sum(booked)` over a window, and an empty denominator is no data |
+| `v_visit_wait` | One row per completed visit with both timestamps and a non-negative difference: `wait_seconds` = start minus check-in |
+
+`grafana_ro` (SELECT only, default privileges from `db-init`) reads these views for the operations dashboard.
+
+## MongoDB notification collections (Phase 3)
+
+The notification pipeline keeps its delivery log in the shared MongoDB database (`notification_*`, next to the
+audit log), not in Postgres. Documents carry ids, types, statuses and timestamps only; the recipient is a
+patient id.
+
+| Collection | Key / unique index | Fields | Purpose |
+|---|---|---|---|
+| `notification_deliveries` | unique `dedupe_key` (`ux_delivery_dedupe_key`) | `notification_type`, `patient_id`, `appointment_id`, `visit_id`, `event_id`, `status` (`sending`, `sent`, `failed`, `skipped_closed`, `skipped_stale`), `attempts`, `message_id`, `provider_replayed`, `last_error_type`, timestamps | One document per dedupe key; the status machine that stops a second send |
+| `notification_provider_calls` | unique `dedupe_key` (`ux_provider_call_dedupe_key`) | `message_id`, `notification_type`, `patient_id`, `attempt`, `delivered_at` | The fake provider's idempotency store: the insert **is** the delivery, so a replay after a crash finds the stored result instead of sending again |
+| `notification_appointment_state` | unique `appointment_id` (`ux_appointment_state_appointment_id`) | `closed_reason` (`cancelled`, `no_show`, `checked_in`), `closed_at` | Appointments recorded as closed; a reminder for one is skipped at send time |
+
+None of the three has a retention policy.
 
 ---
 
@@ -383,6 +524,9 @@ All Phase 2 references are ids only; reads never enrich across services.
 | `visit_db.visits` | `uq_visits_appointment` | One visit per appointment; a repeated check-in returns the existing visit. |
 | `visit_db.visits` | partial index `ix_visits_unsettled` | The reconciler finds completed visits with an empty settlement marker without scanning the table. |
 | `provider_db.schedule_change_events` | `ck_schedule_change_events_type_valid`; partial index `ix_schedule_change_events_pending` (`WHERE delivered_at IS NULL`) | Only the three known change types are stored; draining the feed stays cheap however many delivered rows exist. |
+| `scheduling_db.outbox`, `visit_db.outbox`, `patient_db.outbox`, `provider_db.outbox` | `PRIMARY KEY (id)` (the deterministic event id), `INSERT ... ON CONFLICT (id) DO NOTHING`; publication `dbz_outbox` on this table only | A retried step cannot write a second event, and the CDC relay can read only the outbox. Insert-only; never pruned |
+| `analytics_db.processed_events` | `PRIMARY KEY (event_id, consumer)` | An event is applied once per consumer, in the effect's own transaction |
+| `notification_deliveries`, `notification_provider_calls` (Mongo) | unique `dedupe_key` | One send per dedupe key at the delivery log and at the provider's idempotency store |
 | `visit_db.visit_state_history` | `uq_visit_history_visit_to` (`visit_id`, `to_status`) | Each visit state is recorded once, however often a transition is retried. |
 | `billing_db.billing_records` | `uq_billing_records_appointment_id` | One billing record per appointment. |
 | `billing_db.billing_status_history` | `uq_billing_history_record_key` (`record_id`, `idempotency_key`) | A retried billing call is a no-op instead of a second transition. `idempotency_key` is nullable and NULLs never collide, so rows written without a key are not covered. |
@@ -409,6 +553,10 @@ All Phase 2 references are ids only; reads never enrich across services.
 - **Outbox, pulled (Phase 2.1)** — `provider_db.schedule_change_events` is written atomically with the change it
   describes and read by Scheduling's poller; the event ids are plain ids with no foreign key, and a delivered
   row is never deleted (a retention job is not part of Phase 2.1).
+- **Outbox, relayed (Phase 3)** — the `outbox` tables are the second, push-shaped outbox: written atomically with
+  the state change, read by Debezium from the WAL, never updated or deleted by the service (no pruning job exists;
+  they are the replay source). Events cross services as ids and timestamps only, so no foreign key and no PHI
+  follows them.
 - **Soft-delete** — every operational table except `provider_slots` (which uses `status`) and the reference
   tables `users`, `specialties`, `provider_specialties` carries `is_active` + `deactivated_at`; deletion is a
   status flip, never a row removal, and it never cascades across services (D-06).

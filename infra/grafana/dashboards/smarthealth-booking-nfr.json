@@ -1,0 +1,548 @@
+{
+  "uid": "smarthealth-booking-nfr",
+  "title": "SmartHealth - Booking and NFR latency",
+  "description": "Booking accept, read and saga-completion latency against the loadtest/nfr.json targets (NFR-02..05). Provisioned from infra/grafana/dashboards; edit the file, not the UI.",
+  "tags": [
+    "smarthealth",
+    "nfr"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "NFR-03 booking accept latency p95",
+      "description": "POST /api/appointments handler (scheduling), p95. Threshold line: book_p95_ms from loadtest/nfr.json. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"smarthealth-scheduling\",handler=\"/api/appointments\",method=\"POST\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "NFR-03 booking accept latency p99",
+      "description": "POST /api/appointments handler (scheduling), p99. Threshold line: book_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"smarthealth-scheduling\",handler=\"/api/appointments\",method=\"POST\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "NFR-04 read latency p95",
+      "description": "GET /api/appointments, /api/appointments/{id} and /api/slots (scheduling), p95. Threshold line: read_p95_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"smarthealth-scheduling\",method=\"GET\",handler=~\"/api/slots|/api/appointments|/api/appointments/\\\\{appointment_id\\\\}\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "NFR-04 read latency p99",
+      "description": "Same handlers, p99. Threshold line: read_p99_ms. Bucket edges sit on 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1, 2.5 and 5 s (libs/observability/http_metrics.py): an edge on every threshold, so whether the quantile is above or below the line is reliable, but its value is only as precise as the bucket it falls in (a quantile with few samples in a bucket reads near the bucket's upper edge). Samples taken before that change had only 0.1, 0.5 and 1 s edges and read coarsely.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"smarthealth-scheduling\",method=\"GET\",handler=~\"/api/slots|/api/appointments|/api/appointments/\\\\{appointment_id\\\\}\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "NFR-05 booking saga completion p95",
+      "description": "booking_saga_seconds{outcome=\"confirmed\"} from the scheduling worker: seconds from the accepted booking to its confirmation. Threshold line: confirm_p95_s.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(booking_saga_seconds_bucket{job=\"smarthealth-scheduling-worker\",outcome=\"confirmed\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "NFR-05 booking saga completion p99",
+      "description": "Same histogram, p99. Threshold line: confirm_p99_s.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(booking_saga_seconds_bucket{job=\"smarthealth-scheduling-worker\",outcome=\"confirmed\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "NFR-02 gateway 5xx ratio",
+      "description": "Share of gateway responses with a 5xx status. Threshold line: error_rate_max. Shows 0 while there are no 5xx responses (no series means no errors).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "((sum(rate(http_requests_total{job=\"smarthealth-gateway\",status=\"5xx\"}[5m]))) or vector(0)) / clamp_min(sum(rate(http_requests_total{job=\"smarthealth-gateway\"}[5m])), 1e-9)",
+          "legendFormat": "5xx ratio",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Outbox insert p95 (write-path cost)",
+      "description": "outbox_insert_seconds: time to serialize an event and insert its outbox row, p95 across every service that writes one (D-04).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(outbox_insert_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}

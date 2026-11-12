@@ -1,0 +1,46 @@
+# Grafana datasources, provisioned from this file (plan 03-15, D-11: dashboards as code).
+# Stable uids: dashboards reference datasources by uid, never by display name.
+# Plan 03-16 adds the read-only analytics Postgres datasource (grafana_ro, password
+# from a Compose secret file) and Jaeger.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  # Read-only analytics store (plan 03-16, D-10, T-3-46): Grafana connects as the
+  # `grafana_ro` role, which can only SELECT in analytics_db. The password is the
+  # Compose secret file (never an env value and never in this repo). sslmode is
+  # disabled because the connection stays on the private Compose network.
+  - name: Analytics Postgres
+    uid: analytics-pg
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: grafana_ro
+    editable: false
+    jsonData:
+      database: analytics_db
+      sslmode: disable
+      postgresVersion: 1500
+      timescaledb: false
+      maxOpenConns: 5
+      maxIdleConns: 2
+    secureJsonData:
+      password: $__file{/run/secrets/grafana_ro.secret}
+
+  # Traces (plan 03-16, D-11): Jaeger's query API on the Compose network, so a trace id
+  # from a log line can be opened from Grafana. Nothing is written to Jaeger from here.
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: false

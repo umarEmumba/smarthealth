@@ -12,9 +12,19 @@ service's database.
 Why loop-aware: asyncpg binds pooled connections to the event loop that
 opened them ("attached to a different loop" otherwise). A cached engine is
 only safe under one long-lived loop (a real uvicorn/gunicorn worker), NOT
-under pytest-asyncio's per-test loops. Each entry records its owning loop
-and is rebuilt when the running loop differs, so the same dependency is
-correct in both production and the test suite.
+under pytest-asyncio's per-test loops. The registry is therefore keyed by
+(database URL, loop): each entry records its owning loop, a new loop gets its
+own engine, and the same dependency is correct in both production and the
+test suite. A consumer thread's persistent loop next to the test's loop uses
+one engine each, with no rebuild on every switch.
+
+Why closed loops are retired (plan 03-23, WR-05): replacing an entry without
+disposing its engine leaves the pool's server connections alive until garbage
+collection, so every per-test loop leaked backends and a long test run crept
+toward the Postgres connection limit. At every lookup, entries whose loop is
+closed are retired: their idle pooled connections are closed and the entry is
+dropped. An entry whose loop is still running is never touched from another
+loop (its connections are in use there).
 
 No declarative `Base` lives here: each service declares its own so Alembic
 autogenerate never sees another service's tables (RESEARCH Pitfall 2).
@@ -23,11 +33,16 @@ autogenerate never sees another service's tables (RESEARCH Pitfall 2).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import socket
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+
+from libs.config import shared_settings
 
 
 @dataclass(slots=True)
@@ -37,7 +52,48 @@ class _Entry:
     session_factory: async_sessionmaker[AsyncSession]
 
 
-_registry: dict[str, _Entry] = {}
+# Keyed by (database URL, id(loop)); the entry's loop is compared by identity on
+# lookup so a recycled id() can never hand one loop another loop's engine.
+_registry: dict[tuple[str, int], _Entry] = {}
+
+
+def _close_server_side(record: object) -> None:
+    """Shut down the socket under one pooled connection record.
+
+    A closed loop cannot run asyncpg's own close/terminate (`terminate()` raises
+    RuntimeError there), but the server notices a shut-down socket and ends the
+    backend. The socket is shut down through a dup of its descriptor so no private
+    socket attribute is needed. Attribute paths (`dbapi_connection._connection`,
+    asyncpg `Connection._transport`) are private; verified against SQLAlchemy 2.0.52
+    and asyncpg 0.31.0, and every step is best-effort (a miss costs an idle
+    connection until garbage collection, the old behaviour, never an error).
+    """
+    raw = getattr(record, "dbapi_connection", None)
+    asyncpg_connection = getattr(raw, "_connection", None)
+    transport = getattr(asyncpg_connection, "_transport", None)
+    sock = transport.get_extra_info("socket") if transport is not None else None
+    if sock is None:
+        return
+    duplicate = socket.socket(fileno=os.dup(sock.fileno()))
+    try:
+        duplicate.shutdown(socket.SHUT_RDWR)
+    finally:
+        duplicate.close()
+
+
+def _retire(entry: _Entry) -> None:
+    """Release a closed loop's engine: drain the idle pool, close each server side."""
+    sync_engine = entry.engine.sync_engine
+    idle = getattr(sync_engine.pool, "_pool", None)  # QueuePool's checked-in records
+    while idle is not None:
+        try:
+            record = idle.get_nowait()
+        except Exception:  # queue.Empty (or an unexpected pool shape): nothing left to drain
+            break
+        with contextlib.suppress(Exception):
+            _close_server_side(record)
+    with contextlib.suppress(Exception):
+        sync_engine.dispose(close=False)
 
 
 def _entry_for(database_url: str) -> _Entry:
@@ -45,15 +101,25 @@ def _entry_for(database_url: str) -> _Entry:
     # site is awaited from inside a running loop, and a missing loop here is
     # a bug that implicit loop creation would mask.
     current_loop = asyncio.get_running_loop()
-    entry = _registry.get(database_url)
+    for key, stale in list(_registry.items()):
+        if stale.loop.is_closed():
+            del _registry[key]
+            _retire(stale)
+    key = (database_url, id(current_loop))
+    entry = _registry.get(key)
     if entry is None or entry.loop is not current_loop:
-        engine = create_async_engine(database_url, pool_pre_ping=True)
+        engine = create_async_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_size=shared_settings.db_pool_size,
+            max_overflow=shared_settings.db_max_overflow,
+        )
         entry = _Entry(
             engine=engine,
             loop=current_loop,
             session_factory=async_sessionmaker(bind=engine, expire_on_commit=False),
         )
-        _registry[database_url] = entry
+        _registry[key] = entry
     return entry
 
 

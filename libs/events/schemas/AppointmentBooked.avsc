@@ -1,0 +1,21 @@
+{
+  "type": "record",
+  "name": "AppointmentBooked",
+  "namespace": "com.smarthealth.events",
+  "doc": "An appointment was confirmed by the booking saga (D-07). Ids, types and timestamps only: no names, contact data or coverage references (PHI-free).",
+  "fields": [
+    {"name": "event_id", "type": {"type": "string", "logicalType": "uuid"}, "doc": "Deterministic uuid5 of aggregate_id:event_type:discriminator; the consumer idempotency key and the outbox primary key."},
+    {"name": "event_type", "type": "string", "doc": "Always appointment.booked for this record."},
+    {"name": "schema_version", "type": "int", "doc": "Envelope/payload version stamped by the producer."},
+    {"name": "occurred_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "aggregate_id", "type": "string", "doc": "The appointment id; also the Kafka message key."},
+    {"name": "appointment_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "clinic_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "patient_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "provider_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "slot_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "slot_start", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "slot_end", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "booked_at", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

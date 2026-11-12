@@ -25,6 +25,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from libs.config import SharedSettings
+from services.analytics.config import AnalyticsSettings
+from services.analytics.repository.models import AnalyticsBase
 from services.billing.config import BillingSettings
 from services.billing.repository.models import BillingBase
 from services.identity.config import IdentitySettings
@@ -64,6 +66,8 @@ OWNED_TABLES: dict[str, set[str]] = {
     },
     "billing": {"billing_records", "billing_status_history"},
     "visit": {"visits", "visit_state_history"},
+    # Plan 03-10: the analytics projections (derived from Kafka events, D-10).
+    "analytics": {"patients", "appointments", "visits_completed"},
 }
 
 BASES = {
@@ -74,6 +78,7 @@ BASES = {
     "scheduling": SchedulingBase,
     "billing": BillingBase,
     "visit": VisitBase,
+    "analytics": AnalyticsBase,
 }
 
 SETTINGS = {
@@ -84,11 +89,14 @@ SETTINGS = {
     "scheduling": SchedulingSettings,
     "billing": BillingSettings,
     "visit": VisitSettings,
+    "analytics": AnalyticsSettings,
 }
 
 # Every deployable service package, including the gateway (which owns no data
-# but must still not import another service: it only ever speaks HTTP).
-ALL_SERVICE_PACKAGES = (*OWNED_TABLES, "gateway")
+# but must still not import another service: it only ever speaks HTTP) and the
+# notification service (plan 03-14: it owns no Postgres tables, its state is the shared
+# Mongo delivery log, so it is not in OWNED_TABLES but must still import no service).
+ALL_SERVICE_PACKAGES = (*OWNED_TABLES, "gateway", "notification")
 
 PHI_COLUMNS = {"date_of_birth", "phone", "address"}
 
@@ -317,3 +325,59 @@ async def test_database_roles_are_isolated(service: str) -> None:
             )
         finally:
             await cross.dispose()
+
+
+OLTP_DATABASES = (
+    "identity_db",
+    "organization_db",
+    "provider_db",
+    "patient_db",
+    "scheduling_db",
+    "billing_db",
+    "visit_db",
+)
+
+
+def test_analytics_package_names_no_oltp_database_and_holds_one_database_url() -> None:
+    """The analytics process computes every metric from analytics_db alone (ANLY-06,
+    plan 03-10): no other service's database name appears anywhere in its package,
+    and its settings carry exactly one database URL."""
+    hits = [
+        f"{path.relative_to(REPO_ROOT)}: {name}"
+        for path in _py_files(SERVICES_DIR / "analytics")
+        for name in OLTP_DATABASES
+        if name in path.read_text(encoding="utf-8")
+    ]
+    assert not hits, hits
+    database_fields = [
+        name
+        for name, field in AnalyticsSettings.model_fields.items()
+        if "database" in name.lower() or "database" in str(field.validation_alias).lower()
+    ]
+    assert database_fields == ["database_url"]
+    assert AnalyticsSettings.model_fields["database_url"].default.endswith("/analytics_db")
+
+
+def test_analytics_imports_no_other_service_and_its_containers_get_one_database_url() -> None:
+    """ANLY-06 / T-3-36 (plan 03-13): the analytics package imports nothing from another
+    `services.<name>` package, and neither Compose container that runs it is handed any
+    database URL other than `ANALYTICS_DATABASE_URL`."""
+    import yaml  # noqa: PLC0415 - test-only dependency already present in the venv
+
+    foreign = {
+        f"{path.relative_to(REPO_ROOT)}: {module}"
+        for path in _py_files(SERVICES_DIR / "analytics")
+        for module in _imported_modules(path)
+        if _service_of(module) not in (None, "analytics")
+    }
+    assert not foreign, sorted(foreign)
+
+    compose = yaml.safe_load((REPO_ROOT / "infra" / "docker-compose.yml").read_text())
+    for name in ("analytics", "analytics-consumer"):
+        environment = compose["services"][name]["environment"]
+        urls = {key for key in environment if key.endswith("DATABASE_URL")}
+        assert urls == {"ANALYTICS_DATABASE_URL"}, (name, urls)
+        assert "analytics_db" in environment["ANALYTICS_DATABASE_URL"]
+        assert environment["ANALYTICS_DATABASE_URL"].startswith("postgresql+asyncpg://analytics_svc:")
+        # The consumer's Prometheus port is internal only (it binds 0.0.0.0 in the container).
+        assert "ports" not in compose["services"][name]

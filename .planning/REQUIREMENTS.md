@@ -53,41 +53,41 @@ Requirements for the Part A milestone (core operational platform). Each maps to 
 
 ### Notifications (NOTIF)
 
-- [ ] **NOTIF-01**: Booking, cancellation, and reschedule each trigger a patient notification, delivered asynchronously (never blocking the booking transaction)
-- [ ] **NOTIF-02**: Appointment reminders are scheduled and delivered ahead of the appointment
-- [ ] **NOTIF-03**: Visit completion can schedule a follow-up reminder
-- [ ] **NOTIF-04**: Notification delivery is retried on failure and does not double-send on retry
+- [x] **NOTIF-01**: Booking, cancellation, and reschedule each trigger a patient notification, delivered asynchronously (never blocking the booking transaction)
+- [x] **NOTIF-02**: Appointment reminders are scheduled and delivered ahead of the appointment
+- [x] **NOTIF-03**: Visit completion can schedule a follow-up reminder
+- [x] **NOTIF-04**: Notification delivery is retried on failure and does not double-send on retry
 
 ### Event-Driven Backbone & Background Processing (EVENT)
 
-- [ ] **EVENT-01**: Domain events (appointment booked/cancelled/rescheduled, provider schedule change, visit completed, analytics) are published to Kafka with a registered schema
-- [ ] **EVENT-02**: Events reach Kafka via a transactional outbox so a database commit and its event are never out of sync (no dual-write)
-- [ ] **EVENT-03**: Event consumers are idempotent and safe against duplicate/at-least-once delivery
-- [ ] **EVENT-04**: Background tasks (notifications, follow-ups, projections) run on Celery + RabbitMQ, independently from user-facing request flows
-- [ ] **EVENT-05**: Failed background tasks are retried with a dead-letter path for poison messages
+- [x] **EVENT-01**: Domain events (appointment booked/cancelled/rescheduled, provider schedule change, visit completed, analytics) are published to Kafka with a registered schema
+- [x] **EVENT-02**: Events reach Kafka via a transactional outbox so a database commit and its event are never out of sync (no dual-write)
+- [x] **EVENT-03**: Event consumers are idempotent and safe against duplicate/at-least-once delivery
+- [x] **EVENT-04**: Background tasks (notifications, follow-ups, projections) run on Celery + RabbitMQ, independently from user-facing request flows *(Phase 3 note, user-accepted 2026-11-10: notifications and follow-ups run on Celery + RabbitMQ; analytics projections run on an idempotent Kafka consumer that claims each event in the same transaction as its upsert, because a Celery task cannot share that transaction.)*
+- [x] **EVENT-05**: Failed background tasks are retried with a dead-letter path for poison messages
 
 ### Analytics (ANLY)
 
-- [ ] **ANLY-01**: System reports total patients
-- [ ] **ANLY-02**: System reports appointments booked over time
-- [ ] **ANLY-03**: System reports completed visits
-- [ ] **ANLY-04**: System reports cancellation rate
-- [ ] **ANLY-05**: System reports average wait time
-- [ ] **ANLY-06**: Analytics are derived from the event stream (not by polling the transactional database on the hot path)
+- [x] **ANLY-01**: System reports total patients
+- [x] **ANLY-02**: System reports appointments booked over time
+- [x] **ANLY-03**: System reports completed visits
+- [x] **ANLY-04**: System reports cancellation rate
+- [x] **ANLY-05**: System reports average wait time
+- [x] **ANLY-06**: Analytics are derived from the event stream (not by polling the transactional database on the hot path)
 
 ### Observability & Reliability (OBS)
 
-- [ ] **OBS-01**: All services expose Prometheus metrics surfaced in Grafana dashboards for critical flows
-- [ ] **OBS-02**: Requests and workflows are traced end-to-end with OpenTelemetry, viewable in Jaeger, including trace-context propagation across async boundaries (Kafka, Celery, Temporal)
-- [ ] **OBS-03**: Structured logs exist for booking, availability sync, billing, notifications, and background workers, enabling failure diagnosis
+- [x] **OBS-01**: All services expose Prometheus metrics surfaced in Grafana dashboards for critical flows
+- [x] **OBS-02**: Requests and workflows are traced end-to-end with OpenTelemetry, viewable in Jaeger, including trace-context propagation across async boundaries (Kafka, Celery, Temporal)
+- [x] **OBS-03**: Structured logs exist for booking, availability sync, billing, notifications, and background workers, enabling failure diagnosis
 - [x] **OBS-04**: The full stack runs locally via Docker Compose with health checks
 
 ### Architecture & Decision Dashboard (DASH)
 
 - [x] **DASH-01**: A self-contained HTML dashboard presents the system architecture diagram
 - [x] **DASH-02**: The dashboard documents each major technology/design decision with alternatives considered and the reasoning for the choice
-- [ ] **DASH-03**: The dashboard shows the key data and event flows (booking, cancel/reschedule, visit lifecycle, notifications, analytics)
-- [ ] **DASH-04**: The dashboard includes an anticipated evaluation Q&A section with prepared answers, and is updated at each phase boundary
+- [x] **DASH-03**: The dashboard shows the key data and event flows (booking, cancel/reschedule, visit lifecycle, notifications, analytics)
+- [x] **DASH-04**: The dashboard includes an anticipated evaluation Q&A section with prepared answers, and is updated at each phase boundary
 
 ### Non-Functional Requirements (NFR)
 
@@ -178,26 +178,26 @@ Explicitly excluded to prevent scope creep.
 | VISIT-05 | Phase 2 | Pending |
 | BILL-01 | Phase 2 | Pending |
 | BILL-02 | Phase 2 | Pending |
-| EVENT-01 | Phase 3 | Pending |
-| EVENT-02 | Phase 3 | Pending |
-| EVENT-03 | Phase 3 | Pending |
-| EVENT-04 | Phase 3 | Pending |
-| EVENT-05 | Phase 3 | Pending |
-| NOTIF-01 | Phase 3 | Pending |
-| NOTIF-02 | Phase 3 | Pending |
-| NOTIF-03 | Phase 3 | Pending |
-| NOTIF-04 | Phase 3 | Pending |
-| ANLY-01 | Phase 3 | Pending |
-| ANLY-02 | Phase 3 | Pending |
-| ANLY-03 | Phase 3 | Pending |
-| ANLY-04 | Phase 3 | Pending |
-| ANLY-05 | Phase 3 | Pending |
-| ANLY-06 | Phase 3 | Pending |
-| OBS-01 | Phase 3 | Pending |
-| OBS-02 | Phase 3 | Pending |
-| OBS-03 | Phase 3 | Pending |
-| DASH-03 | Phase 3 | Pending |
-| DASH-04 | Phase 3 | Pending |
+| EVENT-01 | Phase 3 | Complete |
+| EVENT-02 | Phase 3 | Complete |
+| EVENT-03 | Phase 3 | Complete |
+| EVENT-04 | Phase 3 | Complete |
+| EVENT-05 | Phase 3 | Complete |
+| NOTIF-01 | Phase 3 | Complete |
+| NOTIF-02 | Phase 3 | Complete |
+| NOTIF-03 | Phase 3 | Complete |
+| NOTIF-04 | Phase 3 | Complete |
+| ANLY-01 | Phase 3 | Complete |
+| ANLY-02 | Phase 3 | Complete |
+| ANLY-03 | Phase 3 | Complete |
+| ANLY-04 | Phase 3 | Complete |
+| ANLY-05 | Phase 3 | Complete |
+| ANLY-06 | Phase 3 | Complete |
+| OBS-01 | Phase 3 | Complete |
+| OBS-02 | Phase 3 | Complete |
+| OBS-03 | Phase 3 | Complete |
+| DASH-03 | Phase 3 | Complete |
+| DASH-04 | Phase 3 | Complete |
 | NFR-01 | Phase 2.1 | Targets defined; measurement Phase 3 |
 | NFR-02 | Phase 2.1 | Targets defined; measurement Phase 3 |
 | NFR-03 | Phase 2.1 | Targets defined; measurement Phase 3 |

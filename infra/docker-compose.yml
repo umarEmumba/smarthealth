@@ -5,7 +5,10 @@ name: smarthealth
 # Temporal/Jaeger/Prometheus/Grafana were scaffolding in Phase 1. From Phase 2
 # Temporal is live: the scheduling and visit APIs start workflows on it and the
 # scheduling-worker / visit-worker containers execute them. Kafka/RabbitMQ stay
-# scaffolding until Phase 3.
+# scaffolding until Phase 3. Phase 3 (plan 03-05) adds the CDC relay: Postgres
+# logical decoding, Kafka Connect with Debezium (`connect`, registered by
+# `connect-init`), pre-created topics (`kafka-init`) and deploy-time schema
+# registration (`schema-init`).
 
 # --- Shared building blocks for the application services (YAML anchors) ------
 # Every application container gets the same container-network URLs for the
@@ -18,6 +21,27 @@ x-app-env: &app-env
   MONGO_DB_NAME: ${MONGO_DB_NAME:-smarthealth}
   REDIS_URL: redis://redis:6379/0
   OTLP_ENDPOINT: http://jaeger:4317
+  # Phase 3 (plan 03-05): container-network Kafka and Schema Registry. Services
+  # never produce to Kafka (they write an outbox row, Debezium relays it); the
+  # registry URL is read by every strict serializer and the broker by consumers.
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  # Postgres connection budget (plan 03-23, WR-05). Each process keeps one SQLAlchemy
+  # pool of DB_POOL_SIZE connections plus up to DB_MAX_OVERFLOW burst connections
+  # (libs/config.py defaults are 5 and 10, used by host tests and scripts).
+  # Worst case against the dev Postgres, every term derived by
+  # tests/libs/test_postgres_registry.py::test_compose_connection_budget:
+  #   8 DB-using APIs x 2 gunicorn workers x (5 + 5)               = 160
+  #   scheduling-worker + visit-worker, 1 process x (5 + 5) each   =  20
+  #   visit-consumer + analytics-consumer, 1 process x (2 + 2) each =   8
+  #   Temporal (default + visibility stores, observed)             =  40
+  #   Debezium, 4 connectors x 2 connections (assumed)             =   8
+  #   Grafana, one datasource, maxOpenConns 5                      =   5
+  # Worst-case connection total: 241 of 297 (max_connections 300 minus 3 reserved)
+  # Change a pool value or add a DB-using service and the test fails until this
+  # comment states the new total.
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "5"
 
 x-app-healthcheck: &app-healthcheck
   test:
@@ -32,6 +56,10 @@ x-app-healthcheck: &app-healthcheck
 
 x-app-depends-on: &app-depends-on
   db-init:
+    condition: service_completed_successfully
+  # Schemas are registered by this job and nowhere else (D-05, T-3-10): the
+  # producing services' serializers are strict and fail on an unknown schema.
+  schema-init:
     condition: service_completed_successfully
   postgres:
     condition: service_healthy
@@ -48,7 +76,20 @@ services:
     # own SQLAlchemy pool (default 5 + 10 overflow), so the stock limit of 100 is
     # exhausted by a normal local run (TooManyConnectionsError). 300 leaves
     # headroom without changing any data.
-    command: ["postgres", "-c", "max_connections=300"]
+    #
+    # Phase 3 (plan 03-05, D-01): wal_level=logical lets Debezium decode the WAL
+    # (it keeps the data volume; only a restart is needed). An inactive
+    # replication slot retains WAL (research Pitfall 4; deleting a connector does
+    # NOT drop its slot), so max_slot_wal_keep_size caps what a stopped Connect
+    # can pin on disk.
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - wal_level=logical
+      - -c
+      - max_slot_wal_keep_size=2GB
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-smarthealth}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-local-dev-only}
@@ -86,8 +127,16 @@ services:
       SCHEDULING_DB_PASSWORD: ${SCHEDULING_DB_PASSWORD:-changeme-scheduling-local-dev-only}
       VISIT_DB_PASSWORD: ${VISIT_DB_PASSWORD:-changeme-visit-local-dev-only}
       BILLING_DB_PASSWORD: ${BILLING_DB_PASSWORD:-changeme-billing-local-dev-only}
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD:-changeme-analytics-local-dev-only}
     volumes:
       - ./postgres-init:/postgres-init:ro
+    # The Debezium and Grafana read-only role passwords arrive as Compose
+    # secrets (files), never as env values (T-3-06).
+    secrets:
+      - source: debezium_db_password
+        target: debezium.properties
+      - source: grafana_ro_password
+        target: grafana_ro.secret
     entrypoint: ["bash", "/postgres-init/create-service-databases.sh"]
     restart: "no"
 
@@ -193,6 +242,104 @@ services:
       retries: 10
       start_period: 20s
 
+  # One-shot, idempotent topic creation (plan 03-05, Pitfall 17): auto-created
+  # topics get one partition and default retention, so every topic is created
+  # here with explicit partitions and unlimited retention.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.13
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./kafka:/kafka-init:ro
+    entrypoint: ["bash", "/kafka-init/create-topics.sh"]
+    restart: "no"
+
+  # One-shot deploy-time schema registration (plan 03-05, D-05): the ONLY writer
+  # of the Schema Registry. Registers every catalogue schema (BACKWARD checked
+  # per subject; an incompatible schema fails the job and blocks the producing
+  # services via x-app-depends-on). Uses the scheduling image only because it
+  # carries the shared `libs` package; it needs no database or secret.
+  schema-init:
+    build:
+      context: ..
+      dockerfile: services/scheduling/Dockerfile
+    command: ["python", "-m", "libs.events.register"]
+    environment:
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+    restart: "no"
+
+  # Kafka Connect + Debezium: the CDC relay (D-01). DOCUMENTED DEVIATION from the
+  # "same Confluent Platform line" rule: cp-kafka-connect:7.6.13 runs Java 11 and
+  # cannot load Debezium 3.x (class-file 61 needs Java 17), so Connect alone runs
+  # the Debezium image; the broker and Schema Registry stay on 7.6.13 and Connect
+  # is only a Kafka client of them. No host port: the REST API (:8083) can create
+  # a connector that reads any database it can log in to, so it stays on the
+  # Compose network (T-3-05). The database password is a Compose secret read by
+  # the FileConfigProvider; no connector JSON, env value or image contains it
+  # (T-3-06). Heap capped: the idle JVM otherwise takes ~950 MiB.
+  connect:
+    image: quay.io/debezium/connect:3.7.1.Final
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: smarthealth-connect
+      CONFIG_STORAGE_TOPIC: smarthealth_connect_configs
+      OFFSET_STORAGE_TOPIC: smarthealth_connect_offsets
+      STATUS_STORAGE_TOPIC: smarthealth_connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx768m
+      CONNECT_CONFIG_PROVIDERS: file
+      CONNECT_CONFIG_PROVIDERS_FILE_CLASS: org.apache.kafka.common.config.provider.FileConfigProvider
+    secrets:
+      - source: debezium_db_password
+        target: debezium.properties
+    # Read-only so a later plan can register ITS connector by name inside this
+    # container: `exec connect bash /connect-init/register-connectors.sh <name>`.
+    volumes:
+      - ./connect:/connect-init:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8083/connectors > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+    restart: unless-stopped
+
+  # One-shot connector registration: PUTs every connector file present and waits
+  # until the connector AND its tasks are RUNNING (Pitfall 2). It starts after the
+  # four producing APIs are healthy because each one's Alembic run creates its
+  # outbox table and publication; only the files present are registered, so later
+  # plans add a connector file without touching Compose.
+  connect-init:
+    image: quay.io/debezium/connect:3.7.1.Final
+    depends_on:
+      connect:
+        condition: service_healthy
+      scheduling:
+        condition: service_healthy
+      visit:
+        condition: service_healthy
+      provider:
+        condition: service_healthy
+      patient:
+        condition: service_healthy
+    environment:
+      CONNECT_URL: http://connect:8083
+    volumes:
+      - ./connect:/connect-init:ro
+    entrypoint: ["bash", "/connect-init/register-connectors.sh"]
+    restart: "no"
+
   # NON-PRODUCTION convenience image per CLAUDE.md's "What NOT to Use" table —
   # auto-provisions Temporal's schema on first boot. Production would use
   # temporalio/server + a dedicated schema-setup job/container instead.
@@ -252,10 +399,22 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-changeme-local-dev-only}
     volumes:
       - grafana_data:/var/lib/grafana
+      # Dashboards as code (plan 03-15, D-11): datasources and the dashboards provider
+      # are provisioned from files, never built by hand; both mounts are read-only.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    # The read-only analytics datasource reads its password from this file through
+    # `$__file{}` (plan 03-16, T-3-46); never an env value.
+    secrets:
+      - source: grafana_ro_password
+        target: grafana_ro.secret
     ports:
       - "${GRAFANA_HOST_PORT:-3000}:3000"
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
+      analytics:
+        condition: service_healthy
 
   # Identity: accounts, token issuance, JWKS. The only service that holds the
   # RSA private key. No host port: reached through the gateway (/api/auth,
@@ -365,6 +524,8 @@ services:
         condition: service_healthy
       billing:
         condition: service_healthy
+      analytics:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck: *app-healthcheck
@@ -446,8 +607,9 @@ services:
     depends_on: *app-depends-on
     healthcheck: *app-healthcheck
 
-  # Visit (D-15/D-16): check-in -> start -> complete; a completion starts the
-  # VisitCompletedWorkflow after its commit. Reached via /api/visits; no host port.
+  # Visit (D-15/D-16): check-in -> start -> complete; a completion commits a
+  # visit.completed outbox row that the visit-consumer turns into the
+  # VisitCompletedWorkflow start (plan 03-09). Reached via /api/visits; no host port.
   visit:
     build:
       context: ..
@@ -467,8 +629,9 @@ services:
         target: visit.secret
 
   # Visit's Temporal worker (D-05): polls visit-tq (downstream fan-out after a
-  # completion) and registers the visit-downstream-sweeper Schedule. Same
-  # heartbeat liveness as scheduling-worker.
+  # completion), registers the visit-reconciler Schedule and deletes the retired
+  # visit-downstream-sweeper Schedule (plan 03-12). Same heartbeat liveness as
+  # scheduling-worker.
   visit-worker:
     build:
       context: ..
@@ -498,6 +661,233 @@ services:
       retries: 6
       start_period: 40s
 
+  # Visit's downstream consumer (plan 03-09, D-03): the visit-downstream group reads
+  # smarthealth.visit.events and starts VisitCompletedWorkflow for each visit.completed
+  # (deterministic workflow id, so a redelivered event starts nothing new). The Visit API
+  # no longer starts downstream work itself. Same image as `visit`, command override.
+  # Its Prometheus metrics server (VISIT_CONSUMER_METRICS_PORT, 9100) binds 0.0.0.0 inside
+  # the container and is deliberately NOT published to the host.
+  visit-consumer:
+    build:
+      context: ..
+      dockerfile: services/visit/Dockerfile
+    command: ["python", "-m", "services.visit.consumer"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *visit-env
+      # one event at a time: a small pool is enough (connection budget at x-app-env)
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "2"
+    depends_on:
+      visit:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    secrets: *visit-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/visit-consumer.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # Analytics (plan 03-13, D-10): the read-only metrics API over analytics_db, reached
+  # through the gateway at /api/analytics (admin: any clinic; front desk: its own
+  # clinic); no host port. It owns analytics_db and has no URL, role or import for any
+  # OLTP database (ANLY-06). Runs Alembic on start.
+  analytics:
+    build:
+      context: ..
+      dockerfile: services/analytics/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment: &analytics-env
+      <<: *app-env
+      ANALYTICS_DATABASE_URL: postgresql+asyncpg://analytics_svc:${ANALYTICS_DB_PASSWORD:-changeme-analytics-local-dev-only}@postgres:5432/analytics_db
+      # D-13: a NEW consumer group starts at the end of the topics, so the metrics count
+      # from go-live and the throw-away events already retained are not projected.
+      ANALYTICS_CONSUMER_START: ${ANALYTICS_CONSUMER_START:-latest}
+    depends_on: *app-depends-on
+    healthcheck: *app-healthcheck
+
+  # Analytics' projection consumer (plan 03-10 code, container added by plan 03-13): the
+  # analytics-projection group reads the patient, appointment and visit topics and keeps
+  # the projections in analytics_db current (idempotent upserts, EVENT-03). Same image as
+  # `analytics`, command override; it starts only after the API ran Alembic. Its
+  # Prometheus metrics server (ANALYTICS_CONSUMER_METRICS_PORT, 9100) binds 0.0.0.0
+  # inside the container and is deliberately NOT published to the host.
+  analytics-consumer:
+    build:
+      context: ..
+      dockerfile: services/analytics/Dockerfile
+    command: ["python", "-m", "services.analytics.consumer"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *analytics-env
+      # one event at a time: a small pool is enough (connection budget at x-app-env)
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "2"
+    depends_on:
+      analytics:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/analytics-consumer.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # --- Notification (plan 03-14): delivery, event triggers, reminders -------------------
+  # One image (services/notification/Dockerfile), four roles. None publishes a host port:
+  # the Celery worker and the consumer serve Prometheus /metrics on 9100 inside the
+  # Compose network only. Broker credentials never travel in environment variables: the
+  # dedicated broker user's password is the Compose secret notification_broker_password
+  # (mounted as /run/secrets/notification_broker.secret), and the administrator
+  # credentials exist in exactly one place, the one-shot rabbitmq-init below. The
+  # crash-injection switch of plan 03-02 is deliberately not set anywhere in this file.
+  # No env_file: nothing here needs a host-oriented .env value.
+
+  # One-shot broker provisioning through the RabbitMQ management API: the dedicated vhost
+  # `smarthealth`, the tag-less user `smarthealth_notification` and its permissions on
+  # that vhost only. Idempotent (PUTs), so a re-run changes nothing.
+  rabbitmq-init:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    command: ["python", "-m", "services.notification.broker_setup"]
+    environment:
+      NOTIFICATION_BROKER_PASSWORD_FILE: /run/secrets/notification_broker.secret
+      NOTIFICATION_RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_DEFAULT_USER:-smarthealth}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-changeme-local-dev-only}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    secrets:
+      - source: notification_broker_password
+        target: notification_broker.secret
+    restart: "no"
+
+  # The Celery delivery worker (threads pool, acks_late, the three notification queues and
+  # the dead-letter queue notifications.dlq). Declares its topology at start. Healthcheck:
+  # its own internal /metrics.
+  notification-celery:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    environment: &notification-env
+      <<: *app-env
+      NOTIFICATION_BROKER_HOST: rabbitmq
+      NOTIFICATION_BROKER_PASSWORD_FILE: /run/secrets/notification_broker.secret
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      rabbitmq-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+    secrets: &notification-secrets
+      - source: notification_broker_password
+        target: notification_broker.secret
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/metrics', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # The notification-trigger Kafka consumer (group notification-trigger, DLQ
+  # smarthealth.dlq.notification-trigger): booking, cancellation and reschedule events
+  # become Celery sends, lifecycle events control the Temporal reminders. A NEW group starts
+  # at the end of the topics (D-13): the retained throw-away events are not turned into
+  # reminders; the start offset is pinned at container start.
+  notification-consumer:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    command: ["python", "-m", "services.notification.consumer"]
+    environment:
+      <<: *notification-env
+      NOTIFICATION_CONSUMER_START: ${NOTIFICATION_CONSUMER_START:-latest}
+    depends_on:
+      rabbitmq-init:
+        condition: service_completed_successfully
+      schema-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    secrets: *notification-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/notification-consumer.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+  # The notification Temporal worker: polls notification-tq, runs ReminderWorkflow and
+  # FollowUpReminderWorkflow; a fired timer publishes the same Celery send as the consumer.
+  notification-temporal-worker:
+    build:
+      context: ..
+      dockerfile: services/notification/Dockerfile
+    command: ["python", "-m", "services.notification.temporal_worker"]
+    environment: *notification-env
+    depends_on:
+      rabbitmq-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    secrets: *notification-secrets
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/notification-temporal-worker.alive') < 30 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
 volumes:
   postgres_data:
   mongo_data:
@@ -520,3 +910,15 @@ secrets:
     file: ./secrets/service-clients/scheduling.secret
   visit_client_secret:
     file: ./secrets/service-clients/visit.secret
+  # Phase 3 infrastructure secrets (plan 03-03 generates them under the
+  # gitignored infra/secrets/infra/). debezium.properties holds `password=<value>`
+  # (read by db-init and, via FileConfigProvider, by Connect); grafana_ro.secret
+  # holds the Grafana read-only role password (read by db-init).
+  debezium_db_password:
+    file: ./secrets/infra/debezium.properties
+  grafana_ro_password:
+    file: ./secrets/infra/grafana_ro.secret
+  # Phase 3 (plan 03-14): the dedicated broker user's password, generated by
+  # scripts/generate_infra_secrets.py. Mounted in the four notification services.
+  notification_broker_password:
+    file: ./secrets/infra/notification_broker.secret

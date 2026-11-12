@@ -1,0 +1,15 @@
+# Dashboards provider (plan 03-15, D-11): every dashboard is a JSON file under
+# infra/grafana/dashboards, mounted read-only at /var/lib/grafana/dashboards.
+# allowUiUpdates: false makes the files the source of truth; a panel edited in the
+# UI is not saved over them.
+apiVersion: 1
+
+providers:
+  - name: smarthealth
+    orgId: 1
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

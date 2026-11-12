@@ -43,10 +43,12 @@ from libs.audit.mongo_indexes import ensure_audit_indexes
 from libs.auth.service_tokens import ServiceTokenProvider, ServiceTokenUnavailable, load_client_secret
 from libs.db.mongo import get_mongo_client
 from libs.db.postgres import get_session_factory
+from libs.events.registry import warm_up
 from libs.http import _get_default_client
 from libs.observability.logging import configure_logging, get_logger
 from libs.observability.otel import configure_tracer_provider
-from libs.temporal import connect_client
+from libs.config import shared_settings
+from libs.temporal import connect_client, metrics_runtime, start_worker_metrics_server
 from libs.temporal_policies import SCHEDULING_TASK_QUEUE
 from services.scheduling.activities.booking import SchedulingActivities
 from services.scheduling.activities.changes import AppointmentChangeActivities
@@ -55,6 +57,7 @@ from services.scheduling.activities.reconcile import ReconcilerActivities
 from services.scheduling.activities.schedule_change import ScheduleChangeActivities
 from services.scheduling.activities.waitlist import WaitlistActivities
 from services.scheduling.config import settings
+from services.scheduling.events import SCHEDULING_EVENT_TYPES
 from services.scheduling.schedules import ensure_schedules
 from services.scheduling.workflows.booking import BookingWorkflow
 from services.scheduling.workflows.cancel import CancelWorkflow
@@ -97,7 +100,9 @@ async def _connect_with_retry() -> Client:
     while True:
         attempt += 1
         try:
-            return await connect_client(lazy=False)
+            return await connect_client(
+                lazy=False, runtime=metrics_runtime(shared_settings.temporal_sdk_metrics_bind)
+            )
         except Exception as exc:  # noqa: BLE001 - any connect failure is retried, then fatal
             if time.monotonic() >= deadline:
                 log.error("worker.temporal_connect_failed", attempts=attempt, error=type(exc).__name__)
@@ -149,6 +154,9 @@ def build_activities(
 async def main() -> int:
     configure_logging()
     configure_tracer_provider("smarthealth-scheduling-worker")
+    # Application metrics on WORKER_METRICS_PORT; the Temporal SDK's own metrics are
+    # served by the client runtime on TEMPORAL_SDK_METRICS_BIND (plan 03-15).
+    start_worker_metrics_server()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -172,6 +180,13 @@ async def main() -> int:
     )
     waitlist = WaitlistActivities(get_session_factory(settings.database_url), get_mongo_client())
     await ensure_audit_indexes(get_mongo_client())
+    try:
+        # The confirm, cancel and reschedule activities write outbox rows; resolve
+        # the schema ids before polling (retried while the registry starts, T-3-04).
+        await warm_up(SCHEDULING_EVENT_TYPES)
+    except Exception as exc:  # noqa: BLE001 - the registry is a start-up dependency; restart
+        log.error("worker.event_registry_unavailable", error=type(exc).__name__)
+        return 1
     try:
         await ensure_schedules(client)
     except Exception as exc:  # noqa: BLE001 - recovery Schedules are required; restart

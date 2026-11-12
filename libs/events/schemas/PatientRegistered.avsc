@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "PatientRegistered",
+  "namespace": "com.smarthealth.events",
+  "doc": "A patient was registered (D-07). Ids and timestamps only: no demographics, contact data or identifiers (PHI-free).",
+  "fields": [
+    {"name": "event_id", "type": {"type": "string", "logicalType": "uuid"}, "doc": "Deterministic uuid5 of aggregate_id:event_type:discriminator; the consumer idempotency key and the outbox primary key."},
+    {"name": "event_type", "type": "string", "doc": "Always patient.registered for this record."},
+    {"name": "schema_version", "type": "int", "doc": "Envelope/payload version stamped by the producer."},
+    {"name": "occurred_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "aggregate_id", "type": "string", "doc": "The patient id; also the Kafka message key."},
+    {"name": "patient_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "clinic_id", "type": {"type": "string", "logicalType": "uuid"}},
+    {"name": "registered_at", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

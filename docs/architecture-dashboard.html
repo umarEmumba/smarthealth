@@ -367,6 +367,8 @@
   .sd-ln { stroke: var(--accent-ink); stroke-width: 1.4; fill: none; }
   .sd-comp { stroke: var(--warn); stroke-dasharray: 5 4; }
   .sd-head { fill: var(--muted); }
+  .sd-grid.sd-wide { grid-template-columns: 1fr; }
+  .sd-wide figure.sd svg { min-width: 720px; }
   .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
   .callout.warn b { color: var(--warn); }
 </style>
@@ -377,10 +379,10 @@
   <div class="wrap">
     <p class="eyebrow">SmartHealth · Part A · MediNova</p>
     <h1>Architecture &amp; Decision Dashboard</h1>
-    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; v3 added Phase 2 (scheduling, visits and billing on Temporal) and v3.1 adds Phase 2.1, the remediation of the Week 1-2 mentor review: an appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, single-use refresh tokens, and quantified NFR targets with a runnable load test.</p>
+    <p class="lede">A living record of how SmartHealth's healthcare-operations backend is built — the system architecture, the reasoning behind each technology choice, the core data and event flows, and prepared answers for evaluation. Updated at every phase boundary; v3 added Phase 2 (scheduling, visits and billing on Temporal), v3.1 added Phase 2.1 (the remediation of the Week 1-2 mentor review: an appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, single-use refresh tokens, and quantified NFR targets with a runnable load test), and v4 adds Phase 3: every state change in the event set is a durable Kafka event written through a transactional outbox and relayed by Debezium, idempotent consumers drive notifications, reminders, visit follow-up and the analytics projections, and every process exposes metrics and joins one trace.</p>
     <div class="meta-row">
       <span>Milestone <b>Part A — Core Platform</b></span>
-      <span>Dashboard <b>v3.1 · Phase 2.1</b></span>
+      <span>Dashboard <b>v4 · Phase 3</b></span>
       <span>Core value <b>reliable scheduling, no corrupted state</b></span>
     </div>
   </div>
@@ -422,7 +424,7 @@
   <!-- ARCHITECTURE -->
   <section id="architecture">
     <div class="sec-head"><span class="sec-num">02</span><h2>System architecture</h2></div>
-    <p class="sec-sub">Phase 1.1 re-delivered the Phase 1 monolith as independently deployable services after the week-1 mentor review. <strong>Phase 2</strong> turns Scheduling into a real service and adds <strong>Visit</strong> and <strong>Billing</strong>: an API Gateway at the edge, seven FastAPI services each with its own PostgreSQL database and role, and two Temporal worker containers (<code>scheduling-worker</code>, <code>visit-worker</code>) that execute the sagas. Tokens are RS256 and verified locally against Identity's JWKS; workers call other services with short-lived, audience-scoped service tokens. MongoDB (<code>audit_log</code>) and Redis are shared cross-cutting infrastructure. Temporal is live; Kafka + Schema Registry and Celery + RabbitMQ still run only as healthy containers until Phase 3. Each layer is marked <span class="chip high" style="display:inline">wired</span> or <span class="chip med" style="display:inline">scaffolding only</span>.</p>
+    <p class="sec-sub">Phase 1.1 re-delivered the Phase 1 monolith as independently deployable services after the week-1 mentor review. <strong>Phase 2</strong> turns Scheduling into a real service and adds <strong>Visit</strong> and <strong>Billing</strong>: an API Gateway at the edge, seven FastAPI services each with its own PostgreSQL database and role, and two Temporal worker containers (<code>scheduling-worker</code>, <code>visit-worker</code>) that execute the sagas. Tokens are RS256 and verified locally against Identity's JWKS; workers call other services with short-lived, audience-scoped service tokens. MongoDB (<code>audit_log</code>) and Redis are shared cross-cutting infrastructure. Temporal is live. <strong>Phase 3</strong> wires Kafka + Schema Registry (with Debezium on Kafka Connect), Celery + RabbitMQ, an analytics service and per-process metrics: the outbox is relayed to Kafka by change data capture, three idempotent consumers drive notifications, visit follow-up and the projections, and every process is scraped by Prometheus. Each layer is marked <span class="chip high" style="display:inline">wired</span> with the phase that wired it.</p>
     <div class="diagram">
 
       <div class="layer">
@@ -468,53 +470,59 @@
         <div class="nodes">
           <div class="node accent"><div class="n-name">identity_db</div><div class="n-tech">PostgreSQL &middot; role identity_svc</div><div class="n-role"><code>users</code></div></div>
           <div class="node accent"><div class="n-name">organization_db</div><div class="n-tech">PostgreSQL &middot; role organization_svc</div><div class="n-role"><code>clinics</code>, <code>departments</code></div></div>
-          <div class="node accent"><div class="n-name">provider_db</div><div class="n-tech">PostgreSQL &middot; role provider_svc</div><div class="n-role"><code>providers</code>, <code>specialties</code>, <code>provider_specialties</code>, <code>availability_templates</code>, <code>schedule_change_events</code></div></div>
-          <div class="node accent"><div class="n-name">patient_db</div><div class="n-tech">PostgreSQL &middot; role patient_svc</div><div class="n-role"><code>patients</code> (PHI columns live only here)</div></div>
-          <div class="node accent"><div class="n-name">scheduling_db</div><div class="n-tech">PostgreSQL &middot; role scheduling_svc</div><div class="n-role"><code>provider_slots</code>, <code>appointments</code> (<code>uq_appointments_active_slot</code>), <code>idempotency_keys</code>, <code>appointment_status_history</code>, <code>waitlist_entries</code></div></div>
-          <div class="node accent"><div class="n-name">visit_db</div><div class="n-tech">PostgreSQL &middot; role visit_svc</div><div class="n-role"><code>visits</code> (one per appointment), <code>visit_state_history</code></div></div>
+          <div class="node accent"><div class="n-name">provider_db</div><div class="n-tech">PostgreSQL &middot; role provider_svc</div><div class="n-role"><code>providers</code>, <code>specialties</code>, <code>provider_specialties</code>, <code>availability_templates</code>, <code>schedule_change_events</code>, <code>outbox</code></div></div>
+          <div class="node accent"><div class="n-name">patient_db</div><div class="n-tech">PostgreSQL &middot; role patient_svc</div><div class="n-role"><code>patients</code> (PHI columns live only here), <code>outbox</code></div></div>
+          <div class="node accent"><div class="n-name">scheduling_db</div><div class="n-tech">PostgreSQL &middot; role scheduling_svc</div><div class="n-role"><code>provider_slots</code>, <code>appointments</code> (<code>uq_appointments_active_slot</code>), <code>idempotency_keys</code>, <code>appointment_status_history</code>, <code>waitlist_entries</code>, <code>outbox</code></div></div>
+          <div class="node accent"><div class="n-name">visit_db</div><div class="n-tech">PostgreSQL &middot; role visit_svc</div><div class="n-role"><code>visits</code> (one per appointment), <code>visit_state_history</code>, <code>outbox</code></div></div>
           <div class="node accent"><div class="n-name">billing_db</div><div class="n-tech">PostgreSQL &middot; role billing_svc</div><div class="n-role"><code>billing_records</code>, <code>billing_status_history</code></div></div>
+          <div class="node accent"><div class="n-name">analytics_db</div><div class="n-tech">PostgreSQL &middot; role analytics_svc &middot; Phase 3</div><div class="n-role">Derived data only: <code>patients</code>, <code>appointments</code>, <code>visits_completed</code> projections, <code>processed_events</code> and five metric views. Rebuildable from the topics.</div></div>
         </div>
         <div class="nodes" style="margin-top:10px">
-          <div class="node accent"><div class="n-name">Shared audit sink</div><div class="n-tech">MongoDB</div><div class="n-role">One append-only <code>audit_log</code> collection written by every service through the shared <code>libs/audit</code> writer; field names only, never PHI values. A dedicated Audit service is Phase 3.</div></div>
+          <div class="node accent"><div class="n-name">Shared audit sink</div><div class="n-tech">MongoDB</div><div class="n-role">One append-only <code>audit_log</code> collection written by every service through the shared <code>libs/audit</code> writer; field names only, never PHI values. Since Phase 3 it also holds the notification delivery log (<code>notification_deliveries</code>). A dedicated Audit service was not built.</div></div>
           <div class="node accent"><div class="n-name">Shared Redis</div><div class="n-tech">Redis</div><div class="n-role">JWT jti denylist (Identity writes, every service reads) and the gateway's rate-limit counters &mdash; one instance, a recorded risk (see below).</div></div>
         </div>
-        <div class="n-role" style="margin-top:10px;color:var(--muted);font-size:12.5px">One Postgres container hosts all seven databases (and Temporal's two). Each role can connect only to its own database; <code>PUBLIC</code> connect is revoked; the idempotent <code>db-init</code> job creates them. No foreign key crosses a service: cross-service references are plain UUIDs.</div>
+        <div class="n-role" style="margin-top:10px;color:var(--muted);font-size:12.5px">One Postgres container hosts all eight service databases (and Temporal's two). It runs with <code>wal_level=logical</code> since Phase 3; the four producing services (Scheduling, Visit, Patient, Provider) each own one insert-only <code>outbox</code> table, the CDC relay's source. Each role can connect only to its own database; <code>PUBLIC</code> connect is revoked; the idempotent <code>db-init</code> job creates them. No foreign key crosses a service: cross-service references are plain UUIDs.</div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Orchestration &mdash; wired, Phase 2</div>
+        <div class="layer-label">Orchestration &mdash; wired, Phase 2 and Phase 3</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>, SDK 1.34.0)</div><div class="n-role">Task queues <code>scheduling-tq</code> and <code>visit-tq</code>. Schedules replace cron: hold reaper, pending-booking starter, schedule-change poller, Scheduling reconciler, visit downstream sweeper, visit reconciler. <code>auto-setup</code> is a local-dev image, not the production topology.</div></div>
+          <div class="node accent"><div class="n-name">Workflow engine</div><div class="n-tech">Temporal (<code>temporalio/auto-setup:1.29.7</code>, SDK 1.34.0)</div><div class="n-role">Task queues <code>scheduling-tq</code>, <code>visit-tq</code> and (Phase 3) <code>notification-tq</code>. Schedules replace cron: hold reaper, pending-booking starter, schedule-change poller (paused on the live server by the user&rsquo;s decision), Scheduling reconciler, visit reconciler; the visit downstream sweeper Schedule was deleted in Phase 3. <code>auto-setup</code> is a local-dev image, not the production topology.</div></div>
           <div class="node accent"><div class="n-name">scheduling-worker</div><div class="n-tech">same image as Scheduling &middot; own container</div><div class="n-role">Booking, Cancel, Reschedule, WaitlistAdvance, ScheduleChange and the maintenance and reconciler workflows. Never runs migrations; starts after its API is healthy; heartbeat-file healthcheck.</div></div>
-          <div class="node accent"><div class="n-name">visit-worker</div><div class="n-tech">same image as Visit &middot; own container</div><div class="n-role">VisitCompleted (billing finalize, appointment completion, follow-up and analytics intents), the sweeper and the reconciler.</div></div>
+          <div class="node accent"><div class="n-name">visit-worker</div><div class="n-tech">same image as Visit &middot; own container</div><div class="n-role">VisitCompleted (billing finalize, appointment completion, follow-up and analytics intents), the reconciler, and a no-op tombstone for the retired sweeper workflow so recorded histories still replay.</div></div>
+          <div class="node accent"><div class="n-name">notification-temporal-worker</div><div class="n-tech">Phase 3 &middot; own container</div><div class="n-role">Runs <code>ReminderWorkflow</code> and <code>FollowUpReminderWorkflow</code> on <code>notification-tq</code>: durable timers that enqueue the Celery send when they fire. Recorded histories and replay tests exist.</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Messaging &amp; background work &mdash; scaffolding only, not yet wired (Phase 3)</div>
+        <div class="layer-label">Messaging &amp; background work &mdash; wired, Phase 3</div>
         <div class="nodes">
-          <div class="node"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry</div><div class="n-role">Containers healthy, no producer/consumer code yet. Transactional-outbox-fed domain events &mdash; and the event-fed local copies that will replace today's synchronous reference checks &mdash; are Phase 3 scope.</div></div>
-          <div class="node"><div class="n-name">Task queue</div><div class="n-tech">Celery + RabbitMQ</div><div class="n-role">Containers healthy, no tasks defined yet. In Phase 2 notifications and follow-ups are stub activities (the seam); Phase 3 moves their bodies onto Celery.</div></div>
+          <div class="node accent"><div class="n-name">Outbox + CDC relay</div><div class="n-tech">Postgres outbox &rarr; Debezium on Kafka Connect</div><div class="n-role">Scheduling, Visit, Patient and Provider insert one outbox row in the same transaction as the state change; four Debezium connectors (one per outbox database, each with its own replication slot) read the write-ahead log and publish to Kafka. No service holds a relay loop. Connect runs <code>quay.io/debezium/connect:3.7.1.Final</code>, a deliberate deviation from the Confluent image line (see the decision card).</div></div>
+          <div class="node accent"><div class="n-name">Event log</div><div class="n-tech">Kafka (KRaft) + Schema Registry &middot; 7.6.13</div><div class="n-role">Four aggregate topics (appointment, visit, patient, provider; a test-only probe topic besides), 3 partitions, <code>retention.ms=-1</code>, key = aggregate id. Ten Avro event types, one subject each, BACKWARD, registered only by <code>schema-init</code>. A dead-letter topic per consumer group. Payloads carry ids and timestamps only.</div></div>
+          <div class="node accent"><div class="n-name">Three consumer groups</div><div class="n-tech">Kafka consumers &middot; one container each</div><div class="n-role"><code>visit-downstream</code> starts the visit workflow; <code>notification-trigger</code> turns events into Celery sends and reminder workflows; <code>analytics-projection</code> claims the event id and upserts in one transaction. The offset is committed after the effect; poison messages go to the group&rsquo;s dead-letter topic; an outage is retried with capped backoff and, after the cap, dead-lettered as <code>TransientExhausted</code> for recovery.</div></div>
+          <div class="node accent"><div class="n-name">Task queue</div><div class="n-tech">Celery 5.6.3 + RabbitMQ 4.3</div><div class="n-role">One task, <code>notifications.send</code>, on queues <code>notifications.booking</code>, <code>.reminder</code> and <code>.followup</code>; threads pool, <code>acks_late</code>, exponential retry, a dead-letter exchange to <code>notifications.dlq</code>. The channel is a fake provider with its own idempotency store; no real SMS or email provider is integrated.</div></div>
+          <div class="node accent"><div class="n-name">Analytics service</div><div class="n-tech">FastAPI &middot; read-only &middot; Phase 3</div><div class="n-role"><code>/api/analytics</code> for admin and front desk over <code>analytics_db</code>: total patients, appointments booked, completed visits, cancellation rate and average wait (check-in to visit start). Metrics count from go-live (analytics start at cutover).</div></div>
         </div>
       </div>
       <div class="flow-arrow">&#9662;</div>
 
       <div class="layer">
-        <div class="layer-label">Observability (cross-cutting) &mdash; tracing and metrics wired per service, dashboards Phase 3</div>
+        <div class="layer-label">Observability (cross-cutting) &mdash; wired, Phase 1.1 to Phase 3</div>
         <div class="nodes">
-          <div class="node accent"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">One Prometheus scrape job per API service (eight <code>smarthealth-&lt;service&gt;</code> jobs incl. billing and visit); the two workers have no HTTP listener and no metrics yet. The gateway serves <code>/metrics</code> only on an internal listener (:9100, never published). Grafana dashboards are not yet built (Phase 3, OBS-01..03).</div></div>
-          <div class="node accent"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry (OTLP)</div><div class="n-role">Traces are now connected across services: a provider create produced one trace spanning gateway, provider, organization and (JWKS fetch) identity, confirmed through Jaeger's query API. Body capture is disabled. Connected HTTP&rarr;Temporal&rarr;Kafka&rarr;Celery tracing is Phase 3 scope.</div></div>
+          <div class="node accent"><div class="n-name">Metrics</div><div class="n-tech">Prometheus + Grafana</div><div class="n-role">Prometheus scrapes 20 targets across 17 jobs: the eight HTTP APIs and analytics, each Temporal worker on its application port and its SDK port, the three Kafka consumers, <code>notification-celery</code> and RabbitMQ. Consumer and worker metrics ports exist only inside the Compose network; the gateway serves <code>/metrics</code> only on an internal listener (:9100, never published). Four Grafana dashboards are provisioned from files (booking and NFR, events, notifications, operations) and checked by a static test; they were exercised through Grafana&rsquo;s query API, and nobody has looked at them in a browser.</div></div>
+          <div class="node accent"><div class="n-name">Tracing</div><div class="n-tech">Jaeger + OpenTelemetry (OTLP)</div><div class="n-role">Traces are now connected across services: a provider create produced one trace spanning gateway, provider, organization and (JWKS fetch) identity, confirmed through Jaeger's query API. Body capture is disabled. Since Phase 3 one booking is one connected trace across HTTP, Temporal, Kafka and Celery: a booking sent with a known trace id produced one Jaeger trace of 57 spans across 12 services (trace id <code>e839d1a9ec7d48e435d09abb68881b00</code>), read through Jaeger&rsquo;s HTTP API by an automated test. Nobody has yet viewed it in the Jaeger UI.</div></div>
           <div class="node accent"><div class="n-name">Logs</div><div class="n-tech">structlog JSON</div><div class="n-role">Every log line carries trace_id/span_id; identifiers only, no PHI field values &mdash; enforced by a dedicated test, not just convention.</div></div>
         </div>
       </div>
 
     </div>
-    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL &mdash; now in the database of the service that owns it; everything append-heavy or schema-flexible (audit, visit records, notification logs, analytics projections) lives in MongoDB.</div>
+    <div class="callout"><b>Ownership rule of thumb:</b> anything the saga must reason about for correctness (patients, providers, appointments, slots, billing, the outbox) lives in PostgreSQL &mdash; now in the database of the service that owns it; everything append-heavy or schema-flexible (the audit log and the notification delivery log) lives in MongoDB; the analytics projections are derived data in their own PostgreSQL database, <code>analytics_db</code>.</div>
     <div class="callout"><b>Modeling assumption &mdash; accounts vs. profiles (D-04):</b> login accounts live in <strong>Identity</strong> (<code>users</code>: email, password hash, role, clinic_id); operational profiles live in <strong>Patient</strong> and <strong>Provider</strong>. A profile stores <code>user_id</code> as a plain nullable UUID (no foreign key), validated against Identity at write time. This lets front-desk/admin create a patient with no login (walk-in, phone-booked) while self-registering patient accounts (IAM-01) still work, and it keeps PHI out of Identity and credentials out of Patient and Provider. Creating a profile never creates the account.</div>
-    <div class="callout warn"><b>Interim mechanisms &mdash; Phase 3 replaces them.</b> Phase 2 ships deliberate stand-ins, each labelled: <strong>(1)</strong> the <strong>pending-booking starter</strong> and the <strong>visit downstream sweeper</strong> recover a workflow start lost between a database commit and <code>start_workflow</code> &mdash; <em>Phase 3 replaces</em> them with a transactional <strong>outbox</strong>; <strong>(2)</strong> notification, follow-up and analytics steps are <strong>stubs</strong> (a PHI-free log line plus an audit entry) &mdash; <em>Phase 3 replaces</em> them with Celery jobs and Kafka events; <strong>(3)</strong> clients <strong>poll</strong> status URLs &mdash; <em>Phase 3 replaces</em> polling with events; <strong>(4)</strong> Temporal runs from the <code>auto-setup</code> image &mdash; the <em>production topology</em> is <code>temporalio/server</code> with a separate schema job. Also open: workers expose no metrics; Mongo audit is written after the Postgres commit and is not atomic with it (WR-04); the waitlist tries at most 5 entries per freed slot and has no priority.</div>
-    <div class="callout warn"><b>Phase 2.1 &mdash; what is only a target, what is interim, what is open.</b> <strong>Targets, not results:</strong> NFR-01..08 and a runnable k6 load test exist, but they are <em>not yet measured</em> &mdash; the <code>smoke</code> profile crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector) and <code>sustained</code> and <code>burst</code> have never run, and the local single-instance stack is not claimed to meet NFR-01 or NFR-02 (Phase 3 measures). <strong>Interim:</strong> audit writes after a committed step are non-fatal (an entry can be lost if Mongo is down at that instant; the transition is durable in <code>appointment_status_history</code>) until the Phase 3 outbox; schedule changes (15 s) and reconcilers (60 s) are polled, not event-driven. <strong>Open risks:</strong> cancel and reschedule billing is still bounded (<code>*_incomplete:billing_pending</code>, for an operator) &mdash; only visit billing retries open-endedly; a slot still held at the schedule-change second pass gets no third pass; reconcilers are oldest-first with a batch cap and no per-row backoff; waitlist entries of a deactivated provider are untouched; delivered change events are never purged; <code>no_show</code> is automated only and pre-2.1 visits settle as <code>not_checked_in</code> with no backfill; refresh tokens are single-use, so clients must store the rotated token; the full load profiles (<code>sustained</code>, <code>burst</code>) have never run, and <code>smoke</code> crossed its latency thresholds on the real stack.</div>
+    <div class="callout warn"><b>Interim mechanisms after Phase 3.</b> Phase 3 retired one Phase 2 stand-in and deliberately kept the rest, each for a stated reason: <strong>(1)</strong> the <strong>visit downstream sweeper</strong> is <em>retired</em>: <code>visit.completed</code> is committed with the transition and is the only downstream trigger (the visit worker deletes the Schedule at every start; the workflow class stays as a no-op tombstone so recorded histories still replay); <strong>(2)</strong> the <strong>pending-booking starter</strong> stays: it recovers a workflow start lost after the accept commit, and the accept path writes no outbox row (it must not gain work), so no event exists for a pending appointment; <strong>(3)</strong> the <strong>hold reaper</strong> stays: an expired hold is the absence of an event; <strong>(4)</strong> the Scheduling and Visit <strong>reconcilers</strong> stay: none of their triggers is an event (the no-show sweep itself emits <code>appointment.no_show</code>); <strong>(5)</strong> the Phase 2 notification, follow-up and analytics <strong>activities</strong> are still stubs that only log and audit (intent records); delivery is event-driven only, so nothing is sent twice; <strong>(6)</strong> clients still <strong>poll</strong> status URLs, because the 202 contract did not change; <strong>(7)</strong> the <strong>schedule-change poller</strong> stays paused on the live Temporal server by the user&rsquo;s decision, and <code>provider.schedule_changed</code> is published but not consumed; <strong>(8)</strong> Temporal runs from the <code>auto-setup</code> image &mdash; the <em>production topology</em> is <code>temporalio/server</code> with a separate schema job. Also open: Mongo audit is written after the Postgres commit and is not atomic with it (WR-04; moving audit into the outbox was deferred and the user accepted that); the waitlist tries at most 5 entries per freed slot and has no priority.</div>
+    <div class="callout warn"><b>Phase 2.1 &mdash; what is only a target, what is interim, what is open.</b> <strong>Targets, not results:</strong> NFR-01..08 and a runnable k6 load test exist, but they are <em>not yet measured</em>. In plan 02.1-13 the <code>smoke</code> profile crossed its latency thresholds in both runs against the real stack (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector); on the Phase 3 stack smoke passed every threshold (see the Phase 3 callout below), but <code>sustained</code> and <code>burst</code> have never run, and the local single-instance stack is not claimed to meet NFR-01 or NFR-02. <strong>Interim:</strong> audit writes after a committed step are non-fatal (an entry can be lost if Mongo is down at that instant; the transition is durable in <code>appointment_status_history</code>); moving audit into the Phase 3 outbox was deferred (the user accepted that); schedule changes (15 s) and reconcilers (60 s) are polled, not event-driven. <strong>Open risks:</strong> cancel and reschedule billing is still bounded (<code>*_incomplete:billing_pending</code>, for an operator) &mdash; only visit billing retries open-endedly; a slot still held at the schedule-change second pass gets no third pass; reconcilers are oldest-first with a batch cap and no per-row backoff; waitlist entries of a deactivated provider are untouched; delivered change events are never purged; <code>no_show</code> is automated only and pre-2.1 visits settle as <code>not_checked_in</code> with no backfill; refresh tokens are single-use, so clients must store the rotated token; the full load profiles (<code>sustained</code>, <code>burst</code>, <code>contention</code>) have never run.</div>
+    <div class="callout warn"><b>Phase 3 &mdash; what was measured, what is only a target, what is open.</b> <strong>Delivery:</strong> no loss, at-least-once on the wire, effect-level exactly-once. Duplicates on a topic are possible after a hard kill of Connect (measured: 5 duplicates of 11 messages in plan 03-05; 2 copies of one event id in plan 03-17) and every consumer absorbs them. <strong>Load:</strong> NFR-01..08 remain targets that are <em>not yet measured</em>. Only the k6 <code>smoke</code> profile ran: three runs on 10 and 11 November 2026 (a baseline before the producers, one after them, one on the finished stack) passed every threshold, with booking accept p95 of 21.8, 29.3 and 49.1 ms and saga completion p95 of about 0.52 s each time; the host load differed and accept latency crept up across the three runs, so it is the number to watch (the cause was not isolated). <code>sustained</code>, <code>burst</code> and <code>contention</code> were not run: the user deferred them until after Phase 3. <strong>Real provider:</strong> one send per dedupe key holds at the delivery log and at the fake provider&rsquo;s idempotency store; a real SMS or email provider must accept an idempotency key for the same guarantee, otherwise a crash between the provider call and <code>mark_sent</code> can duplicate a send. <strong>Scope:</strong> &ldquo;every state change&rdquo; covers the ten D-07 event types only (billing transitions, waitlist changes, a visit moving to in-progress, and reconciler and hold-reaper actions are not evented); analytics start at cutover (D-13), so <code>total_patients</code> counts only patients registered after go-live and a rebuild replays everything still retained, including throw-away test events. <strong>Open:</strong> <code>provider.schedule_changed</code> is published but not consumed and the poller stays paused; the reminder&rsquo;s later firing inside the same trace was not exercised (the trace is long-lived and can show a wide gap); nobody has looked at the dashboards in a browser or at the connected trace in the Jaeger UI; Schema Registry is a cached write-path dependency (a cold start during a registry outage cannot become ready); replication slots retain WAL while Connect is down (capped at 2 GB; the path after the cap is exceeded was not exercised); the outbox, Kafka topics, <code>processed_events</code> and the delivery log have no retention; Kafka, Schema Registry and the Connect REST API have no authentication on the dev network; <code>auto-setup</code> Temporal is non-production; application and Celery containers run as root (the Semgrep missing-user findings are accepted for now by the user); event-fed local copies were not built, so the synchronous reference checks still make a write depend on the owning service being up; the audit-via-outbox follow-up is deferred.</div>
     <div class="callout"><b>Open deferrals and recorded risks carried from Phase 1.1</b> (none of these is hidden; all are in <code>deferred-items.md</code> and the Phase 1.1 summaries): <strong>(1)</strong> the gateway buffers whole request bodies with no size cap &mdash; the rate limiter bounds request count, not size; <strong>(2)</strong> one shared Redis holds both the denylist and rate-limit counters &mdash; a Redis outage fails the limiter open and token verification closed (503), and a flush would drop revocations; <strong>(3)</strong> service tokens carried no <code>aud</code> claim &mdash; <em>closed in Phase 2</em>: tokens are now audience-scoped and every internal route names its allowed callers; <strong>(4)</strong> application containers run as root; <strong>(5)</strong> real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a human look at the Jaeger UI, and the bootstrap_admin.py admin-creation branch (only its no-op path is tested) have not been verified; <strong>(6)</strong> three flagged assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain holds only through write-time validation (ORG-03), overlapping availability templates remain allowed (PPL-03), and a client combining services may briefly see stale cross-service state (PPL-04). Nothing here is claimed as production-hardened.</div>
   </section>
 
@@ -532,10 +540,10 @@
 
       <div class="card">
         <div class="card-top"><h3>Why Temporal, not Celery, for the saga</h3><span class="chip high">high</span></div>
-        <div class="chosen">Temporal workflows per aggregate owner; Celery keeps single-step jobs (Phase 3)</div>
+        <div class="chosen">Temporal workflows per aggregate owner and for reminders; Celery delivers the single-step jobs</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains/chords &middot; a hand-rolled database state machine with a poller &middot; choreography over Kafka events</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v"><strong>Durable execution:</strong> a booking is five steps across three services; if a worker dies mid-saga the workflow resumes on another worker from its recorded history (proven by the worker-crash test on the Compose Temporal). <strong>Replay:</strong> workflow code is deterministic and replay-tested against recorded histories, and changes go behind <code>workflow.patched</code>. <strong>Compensation</strong> is ordinary code in the workflow (reverse order, forward transitions) instead of callbacks spread over tasks. <strong>Retries and timeouts</strong> are per-activity policies, with business outcomes marked non-retryable. <strong>Schedules</strong> replace cron for the hold reaper, the pending-booking starter and the visit sweeper. Celery would need all of this built by hand on top of at-least-once tasks.</span></p>
-        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">One more runtime with its own determinism discipline (no wall clock, randomness or I/O in workflow code; a sandbox enforces it) and a versioning discipline for in-flight histories. The namespace keeps closed workflows for 24 h only, so the database &mdash; not the workflow id &mdash; is the long-term idempotency arbiter. Celery still gets the discrete jobs (send a reminder, run a follow-up) in Phase 3; in Phase 2 nothing is delegated to it yet.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v"><strong>Durable execution:</strong> a booking is five steps across three services; if a worker dies mid-saga the workflow resumes on another worker from its recorded history (proven by the worker-crash test on the Compose Temporal). <strong>Replay:</strong> workflow code is deterministic and replay-tested against recorded histories, and changes go behind <code>workflow.patched</code>. <strong>Compensation</strong> is ordinary code in the workflow (reverse order, forward transitions) instead of callbacks spread over tasks. <strong>Retries and timeouts</strong> are per-activity policies, with business outcomes marked non-retryable. <strong>Schedules</strong> replace cron for the hold reaper, the pending-booking starter and the reconcilers (the visit sweeper Schedule was retired in Phase 3). Celery would need all of this built by hand on top of at-least-once tasks.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">One more runtime with its own determinism discipline (no wall clock, randomness or I/O in workflow code; a sandbox enforces it) and a versioning discipline for in-flight histories. The namespace keeps closed workflows for 24 h only, so the database &mdash; not the workflow id &mdash; is the long-term idempotency arbiter. Celery gets the discrete jobs: since Phase 3 it delivers every notification, enqueued by a Kafka consumer or by a Temporal reminder timer.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Placement</span><span class="v muted">A workflow lives with the service that owns its aggregate (D-05): booking/cancel/reschedule/waitlist in Scheduling on <code>scheduling-tq</code>, visit completion in Visit on <code>visit-tq</code>; Billing has no workflow. One worker container per service, so activities touch only their own database.</span></p>
       </div>
 
@@ -548,19 +556,19 @@
       </div>
 
       <div class="card">
-        <div class="card-top"><h3>Audit after commit: non-fatal now, outbox later</h3><span class="chip med">Phase 2.1 &middot; S3</span></div>
+        <div class="card-top"><h3>Audit after commit: non-fatal, outbox deferred</h3><span class="chip med">Phase 2.1 &middot; S3</span></div>
         <div class="chosen">A failed audit write after a committed step is logged, never fatal</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Fail the request or workflow when the audit write fails &middot; a local outbox table in each service &middot; the Phase 3 transactional outbox to Kafka only</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">The transition is already durable in <code>appointment_status_history</code> in the same transaction as the state change. Failing the request or the workflow <em>after</em> the commit would tell the caller a lie (a 500 for a booking that confirmed) or end a workflow before its second pass. Compensations also read the appointment&rsquo;s state and do nothing for a committed booking, so a late failure can never undo a confirm. A local outbox would be a second mechanism that Phase 3 replaces anyway.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">If Mongo is down at that instant the audit entry can be lost for good (<code>audit.write_failed</code> is logged with ids and exception type); nothing backfills it. The transactional outbox in Phase 3 is the general fix.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The transition is already durable in <code>appointment_status_history</code> in the same transaction as the state change. Failing the request or the workflow <em>after</em> the commit would tell the caller a lie (a 500 for a booking that confirmed) or end a workflow before its second pass. Compensations also read the appointment&rsquo;s state and do nothing for a committed booking, so a late failure can never undo a confirm. A local outbox would be a second mechanism; Phase 3 built the general one, but moving audit into it was deferred (the user accepted that), because it must not widen the booking accept path.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">If Mongo is down at that instant the audit entry can be lost for good (<code>audit.write_failed</code> is logged with ids and exception type); nothing backfills it. Carrying audit in the outbox is the natural fix and is deferred.</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>Schedule-change delivery: poll an outbox, do not push</h3><span class="chip high">Phase 2.1 &middot; M2</span></div>
         <div class="chosen">Provider writes <code>schedule_change_events</code> atomically; Scheduling polls and acknowledges</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Provider calls Scheduling directly after the change &middot; Provider starts a Temporal workflow &middot; wait for the Phase 3 Kafka event</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">A push is lost if Scheduling or Temporal is down at the moment of the change, and Provider must not call another service&rsquo;s write path. The row commits with the change, stays pending until acknowledged, and a crash between &ldquo;start the workflow&rdquo; and &ldquo;acknowledge&rdquo; simply re-delivers (the start is idempotent). No cursor, because rows can commit out of order. Phase 3 can publish the same rows to Kafka.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Up to one poll interval (15 s) of delay; delivered rows are never purged; a polling Schedule to run and keep paused during feed tests.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">A push is lost if Scheduling or Temporal is down at the moment of the change, and Provider must not call another service&rsquo;s write path. The row commits with the change, stays pending until acknowledged, and a crash between &ldquo;start the workflow&rdquo; and &ldquo;acknowledge&rdquo; simply re-delivers (the start is idempotent). No cursor, because rows can commit out of order. Phase 3 also publishes the change as <code>provider.schedule_changed</code>, which nothing consumes; the pull feed stays the delivery path.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Up to one poll interval (15 s) of delay; delivered rows are never purged; a polling Schedule to run (it is paused on the live Temporal server by the user&rsquo;s decision, and was paused during feed tests).</span></p>
       </div>
 
       <div class="card">
@@ -592,7 +600,84 @@
         <div class="chosen">k6 from a pinned Docker image; targets in <code>loadtest/nfr.json</code></div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Locust or a hand-written asyncio script (adds a dependency) &middot; numbers copied into the PRD, docs and thresholds separately</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v">No package is added to the project (only Docker), and a test fails if the PRD table, <code>docs/nfr.md</code> or the k6 thresholds drift from the JSON. The numbers come from a stated demand model (50,000 requests a day, 60 percent in a 2-hour peak, a 5x peak minute rounded up to 25 per second, a 100 per second opening burst).</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted"><strong>The targets are not yet measured</strong>: the <code>smoke</code> profile crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector) and <code>sustained</code> and <code>burst</code> have never run. The local single-instance stack is not claimed to meet NFR-01 or NFR-02. Phase 3 observability measures them.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted"><strong>The targets are not yet measured</strong>: the <code>smoke</code> profile crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector) and <code>sustained</code> and <code>burst</code> have never run. The local single-instance stack is not claimed to meet NFR-01 or NFR-02. Phase 3 added the metrics and Grafana panels that can measure them, and the smoke profile passed every threshold on the Phase 3 stack in three runs, but <code>sustained</code>, <code>burst</code> and <code>contention</code> were deferred by the user until after Phase 3: nothing here claims a measured NFR.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Outbox relay: CDC with Debezium, not a polling publisher</h3><span class="chip high">Phase 3 &middot; D-01</span></div>
+        <div class="chosen">Debezium reads the Postgres write-ahead log; a service only inserts an outbox row</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">A polling publisher in each service (same outbox table, a relay loop) &middot; publishing to Kafka after the commit (a dual write with a gap)</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The user chose change data capture (D-01). No relay code lives in any service, ordering comes from the log, and there is no polling load on Postgres and no relay loop to make highly available. A service&rsquo;s only job is to insert one outbox row in the same transaction as the state change, so the event exists exactly when the change committed. One connector per outbox database (scheduling, patient, provider, visit), each with its own replication slot and a least-privilege replication role.</span></p>
+        <p class="kv"><span class="k">Cost accepted</span><span class="v muted"><strong>Kafka Connect and logical replication must be operated:</strong> <code>wal_level=logical</code> (one Postgres restart, data survives), a replication slot per database that retains WAL while Connect is down (capped by <code>max_slot_wal_keep_size=2GB</code>; deleting a connector does not drop its slot), connector <em>task</em> state to watch, and delivery that is at-least-once on the wire. Reversing it later means writing a relay and removing the connector configs (costly).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Verification status</span><span class="v muted">Proven on the live stack: a Connect SIGKILL lost nothing (5 duplicates of 11 messages, all absorbed); a booking committed while Connect was stopped arrived once Connect was healthy. Not exercised: the path after a slot exceeds its WAL cap.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Kafka Connect image: Debezium, off the Confluent line (deviation)</h3><span class="chip med">Phase 3 &middot; deviation, accepted</span></div>
+        <div class="chosen"><code>quay.io/debezium/connect:3.7.1.Final</code> for Kafka Connect only; broker and Schema Registry stay on 7.6.13</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted"><code>cp-kafka-connect:7.6.13</code> with Debezium 3.x (cannot load it) &middot; Debezium 2.x on that image (an end-of-life line) &middot; a polling publisher, which needs no Connect at all</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The stack notes&rsquo; rule is that the broker and Schema Registry share one Confluent Platform line; Connect is only a Kafka client, so the rule is about broker versus registry. <code>cp-kafka-connect:7.6.13</code> runs Java 11 and cannot load Debezium 3.x (class-file version 61 needs Java 17; the plugin scan fails with <code>UnsupportedClassVersionError</code>). This <strong>deliberately deviates</strong> from the same Confluent Platform line rule for the Connect image only.</span></p>
+        <p class="kv"><span class="k">Your answer (plan 03-01)</span><span class="v"><strong>Accept all six (Recommended)</strong>: the Connect image deviation was accepted, and the image itself was approved with &ldquo;Approved (Recommended)&rdquo;.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Two image families to pin and update. The broker-to-registry matching, which is the real compatibility risk, is intact.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Projections on a Kafka consumer, not Celery (EVENT-04 deviation)</h3><span class="chip med">Phase 3 &middot; deviation, accepted</span></div>
+        <div class="chosen">Analytics projections run on the <code>analytics-projection</code> Kafka consumer; Celery delivers notifications</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery tasks on RabbitMQ for the projection updates, as the wording of EVENT-04 lists them</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">EVENT-04 lists projections among the background tasks on Celery and RabbitMQ. A stateful upsert needs the idempotency claim in the <em>same database transaction</em> as the effect, which a Kafka consumer with a processed-event table gives and a Celery task does not. Celery covers notifications and follow-up sends.</span></p>
+        <p class="kv"><span class="k">Your answer (plan 03-01)</span><span class="v"><strong>Accept all six (Recommended)</strong>: projections on a Kafka consumer instead of Celery was accepted. The wording of EVENT-04 in <code>REQUIREMENTS.md</code> is the user&rsquo;s decision and was not edited.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">The requirement text and the build disagree until the wording is edited; the deviation is recorded here, in <code>docs/architecture.md</code> (10.8) and in the plan summaries.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Event format: Avro, Schema Registry, strict serializers</h3><span class="chip high">Phase 3 &middot; D-05</span></div>
+        <div class="chosen">Avro, one Schema Registry subject per event type, BACKWARD; the service serializes, Debezium forwards bytes</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">JSON payloads &middot; Avro generated by Debezium from a JSON column &middot; registering schemas at runtime from the services</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Debezium cannot generate registered, evolvable Avro from a JSON payload, so each service serializes its own Avro with a strict serializer (<code>auto.register.schemas=False</code>) into a <code>bytea</code> column and Debezium forwards the bytes unchanged. Only the one-shot <code>schema-init</code> job registers the ten subjects, so a service can never create a subject at runtime. Payloads carry ids and timestamps only, never PHI: a test scans every <code>.avsc</code> for banned field names, and the producers&rsquo; tests check the payload bytes and the raw Kafka bytes for seeded PHI values.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Schema Registry becomes a cached write-path dependency: the first serialization of each event type does a registry lookup, so producers warm their serializers at start-up and a Scheduling worker that cannot warm exits and restarts. Steady state is CPU only, but a cold start during a registry outage cannot become ready. One-way: subjects and consumers depend on the schemas.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Topic per aggregate, key = aggregate id</h3><span class="chip high">Phase 3 &middot; D-06</span></div>
+        <div class="chosen"><code>smarthealth.appointment.events</code>, <code>.visit.events</code>, <code>.patient.events</code>, <code>.provider.events</code></div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">One topic per event type &middot; one topic for everything</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Kafka orders only within a partition. Keyed by the aggregate id, every event of one appointment lands in one partition in order (booked before cancelled); per-event-type topics would lose that. The event type travels in the Avro record name and the <code>eventType</code> header. Three partitions, replication factor 1 (single dev broker) and <code>retention.ms=-1</code>, created by <code>kafka-init</code> because auto-creation would give one partition and default retention.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Events of different aggregates, and on different topics, are not ordered, so the analytics projections are written to tolerate any order (a cancel before its booking); tests apply reversed and shuffled sequences. Infinite retention means the topics grow without bound.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Scope of the claims</span><span class="v muted">The event set (decision D-07 of the Phase 3 context) is ten types: six appointment events, <code>visit.completed</code>, <code>patient.registered</code>, <code>patient.deactivated</code> and <code>provider.schedule_changed</code>. &ldquo;Every state change&rdquo; means those ten; billing transitions, waitlist changes, a visit moving to in-progress and reconciler or hold-reaper actions are not evented. Analytics start at cutover (D-13): events exist only for new activity, so metrics count from go-live and earlier patients, appointments and visits are not backfilled into the stream.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Idempotency by effect type: three flavours</h3><span class="chip high">Phase 3 &middot; D-08</span></div>
+        <div class="chosen">A processed-event claim for database effects, deterministic ids for Temporal starts, a dedupe key for sends</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">One processed-event table for every effect &middot; Kafka offsets alone</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Debezium is at-least-once on the wire, so &ldquo;never lost or duplicated&rdquo; is stated as two claims: no loss, and no duplicate <em>effect</em> (effect-level exactly-once). The topic itself can carry a duplicate. The processed-event table in the same transaction as the effect is exact only for a database effect: analytics claims <code>(event_id, consumer)</code> with <code>INSERT ... ON CONFLICT DO NOTHING</code> in the same transaction as the upsert. Temporal starts use deterministic ids (<code>visit-completed-&lt;id&gt;</code>, <code>reminder-&lt;id&gt;</code>, <code>followup-&lt;id&gt;</code>) with reject-duplicate. Celery sends use a unique <code>dedupe_key</code> at the delivery log <em>and</em> at the provider&rsquo;s idempotency store.</span></p>
+        <p class="kv"><span class="k">Real-provider caveat</span><span class="v">The one-send guarantee needs an idempotency key at the provider. The fake provider honours one (proven with a worker killed between the provider call and <code>mark_sent</code>: the redelivered message was answered from the store and the provider held one call record). A real SMS or email provider that does <strong>not</strong> accept an idempotency key can produce one duplicate send per crash in that window; none is integrated (out of scope).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted"><code>processed_events</code> has no retention: one row per event per consumer, growing without bound.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Reminders: Temporal timers, not Celery ETA or beat</h3><span class="chip high">Phase 3 &middot; D-02</span></div>
+        <div class="chosen">One <code>ReminderWorkflow</code> per appointment on <code>notification-tq</code>; Celery delivers when the timer fires</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery ETA messages &middot; a Celery beat schedule</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">A timer is a workflow: durable, replay-tested, cancellable and movable by signal (cancel on <code>appointment.cancelled</code>, move on a reschedule), with one deterministic id per appointment. A Celery ETA message lives in the broker (lost with it, hard to cancel or move without revoke bookkeeping) and a beat schedule is a cron, not a per-appointment timer. Temporal owns <em>when</em>; Celery owns <em>delivery</em>: the timer&rsquo;s activity enqueues the same <code>notifications.send</code> task the consumer uses (leads of 24 h and 2 h by default; the follow-up fires 3 days after completion).</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">One idle workflow per active appointment, timer-driven, no polling. A reminder for an appointment recorded as closed is skipped. Not exercised: the reminder&rsquo;s later firing inside the same trace (it would take days), so that trace is long-lived and can show a wide gap.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Celery on RabbitMQ 4.3: what it needs</h3><span class="chip med">Phase 3</span></div>
+        <div class="chosen">Threads pool, <code>acks_late</code>, classic queues, 4.3 feature flags off, a dead-letter exchange, a tag-less broker user</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Quorum queues with a delivery limit (the production path) &middot; the broker administrator account for the application</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Celery 5.6.3 refuses to start on RabbitMQ 4.3 with its defaults (<code>transient_nonexcl_queues is deprecated</code>), so remote control, task events, mingle, gossip and heartbeat are switched off. The worker uses the threads pool, <code>acks_late</code>, <code>reject_on_worker_lost</code>, prefetch 1 and JSON only; task arguments are ids, a type, a dedupe key and a timestamp, never a Pydantic object and never PHI. Transient failures retry with exponential backoff (2 s, doubling, up to 5 attempts); permanent ones are rejected without requeue to <code>notifications.dlq</code> through <code>smarthealth.dlx</code>. <code>rabbitmq-init</code> provisions vhost <code>smarthealth</code> and the non-admin user <code>smarthealth_notification</code>, so the application never holds the administrator account.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Classic queues suit a single-node dev stack; quorum queues are the documented production path. The containers run as root (Celery warns about it); the Semgrep missing-user findings are accepted for now by the user.</span></p>
+      </div>
+
+      <div class="card">
+        <div class="card-top"><h3>Visit sweeper retired: visit.completed is the trigger</h3><span class="chip med">Phase 3 &middot; D-03</span></div>
+        <div class="chosen">Commit <code>visit.completed</code> with the transition; a consumer starts the downstream workflow</div>
+        <p class="kv"><span class="k">Alternatives</span><span class="v muted">Keep the sweeper as a second trigger &middot; keep it as a safety net only</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The outbox row commits with the transition, so there is no window in which a visit is completed and its event will never exist; the sweeper&rsquo;s job (find completed visits with no downstream start) is gone. The visit worker deletes the <code>visit-downstream-sweeper</code> Schedule at every start (idempotent), the start-up sweep and its settings are removed, and the workflow class and activity name stay registered as a no-op tombstone so histories already recorded still replay. The other interim mechanisms stay because events do not subsume them: the hold reaper, the pending-booking starter and both reconcilers.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A safety net that Phase 2 verification relied on was removed, so the replacement was proven by kill-between-commit-and-publish tests: after a Visit API SIGKILL, a stopped consumer and a stopped Connect, exactly one <code>visit-completed-&lt;id&gt;</code> execution and the marker, started by the consumer (its own log line is the evidence). Visits completed before Phase 3 are covered by a backfill script; its dry run against the live database found 0 candidates, so it was never applied. A dead-lettered or dropped <code>visit.completed</code> is restarted by the visit reconciler after its grace.</span></p>
       </div>
 
       <div class="card">
@@ -600,7 +685,7 @@
         <div class="chosen">Full cut &mdash; six independently deployable services, one database each</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Keep the Phase 1 modular monolith &middot; lean cut with a merged Provider Directory (Organization + Provider in one service) &middot; full cut (chosen)</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v">The week-1 mentor review asked for a <em>true</em> microservice architecture, so Phase 1.1 re-delivers the working monolith as gateway + Identity + Organization + Provider + Patient + Scheduling (D-01). The boundaries are clear bounded contexts &mdash; the Organization/Provider split was a deliberate preference for finer boundaries over fewer calls. It buys independent deployment and scaling per service, confines PHI to one service and one database (Patient), and a compromised non-Identity service can no longer mint tokens because only Identity holds the signing key. Phase 1 behaviour was carried over and re-tested, with one deliberate change: a provider under a missing department now returns 422 (was 404) per D-05.</span></p>
-        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">The costs are real and accepted: <strong>extra network hops</strong> on every write that crosses a boundary; <strong>availability coupling</strong> from synchronous checks &mdash; a provider write needs Organization (and Identity) up and otherwise fails closed with 503; <strong>no distributed transactions and no cascading deactivation</strong> (D-06), so deactivating a clinic leaves existing references in place and only blocks new ones; clients must combine id-only reads themselves (D-07) because no service enriches another's data; and about six more containers to run locally. Eventual-consistency work that would remove the coupling (event-fed local copies) is deferred to Phase 3 (D-08).</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">The costs are real and accepted: <strong>extra network hops</strong> on every write that crosses a boundary; <strong>availability coupling</strong> from synchronous checks &mdash; a provider write needs Organization (and Identity) up and otherwise fails closed with 503; <strong>no distributed transactions and no cascading deactivation</strong> (D-06), so deactivating a clinic leaves existing references in place and only blocks new ones; clients must combine id-only reads themselves (D-07) because no service enriches another's data; and about six more containers to run locally. Eventual-consistency work that would remove the coupling (event-fed local copies) was deferred to Phase 3 (D-08) and not built there.</span></p>
         <p class="kv"><span class="k">Reversibility</span><span class="v muted">Costly &mdash; merging or splitting services later means moving tables between service databases and rewriting the internal calls between them.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Verification status</span><span class="v muted">Behaviour is covered by in-process suites across all services plus a real-stack smoke test through the published gateway port. Not yet verified: how the synchronous checks behave when a real container goes down mid-request, a cold start from an empty volume, and a person viewing the connected trace in the Jaeger UI.</span></p>
       </div>
@@ -615,10 +700,10 @@
 
       <div class="card">
         <div class="card-top"><h3>Cross-service integrity</h3><span class="chip high">high</span></div>
-        <div class="chosen">Synchronous owner check at write time now; event-fed local copies in Phase 3</div>
+        <div class="chosen">Synchronous owner check at write time; event-fed local copies were not built</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Cross-database foreign keys (not possible across databases) &middot; event-fed local copies of reference data &middot; sagas / distributed transactions</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Once tables live in different databases a foreign key can no longer express "this clinic exists". Kafka and the outbox do not exist until Phase 3 (D-08), so the simplest correct option today is a synchronous GET to the owning service&rsquo;s <code>/internal</code> endpoint at write time (D-05), forwarding the caller&rsquo;s JWT so the callee re-applies RBAC and clinic scope (a 60 s service token is used only where there is no user context). The edges are Identity&rarr;Organization (clinic), Patient&rarr;Organization (clinic) and Patient&rarr;Identity (user), Provider&rarr;Organization (department) and Provider&rarr;Identity (user). A missing or inactive target is <strong>422</strong>; an owner that is unreachable or answers 401/403/5xx is <strong>503</strong> &mdash; so an auth misconfiguration is never mistaken for a missing record &mdash; and in both cases nothing is written (<em>fail closed</em>). Retries are bounded to three attempts with backoff, GET only, transport errors only. Deactivation never cascades (D-06): existing references keep their ids and only new writes pointing at an inactive target are refused. Reads return ids only (D-07); clients combine them.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Writes depend on the owner&rsquo;s availability: a provider write needs Organization and Identity up. Each cross-boundary write pays extra latency. The check happens once, at write time, so a department deactivated afterwards leaves existing providers pointing at it, and a client combining services may briefly see stale state &mdash; both are flagged assumptions awaiting mentor confirmation (ORG-03, PPL-04). Phase 3 removes the availability coupling with event-fed local copies, at the price of an eventual-consistency window. <em>Not yet verified:</em> behaviour against a genuinely failing container (the suites simulate an unreachable owner with a transport that raises ConnectError).</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Once tables live in different databases a foreign key can no longer express "this clinic exists". When this was decided Kafka and the outbox did not exist (D-08), so the simplest correct option was a synchronous GET to the owning service&rsquo;s <code>/internal</code> endpoint at write time (D-05); Phase 3 built the event backbone but not event-fed copies, so the check is unchanged, forwarding the caller&rsquo;s JWT so the callee re-applies RBAC and clinic scope (a 60 s service token is used only where there is no user context). The edges are Identity&rarr;Organization (clinic), Patient&rarr;Organization (clinic) and Patient&rarr;Identity (user), Provider&rarr;Organization (department) and Provider&rarr;Identity (user). A missing or inactive target is <strong>422</strong>; an owner that is unreachable or answers 401/403/5xx is <strong>503</strong> &mdash; so an auth misconfiguration is never mistaken for a missing record &mdash; and in both cases nothing is written (<em>fail closed</em>). Retries are bounded to three attempts with backoff, GET only, transport errors only. Deactivation never cascades (D-06): existing references keep their ids and only new writes pointing at an inactive target are refused. Reads return ids only (D-07); clients combine them.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Writes depend on the owner&rsquo;s availability: a provider write needs Organization and Identity up. Each cross-boundary write pays extra latency. The check happens once, at write time, so a department deactivated afterwards leaves existing providers pointing at it, and a client combining services may briefly see stale state &mdash; both are flagged assumptions awaiting mentor confirmation (ORG-03, PPL-04). Phase 3 did not remove the availability coupling: event-fed local copies were not built, so a write still depends on the owning service being up (they would trade that for an eventual-consistency window). <em>Not yet verified:</em> behaviour against a genuinely failing container (the suites simulate an unreachable owner with a transport that raises ConnectError).</span></p>
       </div>
 
       <div class="card">
@@ -643,7 +728,7 @@
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Celery chains only · hand-rolled DB state machine · AWS Step Functions</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v">Booking is a multi-step transaction (validate &rarr; reserve hold &rarr; billing pre-check &rarr; confirm &rarr; notification intent). Temporal makes it durable and resumable, and models failure recovery as first-class compensation — directly satisfying "partial failures never corrupt scheduling state." See <em>Why Temporal, not Celery</em> above for the Phase 2 rationale as built.</span></p>
         <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Another infra component + a determinism discipline (no wall-clock/random in workflow code). Worth it for the graded reliability core.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Phase 2 status</span><span class="v muted">Wired: Scheduling&rsquo;s booking, cancel, reschedule, waitlist, schedule-change and reconciler workflows and Visit&rsquo;s completion, sweeper and reconciler workflows run on two worker containers. Still the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; it is kept for local dev because its schema auto-provisioning saves set-up time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 2 status</span><span class="v muted">Wired: Scheduling&rsquo;s booking, cancel, reschedule, waitlist, schedule-change and reconciler workflows and Visit&rsquo;s completion and reconciler workflows run on two worker containers (a third, <code>notification-temporal-worker</code>, runs the Phase 3 reminder workflows, and the sweeper workflow was retired). Still the <code>temporalio/auto-setup</code> convenience image (not <code>temporalio/server</code>) &mdash; that image explicitly documents itself as non-production; it is kept for local dev because its schema auto-provisioning saves set-up time. Substituted tag <code>1.29.7</code> (CLAUDE.md's pinned <code>1.31.2</code> does not exist on Docker Hub, verified live against the registry). Labeled non-production per CLAUDE.md's own "What NOT to Use" guidance; switching to <code>temporalio/server</code> + a schema-setup job is the documented upgrade path if a production-shaped deployment is ever required.</span></p>
       </div>
 
       <div class="card">
@@ -667,7 +752,8 @@
         <div class="chosen">Kafka + Schema Registry</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">RabbitMQ only · Postgres LISTEN/NOTIFY · cloud stream (Kinesis)</span></p>
         <p class="kv"><span class="k">Why this</span><span class="v">A durable, replayable log lets analytics, notifications, and audit consume the same events independently and lets a new consumer replay history. Schema Registry keeps event contracts safe to evolve across services.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Heavier to run (KRaft mode, matched Schema Registry version). Justified by the multi-consumer, replay, and scale requirements.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Heavier to run (KRaft mode, matched Schema Registry version). Justified by the multi-consumer, replay, and scale requirements.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 3 status</span><span class="v muted">Wired: four aggregate topics fed by the outbox through Debezium, ten Avro subjects, three consumer groups with dead-letter topics (see the Phase 3 cards below). Broker and Schema Registry stay on the same Confluent Platform line, 7.6.13.</span></p>
       </div>
 
       <div class="card">
@@ -675,14 +761,15 @@
         <div class="chosen">Celery + RabbitMQ</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Kafka consumers as workers · Temporal for every job · Dramatiq / RQ</span></p>
         <p class="kv"><span class="k">Why both, not just Kafka</span><span class="v">Kafka is a <em>log of facts</em>; RabbitMQ/Celery is a <em>work queue</em> for discrete fire-and-forget jobs (send reminder, schedule follow-up) with per-task retry and a dead-letter path. Different jobs, both needed.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Two messaging systems to operate. The responsibility split (below) keeps it defensible.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Two messaging systems to operate. The responsibility split (below) keeps it defensible.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 3 status</span><span class="v muted">Wired for notifications only: one task, <code>notifications.send</code>, delivered by <code>notification-celery</code>. Projections run on a Kafka consumer, not Celery (the EVENT-04 deviation, below).</span></p>
       </div>
 
       <div class="card">
         <div class="card-top"><h3>System of record</h3><span class="chip high">high</span></div>
         <div class="chosen">PostgreSQL &mdash; one database per service</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">MongoDB for everything · MySQL</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant (it lives in <code>scheduling_db</code>), and the transactional outbox will ride the same commit inside the owning service&rsquo;s database. Each service owns its tables in its own database (identity_db, organization_db, provider_db, patient_db, scheduling_db) &mdash; see <em>Database per service</em>.</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">Transactions + real constraints are how double-booking is made <em>impossible</em>, not merely unlikely. An exclusion constraint on (provider, time-range) is the enforced invariant (it lives in <code>scheduling_db</code>), and the transactional outbox rides the same commit inside the owning service&rsquo;s database. Each service owns its tables in its own database (identity_db, organization_db, provider_db, patient_db, scheduling_db) &mdash; see <em>Database per service</em>.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Rigid schema vs documents &mdash; which is exactly why non-transactional data goes to MongoDB instead. With the split, referential integrity across services is no longer enforced by the database; see <em>Cross-service integrity</em>.</span></p>
       </div>
 
@@ -690,7 +777,7 @@
         <div class="card-top"><h3>Operational document store</h3><span class="chip high">high</span></div>
         <div class="chosen">MongoDB</div>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Postgres JSONB · Elasticsearch</span></p>
-        <p class="kv"><span class="k">Why this</span><span class="v">Audit trail, visit/service records, notification logs, and analytics projections are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean. Delivered in Phase 1 as an append-only <code>audit_log</code> collection, and since Phase 1.1 one shared collection written by every service through the shared audit library (D-02; a dedicated Audit service is Phase 3) (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
+        <p class="kv"><span class="k">Why this</span><span class="v">The audit trail and the notification delivery log are append-heavy and schema-flexible — a document model fits and keeps the transactional schema clean (the analytics projections are derived, relational data and live in their own PostgreSQL database, <code>analytics_db</code>). Delivered in Phase 1 as an append-only <code>audit_log</code> collection, and since Phase 1.1 one shared collection written by every service through the shared audit library (D-02; a dedicated Audit service was not built) (locked shape: actor_id/actor_role/action/entity_type/entity_id/clinic_id/timestamp/trace_id/outcome/changes-field-names-only) with indexes on (entity_type,entity_id,timestamp), (actor_id,timestamp), (clinic_id,timestamp).</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">A second datastore to run. Confirmed in Phase 1 that the append-heavy, no-retention-policy-yet audit use case fits a document model well; JSONB remains a valid simpler alternative if the volume never grows beyond what a single Postgres table would need.</span></p>
       </div>
 
@@ -716,7 +803,8 @@
         <p class="kv"><span class="k">Decision</span><span class="v">Instrument once with OpenTelemetry; export traces to Jaeger over <strong>OTLP</strong> (not the deprecated Jaeger exporter), metrics to Prometheus, visualize in Grafana. Since Phase 1.1 traces connect across services (W3C <code>traceparent</code> on every internal hop) and every service has its own OTel service name and its own Prometheus scrape job.</span></p>
         <p class="kv"><span class="k">Alternatives</span><span class="v muted">Vendor APM agents &middot; logs-only correlation by request id &middot; the deprecated Jaeger-native exporter</span></p>
         <p class="kv"><span class="k">Why it matters</span><span class="v muted">Observability is explicitly graded. With six services a request is only debuggable if it is one connected trace; the hard part is propagating context across hops &mdash; see the consistency patterns below.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Tradeoff</span><span class="v muted">Every internal hop must propagate W3C context explicitly (an httpx client span plus the propagator), and in-process tests need the propagator path because the ASGI test transport is not instrumented. A connected trace for a provider create was confirmed through Jaeger&rsquo;s query API; nobody has yet looked at it in the Jaeger UI.</span></p>
+        <p class="kv"><span class="k">Tradeoff</span><span class="v muted">Every internal hop must propagate W3C context explicitly (an httpx client span plus the propagator), and in-process tests need the propagator path because the ASGI test transport is not instrumented. A connected trace for a provider create was confirmed through Jaeger&rsquo;s query API; nobody has yet looked at it in the Jaeger UI.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Phase 3 status</span><span class="v muted">Every process is scraped (20 Prometheus targets), four Grafana dashboards are provisioned from files, and one booking is one trace across HTTP, Temporal, Kafka and Celery (57 spans, 12 services). The consumers extract <code>traceparent</code> from the Kafka header themselves, because the OpenTelemetry confluent-kafka instrumentation records a link, not a parent, and would make two traces.</span></p>
       </div>
 
     </div>
@@ -730,14 +818,14 @@
     <div class="two-col">
       <div class="card">
         <div class="card-top"><h3>Who does what</h3></div>
-        <p class="kv"><span class="k">Temporal</span><span class="v">Multi-step <em>orchestration</em> with compensation — the booking / cancel / reschedule / waitlist / visit-completion workflows (live since Phase 2). Knows the whole transaction.</span></p>
-        <p class="kv"><span class="k">Kafka</span><span class="v">Durable <em>facts that already happened</em> — broadcast to independent consumers (analytics, audit, notifications). Replayable.</span></p>
-        <p class="kv" style="margin-bottom:0"><span class="k">Celery</span><span class="v">Discrete <em>single-step jobs</em>, usually triggered by a Temporal activity or a Kafka consumer — send an email, compute a projection.</span></p>
+        <p class="kv"><span class="k">Temporal</span><span class="v">Multi-step <em>orchestration</em> with compensation — the booking / cancel / reschedule / waitlist / visit-completion workflows (live since Phase 2) — and, since Phase 3, the per-appointment reminder timers. Knows the whole transaction.</span></p>
+        <p class="kv"><span class="k">Kafka</span><span class="v">Durable <em>facts that already happened</em> — broadcast to independent consumers (analytics projections, notification triggers, the visit follow-up). Replayable.</span></p>
+        <p class="kv" style="margin-bottom:0"><span class="k">Celery</span><span class="v">Discrete <em>single-step jobs</em>, triggered by a Temporal reminder timer or a Kafka consumer — deliver a notification. Projections are not Celery tasks (the EVENT-04 deviation).</span></p>
       </div>
       <div class="card">
         <div class="card-top"><h3>Three patterns that keep state honest</h3></div>
-        <p class="kv"><span class="k">Transactional outbox (Phase 3)</span><span class="v">Business row + event row commit in one Postgres transaction; a relay publishes to Kafka after. No dual-write gap. Until then the commit-then-start gap is covered by the pending-booking starter and the visit sweeper.</span></p>
-        <p class="kv"><span class="k">Layered idempotency</span><span class="v">Postgres arbiters first (partial unique index, idempotency-key row, conditional updates), Temporal workflow-id dedup second, idempotent activities throughout. At-least-once delivery becomes effectively-once.</span></p>
+        <p class="kv"><span class="k">Transactional outbox (live since Phase 3)</span><span class="v">Business row + event row commit in one Postgres transaction; Debezium relays the row to Kafka from the write-ahead log, so no service holds a relay loop and there is no dual-write gap. Delivery on the wire is at-least-once; idempotent consumers make the effect exactly-once (effect-level). The pending-booking starter stays for the one gap the outbox does not cover (the accept path writes no outbox row); the visit sweeper is retired.</span></p>
+        <p class="kv"><span class="k">Layered idempotency</span><span class="v">Postgres arbiters first (partial unique index, idempotency-key row, conditional updates), Temporal workflow-id dedup second, idempotent activities throughout. At-least-once delivery becomes effectively-once. Phase 3 adds a processed-event claim for database effects, deterministic ids for Temporal starts and a dedupe key for sends.</span></p>
         <p class="kv" style="margin-bottom:0"><span class="k">Saga compensation</span><span class="v">On failure, run <em>forward</em> transactions (release slot, reverse billing, notify) — never a hard delete or silent rollback. Audit history stays intact.</span></p>
       </div>
     </div>
@@ -746,7 +834,7 @@
   <!-- FLOWS -->
   <section id="flows">
     <div class="sec-head"><span class="sec-num">05</span><h2>Core flows</h2></div>
-    <p class="sec-sub">As built in Phase 2. Every multi-step change is a Temporal workflow in the service that owns the aggregate (<code>scheduling-tq</code> for appointments and the waitlist, <code>visit-tq</code> for visits), executed by its own worker container. Each step is an idempotent activity that writes one audit entry; failures compensate with forward state transitions and nothing is ever deleted. Clients poll a status URL. Phase 2.1 adds three flows below the visit lifecycle: the check-in window, the provider schedule change and the reconcilers.</p>
+    <p class="sec-sub">As built in Phase 2. Every multi-step change is a Temporal workflow in the service that owns the aggregate (<code>scheduling-tq</code> for appointments and the waitlist, <code>visit-tq</code> for visits), executed by its own worker container. Each step is an idempotent activity that writes one audit entry; failures compensate with forward state transitions and nothing is ever deleted. Clients poll a status URL. Phase 2.1 adds three flows below the visit lifecycle: the check-in window, the provider schedule change and the reconcilers. Phase 3 adds the event flows after the state machines (booking, cancel and reschedule, visit completion, notifications and reminders, analytics); the step lists above describe the workflows, which did not change shape.</p>
 
     <div class="flow">
       <h3>Appointment booking saga</h3>
@@ -755,8 +843,8 @@
         <li><div class="s-title">Validate</div><div class="s-desc">Patient, provider and clinic exist, are active and belong together &mdash; checked through their owners&rsquo; <code>/internal</code> routes with Scheduling&rsquo;s aud-scoped service token. A missing reference is a business failure (<code>ReferenceInvalid</code>), an unreachable owner is retried.</div></li>
         <li><div class="s-title">Reserve hold</div><div class="s-desc">Slot <code>available &rarr; held</code> with <code>held_until</code> (10 min) and the appointment id, by a conditional update. Conflicts were already closed when the request was accepted: <code>uq_appointments_active_slot</code> lets exactly one active appointment exist per slot.</div></li>
         <li><div class="s-title">Billing pre-check</div><div class="s-desc">Billing creates the record <code>pending</code> and resolves it <code>verified</code> or <code>failed</code> with a deterministic rule (a <code>coverage_ref</code> starting <code>DENY-</code> is denied). <code>Idempotency-Key</code> on every call, so a retry never double-applies.</div></li>
-        <li><div class="s-title">Confirm</div><div class="s-desc">One transaction: slot <code>held &rarr; booked</code>, appointment <code>pending &rarr; confirmed</code>, a history row and an audit entry. A lost hold (reaper got there first) is <code>ConfirmLostHold</code> and compensates.</div></li>
-        <li><div class="s-title">Notification intent (best-effort)</div><div class="s-desc">Requested only after confirm succeeds. A stub activity writes a PHI-free log line and a <code>notification.requested</code> audit entry. It retries, but its failure never fails or compensates the booking. Phase 3 replaces its body with outbox + Celery.</div></li>
+        <li><div class="s-title">Confirm</div><div class="s-desc">One transaction: slot <code>held &rarr; booked</code>, appointment <code>pending &rarr; confirmed</code>, a history row, an audit entry and, since Phase 3, an <code>appointment.booked</code> outbox row. A lost hold (reaper got there first) is <code>ConfirmLostHold</code> and compensates.</div></li>
+        <li><div class="s-title">Notification intent (best-effort)</div><div class="s-desc">Requested only after confirm succeeds. The activity is an intent record: it writes a PHI-free log line and a <code>notification.requested</code> audit entry and sends nothing. It retries, but its failure never fails or compensates the booking. Since Phase 3 the actual send is event-driven: the <code>appointment.booked</code> row committed at step 4 reaches the notification consumer and Celery (see the booking event flow below), and the workflow did not change shape.</div></li>
         <li class="compensate"><div class="s-title">Compensate, in reverse order (on any failure)</div><div class="s-desc"><strong>Void billing</strong> (<code>failed/verified &rarr; voided</code>) &rarr; <strong>release the hold</strong> (<code>held &rarr; available</code>) &rarr; <strong>mark the appointment <code>failed</code></strong> with the error type as a machine-readable reason. Forward transitions only, one audit entry per step (<code>dedupe_key = &lt;workflow id&gt;:&lt;step&gt;</code>), so a failed booking is fully reconstructable from audit plus the Temporal history. A top-level booking that had taken the hold and did not lose the race then starts a waitlist advance, so the freed slot is offered again.</div></li>
       </ol>
       <div class="callout"><b>Deviation from SCHED-02, on purpose (D-09 as built, S7):</b> the implemented order is validate, hold, <strong>billing pre-check before notification</strong>, then confirm, then a best-effort notification intent; SCHED-02 lists &ldquo;schedule notifications &rarr; billing pre-check&rdquo;. The notification intent is requested <strong>after confirm</strong>, so a booking that fails at confirm sends no notification and a patient is never told about a booking that is then compensated. The order change and the waitlist re-offer after a failed direct booking are <code>workflow.patched</code> and replay-tested. SCHED-02&rsquo;s &ldquo;prevent conflicts&rdquo; step is not a separate activity: it is the reserve step&rsquo;s database constraints (<code>uq_appointments_active_slot</code>, <code>ex_appointments_patient_no_overlap</code>).</div>
@@ -802,7 +890,7 @@
         <ol class="steps">
           <li><div class="s-title">Check in</div><div class="s-desc">Front-desk/admin, only for a <code>confirmed</code> appointment inside the check-in window: Visit asks Scheduling to move it to <code>checked_in</code> first, then inserts the visit. One visit per appointment; a repeat returns the existing visit.</div></li>
           <li><div class="s-title">Start</div><div class="s-desc">The visit&rsquo;s own provider (or staff); conditional update, repeats are no-ops, skipping a state is 409.</div></li>
-          <li><div class="s-title">Complete, then fan out</div><div class="s-desc">The transition commits with <code>downstream_started_at</code> NULL; then <code>visit-completed-&lt;id&gt;</code> starts and the marker is set. Billing finalize (open-ended retry), completing the appointment, the follow-up intent and the analytics intent run as independent branches on <code>visit-worker</code>. A lost start is picked up by the <strong>sweeper</strong> Schedule (every 60 s) and an unsettled step by the visit <strong>reconciler</strong>. The 200 never waits on any of it.</div></li>
+          <li><div class="s-title">Complete, then fan out</div><div class="s-desc">The transition commits together with a <code>visit.completed</code> outbox row (<code>downstream_started_at</code> stays NULL) and the 200 returns; the API makes no Temporal call. The <strong>visit-downstream</strong> Kafka consumer then starts <code>visit-completed-&lt;id&gt;</code> and sets the marker. Billing finalize (open-ended retry), completing the appointment, the follow-up intent and the analytics intent run as independent branches on <code>visit-worker</code>. The Phase 2 sweeper is retired; an unsettled step is still picked up by the visit <strong>reconciler</strong>. The 200 never waits on any of it.</div></li>
         </ol>
       </div>
     </div>
@@ -887,7 +975,7 @@
         <div class="sd-scroll">
         <svg viewBox="0 0 600 120" role="img" aria-labelledby="sd-visit-t sd-visit-d">
           <title id="sd-visit-t">Visit state machine</title>
-          <desc id="sd-visit-d">checked_in goes to in_progress when the provider starts the visit, then to completed. Completion starts the VisitCompletedWorkflow, which finalizes billing, completes the appointment and records follow-up and analytics intents.</desc>
+          <desc id="sd-visit-d">checked_in goes to in_progress when the provider starts the visit, then to completed. Completion commits a visit.completed outbox row; the visit-downstream consumer then starts the VisitCompletedWorkflow, which finalizes billing, completes the appointment and records follow-up and analytics intents.</desc>
           <defs><marker id="ah-visit" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
           <rect class="sd-st" x="10" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="75" y="37">checked_in</text>
           <rect class="sd-st" x="225" y="14" width="130" height="36" rx="8"/><text class="sd-tx" x="290" y="37">in_progress</text>
@@ -967,6 +1055,270 @@
       </figure>
 
     </div>
+    <h3 style="margin:26px 0 6px;font-size:18px;font-weight:650">Event flows (Phase 3)</h3>
+    <p class="sec-sub" style="margin-bottom:16px">Drawn from the code as built. Accent boxes are durable stores and topics; dashed arrows are timer-driven. Only the outbox insert runs on the request path; everything to the right of the commit is asynchronous, at-least-once on the wire, and absorbed by idempotent consumers.</p>
+    <div class="sd-grid sd-wide">
+
+      <figure class="sd">
+        <figcaption>Booking event flow &middot; <code>appointment.booked</code> to notifications, reminder and analytics</figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 800 395" role="img" aria-labelledby="sd-ev-booking-t sd-ev-booking-d">
+          <title id="sd-ev-booking-t">Booking event flow</title>
+          <desc id="sd-ev-booking-d">The booking workflow's confirm step commits the confirmed appointment and an outbox row in one scheduling_db transaction. Debezium reads the Postgres write-ahead log and publishes the row to the Kafka topic smarthealth.appointment.events keyed by the appointment id. The notification-trigger consumer group sends one Celery notifications.send task per dedupe key to the fake provider and starts a durable-timer ReminderWorkflow that later enqueues the same Celery task. The analytics-projection consumer group claims the event id and upserts the projection in analytics_db in one transaction. Only the outbox insert is synchronous; the 202 accept path writes no outbox row.</desc>
+          <defs><marker id="ah-ev-booking" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="20" width="170" height="52" rx="8"/>
+          <text class="sd-tx" x="95" y="41">BookingWorkflow</text>
+          <text class="sd-lb" x="95" y="58" text-anchor="middle">confirm activity</text>
+          <rect class="sd-term" x="215" y="20" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="310" y="41">scheduling_db</text>
+          <text class="sd-lb" x="310" y="58" text-anchor="middle">state + outbox row, one tx</text>
+          <rect class="sd-st" x="440" y="20" width="140" height="52" rx="8"/>
+          <text class="sd-tx" x="510" y="41">Debezium</text>
+          <text class="sd-lb" x="510" y="58" text-anchor="middle">WAL relay (connect)</text>
+          <rect class="sd-term" x="610" y="20" width="180" height="52" rx="8"/>
+          <text class="sd-tx" x="700" y="41">Kafka topic</text>
+          <text class="sd-lb" x="700" y="58" text-anchor="middle">smarthealth.appointment.events</text>
+          <rect class="sd-st" x="330" y="140" width="210" height="52" rx="8"/>
+          <text class="sd-tx" x="435" y="161">notification-trigger</text>
+          <text class="sd-lb" x="435" y="178" text-anchor="middle">group, notification-consumer</text>
+          <rect class="sd-st" x="600" y="140" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="695" y="161">analytics-projection</text>
+          <text class="sd-lb" x="695" y="178" text-anchor="middle">group, analytics-consumer</text>
+          <rect class="sd-st" x="10" y="255" width="210" height="52" rx="8"/>
+          <text class="sd-tx" x="115" y="276">Celery send</text>
+          <text class="sd-lb" x="115" y="293" text-anchor="middle">notifications.send, fake provider</text>
+          <rect class="sd-st" x="260" y="255" width="220" height="52" rx="8"/>
+          <text class="sd-tx" x="370" y="276">ReminderWorkflow</text>
+          <text class="sd-lb" x="370" y="293" text-anchor="middle">durable timers, notification-tq</text>
+          <rect class="sd-term" x="600" y="255" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="695" y="276">analytics_db</text>
+          <text class="sd-lb" x="695" y="293" text-anchor="middle">claim id + upsert, one tx</text>
+          <line class="sd-ln" x1="180" y1="46" x2="215" y2="46" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="405" y1="46" x2="440" y2="46" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="580" y1="46" x2="610" y2="46" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="660" y1="72" x2="500" y2="140" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="710" y1="72" x2="710" y2="140" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="360" y1="192" x2="150" y2="255" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="440" y1="192" x2="400" y2="255" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln sd-comp" x1="260" y1="281" x2="220" y2="281" marker-end="url(#ah-ev-booking)"/>
+          <line class="sd-ln" x1="700" y1="192" x2="700" y2="255" marker-end="url(#ah-ev-booking)"/>
+          <text class="sd-lb" x="408" y="40">WAL</text>
+          <text class="sd-lb" x="700" y="108" text-anchor="end">appointment.booked</text>
+          <text class="sd-lb" x="275" y="214" text-anchor="end">send task</text>
+          <text class="sd-lb" x="432" y="232">start reminder-&lt;id&gt;</text>
+          <text class="sd-lb" x="224" y="274">timer</text>
+          <rect class="sd-note" x="10" y="325" width="780" height="54" rx="6"/>
+          <text class="sd-lb" x="20" y="343">Synchronous: only the outbox insert inside the confirm transaction. The 202 accept path writes no outbox row.</text>
+          <text class="sd-lb" x="20" y="357">At-least-once on the wire (Debezium). Every consumer is idempotent, so the effect happens once.</text>
+          <text class="sd-lb" x="20" y="371">The reminder timer fires hours or days later; one connected trace is verified up to the reminder start.</text>
+        </svg>
+        </div>
+      </figure>
+
+
+      <figure class="sd">
+        <figcaption>Cancel and reschedule &middot; <code>appointment.cancelled</code> and <code>appointment.rescheduled</code></figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 800 395" role="img" aria-labelledby="sd-ev-cancel-t sd-ev-cancel-d">
+          <title id="sd-ev-cancel-t">Cancel and reschedule event flow</title>
+          <desc id="sd-ev-cancel-d">The cancel or reschedule workflow commits the status change, the slot change, the history row and an outbox row in one scheduling_db transaction. Debezium relays it to smarthealth.appointment.events. The notification-trigger group records the appointment as closed, signals the reminder workflow to cancel or move to the new slot, and sends one notice through Celery with a dedupe key. The analytics-projection group sets cancelled_at or increments rescheduled_count. A repeated or refused transition emits no event.</desc>
+          <defs><marker id="ah-ev-cancel" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="20" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="105" y="41">Cancel / Reschedule</text>
+          <text class="sd-lb" x="105" y="58" text-anchor="middle">workflows, scheduling-worker</text>
+          <rect class="sd-term" x="225" y="20" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="320" y="41">scheduling_db</text>
+          <text class="sd-lb" x="320" y="58" text-anchor="middle">status + slots + outbox, one tx</text>
+          <rect class="sd-st" x="440" y="20" width="140" height="52" rx="8"/>
+          <text class="sd-tx" x="510" y="41">Debezium</text>
+          <text class="sd-lb" x="510" y="58" text-anchor="middle">scheduling-outbox</text>
+          <rect class="sd-term" x="610" y="20" width="180" height="52" rx="8"/>
+          <text class="sd-tx" x="700" y="41">Kafka topic</text>
+          <text class="sd-lb" x="700" y="58" text-anchor="middle">smarthealth.appointment.events</text>
+          <rect class="sd-st" x="170" y="140" width="240" height="52" rx="8"/>
+          <text class="sd-tx" x="290" y="161">notification-trigger</text>
+          <text class="sd-lb" x="290" y="178" text-anchor="middle">cancelled or rescheduled event</text>
+          <rect class="sd-st" x="600" y="140" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="695" y="161">analytics-projection</text>
+          <text class="sd-lb" x="695" y="178" text-anchor="middle">cancelled_at, rescheduled_count</text>
+          <rect class="sd-term" x="10" y="255" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="105" y="276">close appointment</text>
+          <text class="sd-lb" x="105" y="293" text-anchor="middle">notification_appointment_state</text>
+          <rect class="sd-st" x="215" y="255" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="310" y="276">reminder-&lt;id&gt;</text>
+          <text class="sd-lb" x="310" y="293" text-anchor="middle">cancel, or move to new slot</text>
+          <rect class="sd-st" x="420" y="255" width="170" height="52" rx="8"/>
+          <text class="sd-tx" x="505" y="276">one notice</text>
+          <text class="sd-lb" x="505" y="293" text-anchor="middle">Celery send, dedupe key</text>
+          <line class="sd-ln" x1="200" y1="46" x2="225" y2="46" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="415" y1="46" x2="440" y2="46" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="580" y1="46" x2="610" y2="46" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="650" y1="72" x2="380" y2="140" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="710" y1="72" x2="710" y2="140" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="220" y1="192" x2="105" y2="255" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="290" y1="192" x2="310" y2="255" marker-end="url(#ah-ev-cancel)"/>
+          <line class="sd-ln" x1="360" y1="192" x2="490" y2="255" marker-end="url(#ah-ev-cancel)"/>
+          <text class="sd-lb" x="702" y="104" text-anchor="end">appointment.cancelled</text>
+          <text class="sd-lb" x="702" y="117" text-anchor="end">or .rescheduled</text>
+          <rect class="sd-note" x="10" y="325" width="780" height="54" rx="6"/>
+          <text class="sd-lb" x="20" y="343">Written only in the branch that actually changed the row; its id comes from the post-transition version.</text>
+          <text class="sd-lb" x="20" y="357">A repeat, or a refused cancel (check-in already happened), emits nothing.</text>
+          <text class="sd-lb" x="20" y="371">Reschedule moves the reminder with signal-with-start; its dedupe key includes the new slot's epoch seconds.</text>
+        </svg>
+        </div>
+      </figure>
+
+      <figure class="sd">
+        <figcaption>Visit lifecycle &middot; <code>visit.completed</code> replaces the sweeper as the downstream trigger</figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 800 410" role="img" aria-labelledby="sd-ev-visit-t sd-ev-visit-d">
+          <title id="sd-ev-visit-t">Visit completion event flow</title>
+          <desc id="sd-ev-visit-d">Completing a visit commits the status change, a history row and a visit.completed outbox row in one visit_db transaction and answers 200 without calling Temporal. Debezium relays the row to smarthealth.visit.events. The visit-downstream group starts the VisitCompletedWorkflow under the deterministic id visit-completed-&lt;visit id&gt; and sets the marker. The notification-trigger group starts the follow-up reminder timer. The analytics-projection group writes the visits_completed row. The workflow's appointment branch completes the appointment, which Scheduling commits as appointment.completed through its own outbox.</desc>
+          <defs><marker id="ah-ev-visit" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="20" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="105" y="41">Visit API</text>
+          <text class="sd-lb" x="105" y="58" text-anchor="middle">complete: 200, no Temporal</text>
+          <rect class="sd-term" x="225" y="20" width="190" height="52" rx="8"/>
+          <text class="sd-tx" x="320" y="41">visit_db</text>
+          <text class="sd-lb" x="320" y="58" text-anchor="middle">completed + outbox, one tx</text>
+          <rect class="sd-st" x="440" y="20" width="140" height="52" rx="8"/>
+          <text class="sd-tx" x="510" y="41">Debezium</text>
+          <text class="sd-lb" x="510" y="58" text-anchor="middle">visit-outbox</text>
+          <rect class="sd-term" x="610" y="20" width="180" height="52" rx="8"/>
+          <text class="sd-tx" x="700" y="41">Kafka topic</text>
+          <text class="sd-lb" x="700" y="58" text-anchor="middle">smarthealth.visit.events</text>
+          <rect class="sd-st" x="10" y="140" width="210" height="52" rx="8"/>
+          <text class="sd-tx" x="115" y="161">visit-downstream</text>
+          <text class="sd-lb" x="115" y="178" text-anchor="middle">group, visit-consumer</text>
+          <rect class="sd-st" x="290" y="140" width="220" height="52" rx="8"/>
+          <text class="sd-tx" x="400" y="161">notification-trigger</text>
+          <text class="sd-lb" x="400" y="178" text-anchor="middle">group, follow-up timer</text>
+          <rect class="sd-st" x="590" y="140" width="200" height="52" rx="8"/>
+          <text class="sd-tx" x="690" y="161">analytics-projection</text>
+          <text class="sd-lb" x="690" y="178" text-anchor="middle">visits_completed row</text>
+          <rect class="sd-st" x="10" y="255" width="210" height="52" rx="8"/>
+          <text class="sd-tx" x="115" y="276">VisitCompleted</text>
+          <text class="sd-lb" x="115" y="293" text-anchor="middle">billing, appt, intent records</text>
+          <rect class="sd-st" x="290" y="255" width="220" height="52" rx="8"/>
+          <text class="sd-tx" x="400" y="276">followup-&lt;visit id&gt;</text>
+          <text class="sd-lb" x="400" y="293" text-anchor="middle">fires after 3 days (default)</text>
+          <rect class="sd-term" x="590" y="255" width="200" height="52" rx="8"/>
+          <text class="sd-tx" x="690" y="276">analytics_db</text>
+          <text class="sd-lb" x="690" y="293" text-anchor="middle">claim id + upsert, one tx</text>
+          <line class="sd-ln" x1="200" y1="46" x2="225" y2="46" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="415" y1="46" x2="440" y2="46" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="580" y1="46" x2="610" y2="46" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="630" y1="72" x2="110" y2="140" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="660" y1="72" x2="400" y2="140" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="700" y1="72" x2="700" y2="140" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="115" y1="192" x2="115" y2="255" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="400" y1="192" x2="400" y2="255" marker-end="url(#ah-ev-visit)"/>
+          <line class="sd-ln" x1="690" y1="192" x2="690" y2="255" marker-end="url(#ah-ev-visit)"/>
+          <text class="sd-lb" x="690" y="108" text-anchor="end">visit.completed</text>
+          <text class="sd-lb" x="125" y="228">start once</text>
+          <rect class="sd-note" x="10" y="325" width="780" height="68" rx="6"/>
+          <text class="sd-lb" x="20" y="343">The Visit API makes no Temporal call: the trigger is the visit.completed event, and the sweeper is retired.</text>
+          <text class="sd-lb" x="20" y="357">visit-completed-&lt;visit id&gt; starts with reject-duplicate, then the downstream_started_at marker is set.</text>
+          <text class="sd-lb" x="20" y="371">When the workflow completes the appointment, Scheduling commits appointment.completed through its own outbox.</text>
+          <text class="sd-lb" x="20" y="385">Visits completed before Phase 3 are covered by scripts/backfill_visit_completed_events.py (the dry run found 0).</text>
+        </svg>
+        </div>
+      </figure>
+
+      <figure class="sd">
+        <figcaption>Notifications and reminders &middot; Temporal decides when, Celery delivers</figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 800 490" role="img" aria-labelledby="sd-ev-notify-t sd-ev-notify-d">
+          <title id="sd-ev-notify-t">Notification and reminder flow</title>
+          <desc id="sd-ev-notify-d">The notification-trigger consumer turns booking, cancellation, reschedule and visit events into one Celery notifications.send task on RabbitMQ and starts, moves or stops the Temporal ReminderWorkflow. When a reminder timer fires, the workflow enqueues the same send task. The notification-celery worker claims the dedupe key in the delivery log, calls the fake provider, which keeps its own idempotency store, and marks the delivery sent. Transient failures retry with exponential backoff; permanent failures are rejected to notifications.dlq through the smarthealth.dlx exchange. Guards skip a reminder for a closed appointment and a stale event.</desc>
+          <defs><marker id="ah-ev-notify" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-st" x="10" y="20" width="200" height="52" rx="8"/>
+          <text class="sd-tx" x="110" y="41">notification-trigger</text>
+          <text class="sd-lb" x="110" y="58" text-anchor="middle">Kafka consumer, per event</text>
+          <rect class="sd-st" x="290" y="20" width="200" height="52" rx="8"/>
+          <text class="sd-tx" x="390" y="41">ReminderWorkflow</text>
+          <text class="sd-lb" x="390" y="58" text-anchor="middle">timer: 24 h, 2 h before</text>
+          <rect class="sd-term" x="140" y="130" width="260" height="52" rx="8"/>
+          <text class="sd-tx" x="270" y="151">notifications.send</text>
+          <text class="sd-lb" x="270" y="168" text-anchor="middle">RabbitMQ: booking, reminder, followup</text>
+          <rect class="sd-st" x="140" y="235" width="260" height="52" rx="8"/>
+          <text class="sd-tx" x="270" y="256">notification-celery</text>
+          <text class="sd-lb" x="270" y="273" text-anchor="middle">threads pool, acks_late</text>
+          <rect class="sd-term" x="480" y="235" width="310" height="52" rx="8"/>
+          <text class="sd-tx" x="635" y="256">delivery log + provider store</text>
+          <text class="sd-lb" x="635" y="273" text-anchor="middle">unique dedupe_key at both layers</text>
+          <rect class="sd-term" x="480" y="340" width="150" height="52" rx="8"/>
+          <text class="sd-tx" x="555" y="361">sent</text>
+          <text class="sd-lb" x="555" y="378" text-anchor="middle">one per dedupe key</text>
+          <rect class="sd-term" x="650" y="340" width="140" height="52" rx="8"/>
+          <text class="sd-tx" x="720" y="361">notifications.dlq</text>
+          <text class="sd-lb" x="720" y="378" text-anchor="middle">via smarthealth.dlx</text>
+          <line class="sd-ln" x1="210" y1="46" x2="290" y2="46" marker-end="url(#ah-ev-notify)"/>
+          <line class="sd-ln" x1="105" y1="72" x2="200" y2="130" marker-end="url(#ah-ev-notify)"/>
+          <line class="sd-ln sd-comp" x1="340" y1="72" x2="340" y2="130" marker-end="url(#ah-ev-notify)"/>
+          <line class="sd-ln" x1="270" y1="182" x2="270" y2="235" marker-end="url(#ah-ev-notify)"/>
+          <line class="sd-ln" x1="400" y1="261" x2="480" y2="261" marker-end="url(#ah-ev-notify)"/>
+          <line class="sd-ln" x1="560" y1="287" x2="560" y2="340" marker-end="url(#ah-ev-notify)"/>
+          <line class="sd-ln" x1="730" y1="287" x2="730" y2="340" marker-end="url(#ah-ev-notify)"/>
+          <text class="sd-lb" x="216" y="40">start</text>
+          <text class="sd-lb" x="150" y="110" text-anchor="end">event send</text>
+          <text class="sd-lb" x="348" y="106">timer fires</text>
+          <text class="sd-lb" x="566" y="318">sent</text>
+          <text class="sd-lb" x="724" y="318" text-anchor="end">permanent failure</text>
+          <rect class="sd-note" x="10" y="410" width="780" height="68" rx="6"/>
+          <text class="sd-lb" x="20" y="428">Guards: a closed appointment is skipped_closed; an event older than 24 h is skipped_stale (a replay never sends old mail).</text>
+          <text class="sd-lb" x="20" y="442">Transient failure: retry with backoff (2 s doubling, up to 5 attempts). Poison Kafka events go to smarthealth.dlq.notification-trigger.</text>
+          <text class="sd-lb" x="20" y="456">A real SMS or email provider must accept an idempotency key for the same guarantee; without one a crash can duplicate a send.</text>
+          <text class="sd-lb" x="20" y="470">The Phase 2 notification activities are intent records that send nothing: delivery is event-driven only.</text>
+        </svg>
+        </div>
+      </figure>
+
+      <figure class="sd">
+        <figcaption>Analytics &middot; five metrics from the event stream</figcaption>
+        <div class="sd-scroll">
+        <svg viewBox="0 0 800 485" role="img" aria-labelledby="sd-ev-analytics-t sd-ev-analytics-d">
+          <title id="sd-ev-analytics-t">Analytics projection flow</title>
+          <desc id="sd-ev-analytics-d">The analytics-consumer reads the patient, appointment and visit topics. For each event it claims the event id in processed_events and upserts the projection in one analytics_db transaction, so a duplicate changes nothing and arrival order does not matter. Five metric views over the projection tables feed the read-only analytics API, restricted to admin and front desk, and Grafana, which reads as a SELECT-only role. Metrics count from Phase 3 go-live; a rebuild replays the retained events.</desc>
+          <defs><marker id="ah-ev-analytics" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="sd-head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+          <rect class="sd-term" x="10" y="20" width="240" height="52" rx="8"/>
+          <text class="sd-tx" x="130" y="41">patient.events</text>
+          <text class="sd-lb" x="130" y="58" text-anchor="middle">smarthealth.patient.events</text>
+          <rect class="sd-term" x="280" y="20" width="240" height="52" rx="8"/>
+          <text class="sd-tx" x="400" y="41">appointment.events</text>
+          <text class="sd-lb" x="400" y="58" text-anchor="middle">smarthealth.appointment.events</text>
+          <rect class="sd-term" x="550" y="20" width="240" height="52" rx="8"/>
+          <text class="sd-tx" x="670" y="41">visit.events</text>
+          <text class="sd-lb" x="670" y="58" text-anchor="middle">smarthealth.visit.events</text>
+          <rect class="sd-st" x="190" y="130" width="420" height="52" rx="8"/>
+          <text class="sd-tx" x="400" y="151">analytics-consumer</text>
+          <text class="sd-lb" x="400" y="168" text-anchor="middle">group analytics-projection: claim id + upsert, ONE tx</text>
+          <rect class="sd-term" x="150" y="235" width="500" height="52" rx="8"/>
+          <text class="sd-tx" x="400" y="256">analytics_db</text>
+          <text class="sd-lb" x="400" y="273" text-anchor="middle">3 projection tables, processed_events, 5 metric views</text>
+          <rect class="sd-st" x="150" y="340" width="230" height="52" rx="8"/>
+          <text class="sd-tx" x="265" y="361">Analytics API</text>
+          <text class="sd-lb" x="265" y="378" text-anchor="middle">/api/analytics, admin + front desk</text>
+          <rect class="sd-st" x="420" y="340" width="230" height="52" rx="8"/>
+          <text class="sd-tx" x="535" y="361">Grafana</text>
+          <text class="sd-lb" x="535" y="378" text-anchor="middle">grafana_ro, SELECT only</text>
+          <line class="sd-ln" x1="130" y1="72" x2="260" y2="130" marker-end="url(#ah-ev-analytics)"/>
+          <line class="sd-ln" x1="400" y1="72" x2="400" y2="130" marker-end="url(#ah-ev-analytics)"/>
+          <line class="sd-ln" x1="670" y1="72" x2="540" y2="130" marker-end="url(#ah-ev-analytics)"/>
+          <line class="sd-ln" x1="400" y1="182" x2="400" y2="235" marker-end="url(#ah-ev-analytics)"/>
+          <line class="sd-ln" x1="300" y1="287" x2="265" y2="340" marker-end="url(#ah-ev-analytics)"/>
+          <line class="sd-ln" x1="500" y1="287" x2="535" y2="340" marker-end="url(#ah-ev-analytics)"/>
+          <text class="sd-lb" x="408" y="212">one transaction</text>
+          <rect class="sd-note" x="10" y="415" width="780" height="54" rx="6"/>
+          <text class="sd-lb" x="20" y="433">Start at cutover (D-13): the consumer pins its go-live offsets, so metrics count from go-live; no history backfill.</text>
+          <text class="sd-lb" x="20" y="447">Rebuild: stop the consumer, run services.analytics.rebuild (dry run, then --apply), start the consumer. It replays every retained event,</text>
+          <text class="sd-lb" x="20" y="461">including throw-away test events the live consumer skipped. Projections run on a Kafka consumer, not Celery (EVENT-04 deviation).</text>
+        </svg>
+        </div>
+      </figure>
+
+    </div>
+    <!-- /event-flows -->
   </section>
 
   <!-- Q&A -->
@@ -977,16 +1329,17 @@
     <details class="qa" open>
       <summary>Why Temporal instead of just Celery for booking?</summary>
       <div class="answer">
-        <p>Celery runs discrete jobs; it doesn't own a multi-step transaction or model compensation. Booking is a saga — validate, reserve a hold, billing pre-check, confirm, notification intent — where a failure at the billing step must undo the hold cleanly and in order. Temporal gives durable execution (the workflow survives a worker crash and resumes), deterministic replay, per-activity retry policies and first-class compensation, plus Schedules for the reaper and sweepers.</p>
-        <p>In Phase 2 nothing is delegated to Celery yet: the notification step is a stub activity, and that activity is the seam where Phase 3 hands single-step work (send a reminder) to Celery. They're complementary, not competing.</p>
+        <p>Celery runs discrete jobs; it doesn't own a multi-step transaction or model compensation. Booking is a saga — validate, reserve a hold, billing pre-check, confirm, notification intent — where a failure at the billing step must undo the hold cleanly and in order. Temporal gives durable execution (the workflow survives a worker crash and resumes), deterministic replay, per-activity retry policies and first-class compensation, plus Schedules for the reaper, the starter and the reconcilers.</p>
+        <p>Since Phase 3 they are complementary in practice: Celery delivers every notification, and Temporal decides <em>when</em> a reminder fires (a durable timer per appointment) and then enqueues the same Celery task. The Phase 2 notification activities stayed as intent records, so no workflow changed shape and nothing is sent twice.</p>
       </div>
     </details>
 
     <details class="qa">
       <summary>Why do you run both Kafka and RabbitMQ?</summary>
       <div class="answer">
-        <p>Kafka is a durable, replayable <em>log of facts</em> — many independent consumers (analytics, audit, notification triggers) read the same <code>AppointmentBooked</code> event, and a new consumer can replay history. RabbitMQ + Celery is a <em>work queue</em> for discrete jobs with per-task retry and a dead-letter path.</p>
+        <p>Kafka is a durable, replayable <em>log of facts</em> — many independent consumers (analytics projections, notification triggers, the visit follow-up) read the same <code>appointment.booked</code> event, and a new consumer can replay history. RabbitMQ + Celery is a <em>work queue</em> for discrete jobs with per-task retry and a dead-letter path.</p>
         <p>Using Kafka as a task queue loses per-message retry/ack semantics; using RabbitMQ as an event log loses replay and multi-consumer fan-out. Each tool does the job it's good at.</p>
+        <p>As built, the notification consumer reads Kafka and enqueues one Celery task per dedupe key on RabbitMQ. The analytics projections do not use Celery at all (the EVENT-04 deviation, below).</p>
       </div>
     </details>
 
@@ -1001,21 +1354,90 @@
     <details class="qa">
       <summary>How is an event never lost after a database commit?</summary>
       <div class="answer">
-        <p>The transactional outbox pattern. The business row and an outbox row are written in the <em>same</em> Postgres transaction, so they commit or fail together — no dual-write gap where the DB commits but the Kafka publish is lost. A separate relay reads the outbox and publishes to Kafka; if it crashes mid-publish, it retries from the outbox, and consumers are idempotent so a re-publish is harmless.</p>
+        <p>The transactional outbox, relayed by change data capture. The business row and an <code>outbox</code> row are written in the <em>same</em> Postgres transaction, so they commit or fail together: there is no dual-write gap where the database commits and a publish is lost. No service publishes to Kafka. Debezium reads the Postgres write-ahead log and publishes each outbox row to the aggregate&rsquo;s topic; the replication slot keeps WAL until Connect confirms it, so a Connect outage delays events and drops none.</p>
+        <p>Measured on the live stack: a worker killed right after a cancel committed still produced <code>appointment.cancelled</code>; a booking committed while Connect was stopped arrived once Connect was healthy; a visit completion followed by a Visit API kill, a stopped consumer and a stopped Connect still started exactly one downstream workflow. Limits: only the ten D-07 event types are evented (see &ldquo;Does every state change become an event?&rdquo;), and the path after a replication slot exceeds its WAL cap was not exercised.</p>
       </div>
     </details>
 
     <details class="qa">
       <summary>How do you handle duplicate / at-least-once delivery?</summary>
       <div class="answer">
-        <p>Layered idempotency, database first. A retried <code>POST /api/appointments</code> with the same <code>Idempotency-Key</code> finds the (caller, key) row in Postgres and returns the original appointment; the same key with a different body is a 422. Workflows have deterministic ids, so a second start attaches to or is rejected by the existing run. Activities are idempotent by construction: conditional state updates, an <code>Idempotency-Key</code> on every Billing call (a repeat is a no-op), and an audit <code>dedupe_key</code> per workflow step. Visit transitions are conditional updates with a unique history row per state, so ten concurrent &ldquo;complete&rdquo; calls produce one transition.</p>
+        <p>Layered idempotency, database first. A retried <code>POST /api/appointments</code> with the same <code>Idempotency-Key</code> finds the (caller, key) row in Postgres and returns the original appointment; the same key with a different body is a 422. Workflows have deterministic ids, so a second start attaches to or is rejected by the existing run. Activities are idempotent by construction: conditional state updates, an <code>Idempotency-Key</code> on every Billing call (a repeat is a no-op), and an audit <code>dedupe_key</code> per workflow step. Visit transitions are conditional updates with a unique history row per state, so ten concurrent &ldquo;complete&rdquo; calls produce one transition. For Kafka events, see the next question.</p>
+      </div>
+    </details>
+
+    <details class="qa">
+      <summary>Can an event be lost or duplicated?</summary>
+      <div class="answer">
+        <p>No, and the dashboard does not claim it. The honest statement has three parts: <strong>no loss</strong> (an event exists exactly when its transaction committed, and the replication slot holds WAL until Connect confirms it), <strong>at-least-once on the wire</strong> (Debezium commits its position periodically, so a hard kill of Connect re-emits what it had sent since the last flush; the topic can carry a duplicate), and <strong>effect-level exactly-once</strong>, because every consumer is idempotent.</p>
+        <p>Measured: after a Connect SIGKILL, 11 messages for one aggregate carried 6 distinct event ids (5 duplicates of 11 messages, nothing lost); in another run one booking&rsquo;s <code>appointment.booked</code> appeared 2 times with 1 distinct event id and the booking still had one delivery, one provider call, one reminder run and exactly one increment of <code>appointments_booked</code>; rewinding the offsets of all three consumer groups left every effect equal. A consumer that is not idempotent must not be added to these topics.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>Why Debezium CDC instead of a polling publisher?</summary>
+      <div class="answer">
+        <p>Decision D-01, chosen by the user. With CDC no service contains relay code: a service inserts an outbox row in the same transaction as the state change and Debezium relays it from the write-ahead log. Ordering comes from the log, and there is no polling load on Postgres and no relay loop to make highly available. A polling publisher would have meant a relay loop in four services and a query against each outbox table on an interval.</p>
+        <p>The cost accepted is operating Kafka Connect and logical replication: <code>wal_level=logical</code> (one Postgres restart), a replication slot per database that retains WAL while Connect is down (capped at 2 GB; deleting a connector does not drop its slot), connector task state to monitor, and at-least-once delivery on the wire. Reversing it later means writing a relay and removing the connector configs. Connect runs <code>quay.io/debezium/connect:3.7.1.Final</code>, a deliberate deviation from the same-Confluent-line rule for the Connect image only, accepted at plan 03-01 (&ldquo;Accept all six (Recommended)&rdquo;).</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>Why Temporal timers for reminders instead of Celery ETA or beat?</summary>
+      <div class="answer">
+        <p>Decision D-02. A reminder is a per-appointment timer that must be cancelled when the appointment is cancelled and moved when it is rescheduled. A Temporal workflow is exactly that: durable, replay-tested, signal-interruptible, one deterministic id per appointment (<code>reminder-&lt;appointment id&gt;</code>). A Celery ETA message lives in the broker (lost with it, hard to cancel or move without revoke bookkeeping) and a beat schedule is a cron, not a per-appointment timer.</p>
+        <p>Temporal owns <em>when</em>, Celery owns <em>delivery</em>: when the timer fires, the activity enqueues the same <code>notifications.send</code> task the Kafka consumer uses. Cost: one idle workflow per active appointment. Not exercised: the later firing inside the same trace, which would take days.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>How do you stop a notification being sent twice, and what if a real provider has no idempotency key?</summary>
+      <div class="answer">
+        <p>Every send has a dedupe key (<code>&lt;type&gt;:&lt;appointment id&gt;:&lt;event id&gt;</code> for event sends, with the slot time and lead for reminders and the visit id for follow-ups). It is enforced at two layers: the delivery log (unique on the key) and the provider&rsquo;s own idempotency store, where the insert is the delivery. Two guards stop late work from doing harm: a reminder for an appointment recorded as closed is skipped, and a booking, cancellation or reschedule event older than a day is recorded as stale instead of sent, so replaying history never sends old mail. It was proven with a real worker killed between the provider call and <code>mark_sent</code>: the message was redelivered, the provider answered from its store and held one call record.</p>
+        <p><strong>Real-provider caveat:</strong> that guarantee holds because the fake provider honours an idempotency key. A real SMS or email provider must accept one for the same guarantee; with no idempotency key, each crash between the provider call and <code>mark_sent</code> can cause one duplicate send. No real provider is integrated (out of scope).</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>Do events and notifications carry PHI?</summary>
+      <div class="answer">
+        <p>No. Event payloads carry ids and timestamps only: a test scans every <code>.avsc</code> for banned field names, and the producers&rsquo; tests check the payload bytes and the raw Kafka bytes for seeded PHI values. Celery task arguments are ids, a type, a dedupe key and a timestamp; a rejected message&rsquo;s reason and the dead-letter headers carry the error type only, because a validation error&rsquo;s text would echo the offending value. Run live, a booking&rsquo;s trace id was found as a JSON log line in six containers and none of six seeded PHI values appeared in any of them. No real SMS or email provider is integrated, so no message leaves the system.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>What happens when Kafka Connect, Schema Registry, RabbitMQ or Temporal is down? (outage behaviour)</summary>
+      <div class="answer">
+        <p><strong>Connect down:</strong> events are delayed, none are dropped, because the replication slot keeps WAL (capped at 2 GB). <strong>A consumer&rsquo;s dependency down</strong> (Schema Registry, Postgres, Temporal, RabbitMQ): the offset is held and retried with capped backoff for up to the cap (10 attempts and 15 minutes), after which the message is dead-lettered as <code>TransientExhausted</code> and recovered by the visit reconciler, the analytics rebuild or the DLQ replay script. A message that can never succeed (undecodable, malformed, unknown id) is copied to the group&rsquo;s dead-letter topic with the error type only, and an ordinary handler error is retried three times first. <strong>Celery worker dies mid-send:</strong> the unacknowledged message is redelivered and the provider answers from its idempotency store.</p>
+        <p><strong>Schema Registry</strong> is a cached write-path dependency: producers warm their serializers at start-up, so an outage after warm-up does not affect writes, but a cold start during an outage cannot become ready. Tested and not tested: the consumer&rsquo;s decode-time registry-outage classification is unit-tested against the real consumer path with a stand-in broker (408, 429 and 5xx answers are retried; other 4xx answers and corrupt Avro are dead-lettered), but no live registry outage was injected; a Kafka broker outage on its own was not exercised; the path after a message exceeds its retry cap (<code>TransientExhausted</code> and the recovery routes) is covered by unit and live dead-letter tests but not by a live long outage; and the path after a replication slot exceeds its WAL cap was not exercised.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>Can the analytics be rebuilt, and do they include history?</summary>
+      <div class="answer">
+        <p>The projections are derived data in <code>analytics_db</code>. To rebuild: stop <code>analytics-consumer</code>, run <code>services.analytics.rebuild</code> (a dry run, then <code>--apply</code>, which truncates the projections and resets the group to the earliest retained offset), and start the consumer again; the tool refuses to run while the group has a live member. A rebuild replays everything still retained, <strong>including the throw-away test events</strong> the live consumer skipped at go-live, so the numbers can differ from the live ones by those events.</p>
+        <p>Analytics start at cutover (D-13): events are emitted only for new activity, so the five metrics count from Phase 3 go-live and <code>total_patients</code> counts only patients registered after it; earlier patients, appointments and visits are not backfilled into the stream (the only backfill is the completed-visit downstream one, whose dry run found 0 candidates). The metric definitions are written down: days are UTC days, cancellation rate is cancelled over booked in the window, average wait is check-in to visit start, and an empty denominator is no data, never 0.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>The requirement says projections are Celery tasks. Why are they a Kafka consumer? (EVENT-04)</summary>
+      <div class="answer">
+        <p>A deliberate deviation, accepted at plan 03-01 (&ldquo;Accept all six (Recommended)&rdquo;). A projection is a stateful upsert, and its idempotency claim must commit in the <em>same database transaction</em> as the effect; a Kafka consumer with a processed-event table gives that, a Celery task does not. Celery delivers notifications and follow-up sends. The wording of EVENT-04 in <code>REQUIREMENTS.md</code> is the user&rsquo;s decision and was not edited, so the requirement text and the build disagree until it is.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>Does every state change become an event?</summary>
+      <div class="answer">
+        <p>No: &ldquo;every state change&rdquo; is scoped to the Phase 3 event set (decision D-07 of the Phase 3 context), ten types: <code>appointment.booked</code>, <code>appointment.cancelled</code>, <code>appointment.rescheduled</code>, <code>appointment.checked_in</code>, <code>appointment.completed</code>, <code>appointment.no_show</code>, <code>visit.completed</code>, <code>patient.registered</code>, <code>patient.deactivated</code> and <code>provider.schedule_changed</code>. Billing transitions, waitlist changes, a visit moving to in-progress and the reconciler and hold-reaper actions are not evented, so an analytics number or a notification reflects only those ten. <code>provider.schedule_changed</code> is published but not consumed: Scheduling still pulls schedule changes through the Phase 2.1 feed, and that poller is paused on the live server by the user&rsquo;s decision.</p>
+      </div>
+    </details>
+    <details class="qa">
+      <summary>Which Phase 2 interim mechanisms are gone, and which stay?</summary>
+      <div class="answer">
+        <p>One is retired: the visit downstream sweeper. <code>visit.completed</code> is committed with the transition and a consumer starts the downstream workflow; the Schedule is deleted and the workflow class stays as a no-op tombstone so recorded histories replay. The replacement was proven by kill-between-commit-and-publish tests.</p>
+        <p>The others stay, because events do not subsume them: the <strong>hold reaper</strong> (an expired hold is the absence of an event), the <strong>pending-booking starter</strong> (the accept path writes no outbox row, so no event exists for a pending appointment), the <strong>Scheduling and Visit reconcilers</strong> (none of their triggers is an event), the notification stub activities (intent records), polling of status URLs, and Temporal&rsquo;s <code>auto-setup</code> image (non-production).</p>
       </div>
     </details>
 
     <details class="qa">
       <summary>Why PostgreSQL and MongoDB, rather than one database?</summary>
       <div class="answer">
-        <p>Split by consistency need. Data the saga must reason about for correctness — patients, providers, appointments, slots, billing, the outbox — needs transactions and constraints, so it lives in Postgres. Append-heavy, schema-flexible data — audit trail, visit records, notification logs, analytics projections — fits a document model, so it lives in MongoDB. Forcing either into the other's model is where teams get burned.</p>
+        <p>Split by consistency need. Data the saga must reason about for correctness — patients, providers, appointments, slots, billing, the outbox — needs transactions and constraints, so it lives in Postgres. Append-heavy, schema-flexible data — the audit trail and the notification delivery log — fits a document model, so it lives in MongoDB; the analytics projections are derived, relational data and live in their own Postgres database (<code>analytics_db</code>), rebuildable from the topics. Forcing either into the other's model is where teams get burned.</p>
       </div>
     </details>
 
@@ -1029,15 +1451,16 @@
     <details class="qa">
       <summary>How do you trace a request across async boundaries?</summary>
       <div class="answer">
-        <p>OpenTelemetry context is propagated explicitly across every hop — HTTP headers into the API, Temporal interceptors into workflow/activity spans, Kafka message headers, and Celery task headers. The goal (a Phase 3 success criterion) is that one booking request shows up in Jaeger as a single connected trace across HTTP → Temporal → Kafka → Celery, not disconnected fragments. Auto-instrumentation alone only covers HTTP/DB, so the async hops are verified with a deliberate end-to-end trace test.</p>
+        <p>One booking is one connected trace. The W3C <code>traceparent</code> of the producing span is stored in the outbox row, carried by Debezium into the Kafka header, extracted by our own consumer base (about 30 lines; the OpenTelemetry confluent-kafka instrumentation is deliberately not installed, because it records a <em>link</em> to the producer rather than a parent, which would make two traces) and passed into Celery&rsquo;s task headers by the Celery instrumentation; Temporal interceptors cover workflow and activity spans.</p>
+        <p>Measured: a booking sent with a known trace id produced one trace in Jaeger (<code>e839d1a9ec7d48e435d09abb68881b00</code>) with 57 spans across 12 services (gateway, Scheduling, the Scheduling worker, Billing, the notification consumer, the Celery worker, the notification Temporal worker and the analytics consumer), visible within 7 s and read through Jaeger&rsquo;s HTTP API by an automated test. Honest limits: the reminder timer fires hours or days later, so that trace is long-lived and can show a wide gap, and the later firing inside the same trace was not exercised; nobody has yet looked at the trace in the Jaeger UI (the phase gate&rsquo;s manual check).</p>
       </div>
     </details>
 
     <details class="qa">
       <summary>Why are reference checks synchronous instead of event-driven?</summary>
       <div class="answer">
-        <p>Because the event infrastructure does not exist yet. Kafka and the transactional outbox are Phase 3 scope (D-08), and the simplest correct thing today is to ask the owning service at write time: <code>GET /internal/&hellip;</code>, caller&rsquo;s JWT forwarded, three bounded attempts on transport errors, then 422 if the target is missing or inactive and 503 if the owner cannot answer &mdash; nothing is written either way.</p>
-        <p>The cost is stated plainly: writes depend on the owner&rsquo;s availability. Phase 3 replaces the check with event-fed local copies, which removes that coupling and introduces an eventual-consistency window instead. Deactivation never cascades (D-06) and reads return ids only (D-07).</p>
+        <p>Because the simplest correct thing is to ask the owning service at write time, and Phase 3 did not change that. Kafka and the transactional outbox exist now, but event-fed local copies of reference data were not built: <code>GET /internal/&hellip;</code>, caller&rsquo;s JWT forwarded, three bounded attempts on transport errors, then 422 if the target is missing or inactive and 503 if the owner cannot answer &mdash; nothing is written either way.</p>
+        <p>The cost is unchanged and stated plainly: writes depend on the owner&rsquo;s availability. Event-fed copies would remove that coupling and introduce an eventual-consistency window instead; that work is not done. Deactivation never cascades (D-06) and reads return ids only (D-07 of the Phase 1.1 context).</p>
       </div>
     </details>
 
@@ -1077,7 +1500,7 @@
       <summary>What happens to slots and bookings when a provider changes their schedule?</summary>
       <div class="answer">
         <p>The change writes an outbox row in Provider in the same transaction; Scheduling polls it (every 15 s), starts one <code>ScheduleChangeWorkflow</code> per event and acknowledges after the start. The workflow re-expands the provider&rsquo;s current templates and treats every future slot not in that set as stale: available ones are withdrawn, booked ones flag their appointment (it stays confirmed, staff cancel or reschedule it, and cancelling withdraws the stale slot instead of freeing it), and slots held by an in-flight booking are re-checked in a second pass after the hold TTL.</p>
-        <p>Honest gaps: it is polled, not event-driven; a slot still held at the second pass gets no third pass; delivered events are never purged; waitlist entries of a deactivated provider are untouched.</p>
+        <p>Honest gaps: it is polled, not event-driven (Phase 3 also publishes <code>provider.schedule_changed</code>, but nothing consumes it and the poller Schedule is paused on the live server by the user&rsquo;s decision); a slot still held at the second pass gets no third pass; delivered events are never purged; waitlist entries of a deactivated provider are untouched.</p>
       </div>
     </details>
 
@@ -1085,7 +1508,7 @@
       <summary>What if something fails after the database commit?</summary>
       <div class="answer">
         <p>Compensations read the appointment&rsquo;s current state and do nothing for a committed booking, so a late failure can never void billing or release a slot of a confirmed appointment. The audit write after a committed confirm, cancel, swap, check-in, complete or schedule-change apply is non-fatal: it is logged as <code>audit.write_failed</code> and the outcome stands, because the transition is already durable in <code>appointment_status_history</code>.</p>
-        <p>The cost is stated plainly: if Mongo is down at that instant the audit entry can be lost and nothing backfills it. The general fix is Phase 3&rsquo;s transactional outbox; a local outbox now would be a second mechanism that Phase 3 replaces.</p>
+        <p>The cost is stated plainly: if Mongo is down at that instant the audit entry can be lost and nothing backfills it. Carrying audit in the Phase 3 transactional outbox is the natural fix; it was deferred (the user accepted that), because it must not widen the booking accept path.</p>
       </div>
     </details>
 
@@ -1100,7 +1523,9 @@
     <details class="qa">
       <summary>Does it meet its load and availability targets?</summary>
       <div class="answer">
-        <p>Unknown, and the dashboard does not claim otherwise. Phase 2.1 defined NFR-01..08 from a stated demand model (50,000 booking requests a day, 25 per second sustained for 10 minutes, a 100 per second burst, p95 accept latency 300 ms, 99.9 percent availability) in one file that the PRD, <code>docs/nfr.md</code> and the k6 thresholds all derive from, and added a runnable k6 load test with a seed script. The targets are <strong>not yet measured</strong>: the <code>smoke</code> profile crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector) and <code>sustained</code> and <code>burst</code> have never run. The local single-instance stack is not claimed to meet NFR-01 or NFR-02. Phase 3 observability measures them and sizes replicas; what is verified today is the correctness under contention (the concurrency suites and the 50-way live demo).</p>
+        <p>Unknown, and the dashboard does not claim otherwise. Phase 2.1 defined NFR-01..08 from a stated demand model (50,000 booking requests a day, 25 per second sustained for 10 minutes, a 100 per second burst, p95 accept latency 300 ms, 99.9 percent availability) in one file that the PRD, <code>docs/nfr.md</code> and the k6 thresholds all derive from, and added a runnable k6 load test with a seed script. The targets are <strong>not yet measured</strong>.</p>
+        <p>What ran: in plan 02.1-13 the <code>smoke</code> profile crossed its latency thresholds in both runs (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; two uncontrolled runs on a heavily loaded laptop). Three later smoke runs on 10 and 11 November 2026 passed every threshold: booking accept p95 21.8 ms before Phase 3, then 29.3 ms and 49.1 ms, with saga completion p95 about 0.52 s each time. The host load differed and each run has about 151 booking samples, and accept latency crept up across the three, so it is the number to watch; the cause was not isolated (there was no A/B run).</p>
+        <p>Phase 3 added the Prometheus histograms and Grafana panels that can measure the targets (no panel exists for NFR-01, 06, 07 and 08, and <code>docs/nfr.md</code> says so). <code>sustained</code>, <code>burst</code> and <code>contention</code> were <strong>not run</strong>: the user deferred them until after Phase 3. The local single-instance stack is not claimed to meet NFR-01 or NFR-02; what is verified is correctness under contention (the concurrency suites and the 50-way live demo).</p>
       </div>
     </details>
 
@@ -1112,10 +1537,11 @@
     </details>
 
     <details class="qa">
-      <summary>What is not yet verified after Phase 2.1?</summary>
+      <summary>What is not yet verified after Phase 3?</summary>
       <div class="answer">
-        <p>Phase 2: the interim mechanisms are labelled, not hidden (starter and sweeper until the Phase 3 outbox; notification/follow-up/analytics stubs; polling; <code>auto-setup</code> Temporal). Phase 2.1 delivered quantified NFR targets (NFR-01..08, <code>docs/nfr.md</code>) and a runnable k6 load test, but the targets are <strong>not yet measured</strong>: the <code>smoke</code> profile crossed its latency thresholds in both runs against the real stack in plan 02.1-13 (booking accept p95 2.0 to 6.0 s against 300 ms, saga completion p95 16.7 to 28.5 s against 5 s; every accepted booking still confirmed; two uncontrolled runs on a heavily loaded laptop with no Jaeger collector) and <code>sustained</code> and <code>burst</code> have never run; the local single-instance stack is not claimed to meet NFR-01 or NFR-02, and the concurrency suites and the live demo remain the only load evidence until Phase 3 observability measures them. The 02-06 workflow trace is connected through the Temporal tracing interceptor in tests, but a person has not yet followed a booking end to end in the Jaeger UI. Workers expose no metrics, and Mongo audit writes are not atomic with the Postgres commit (WR-04). This is a local/dev system with synthetic data only: logout, PHI log-safety and database isolation are implemented and tested but <strong>not fully hardened</strong>.</p>
-        <p>Carried from Phase 1.1: no request-body size cap at the gateway; one shared Redis for the denylist and rate limits; containers running as root. Not yet verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, a person viewing the connected trace in the Jaeger UI, and the <code>bootstrap_admin.py</code> admin-creation branch (only its no-op path is tested). Three assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain relies on write-time validation (ORG-03), overlapping availability templates are still allowed (PPL-03), and clients combining services may briefly see stale state (PPL-04).</p>
+        <p><strong>Load:</strong> NFR-01..08 are targets that are <strong>not yet measured</strong>; only the <code>smoke</code> profile ran (it passed in three runs and accept latency crept up), and <code>sustained</code>, <code>burst</code> and <code>contention</code> are deferred until after Phase 3. <strong>Traces and dashboards:</strong> one booking is one Jaeger trace in an automated test, but nobody has yet looked at it in the Jaeger UI, the four Grafana dashboards were exercised through Grafana&rsquo;s query API and not viewed in a browser, and the reminder&rsquo;s later firing inside the same trace was not exercised. <strong>Failure paths:</strong> the consumer&rsquo;s decode-time Schema Registry outage path has no automated test, a Kafka broker outage on its own was not exercised, and the path after a replication slot exceeds its WAL cap was not exercised. <strong>Real provider:</strong> one send per dedupe key needs an idempotency key at a real SMS or email provider; none is integrated. <strong>Scope:</strong> only the ten D-07 event types are evented, analytics start at cutover, <code>provider.schedule_changed</code> is published but not consumed, and event-fed local copies were not built.</p>
+        <p><strong>Hardening:</strong> this is a local/dev system with synthetic data only. Kafka, Schema Registry and the Connect REST API have no authentication on the dev network; application and Celery containers run as root (the Semgrep missing-user findings are accepted for now by the user); Temporal runs from the non-production <code>auto-setup</code> image; Mongo audit writes are not atomic with the Postgres commit (WR-04) and moving audit into the outbox is deferred; the outbox, the topics, <code>processed_events</code> and the delivery log have no retention. Logout, PHI log-safety and database isolation are implemented and tested but <strong>not fully hardened</strong>.</p>
+        <p>Carried from Phase 1.1: no request-body size cap at the gateway; one shared Redis for the denylist and rate limits. Not yet verified: real-socket outage behaviour of the synchronous checks, a cold start from an empty volume, and the <code>bootstrap_admin.py</code> admin-creation branch (only its no-op path is tested). Three assumptions await mentor confirmation: the provider&rarr;department&rarr;clinic scope chain relies on write-time validation (ORG-03), overlapping availability templates are still allowed (PPL-03), and clients combining services may briefly see stale state (PPL-04).</p>
       </div>
     </details>
 
@@ -1123,6 +1549,7 @@
       <summary>Is the local Docker Compose setup production-shaped?</summary>
       <div class="answer">
         <p>Honestly: the local stack uses Temporal's <code>auto-setup</code> image and single-node Kafka and a single Postgres container (hosting all seven service databases) for developer convenience &mdash; that's labeled as dev-only, not a production deployment. Production-shaping (separate Temporal schema management, replicated brokers, a Postgres instance per service, non-root application containers, resource limits) is called out as a decision to document rather than something silently claimed. Being explicit about this is part of the reliability story, not a gap.</p>
+        <p>Phase 3 adds more dev-only shapes: Kafka Connect and Debezium with a replication slot per database (the slots retain WAL while Connect is down, capped at 2 GB), Kafka, Schema Registry and the Connect REST API without authentication on the Compose network (production would need SASL and TLS, ACLs per consumer group and authenticated Connect access), classic RabbitMQ queues, and containers that run as root (accepted for now by the user; the Semgrep missing-user findings stand).</p>
       </div>
     </details>
   </section>
@@ -1130,7 +1557,7 @@
   <!-- ROADMAP -->
   <section id="roadmap">
     <div class="sec-head"><span class="sec-num">07</span><h2>Roadmap &amp; how this dashboard grows</h2></div>
-    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v3.1: Phase 2 (the active phase) added the implemented workflows, the state diagrams, the Temporal rationale and the interim mechanisms; Phase 2.1 (inserted after the Week 1-2 review) adds the appointment state machine, the schedule-change and reconciler flows, the new decisions and the NFR targets; Phase 3 adds the event-flow diagram and the closing Q&amp;A.</p>
+    <p class="sec-sub">Part A runs as three phases, one per execution week. This dashboard is v4: Phase 2 added the implemented workflows, the state diagrams, the Temporal rationale and the interim mechanisms; Phase 2.1 (inserted after the Week 1-2 review) added the appointment state machine, the schedule-change and reconciler flows, the new decisions and the NFR targets; Phase 3 (the active phase) adds the five event flows, nine Phase 3 decision cards and the updated Q&amp;A. The Phase 3 block below states what is built. The phase gate (plan 03-20: the full regression run, the requirement trace and the user&rsquo;s visual checks of this page, the dashboards and Jaeger) has not run yet.</p>
     <div class="phases">
       <div class="phase">
         <div class="p-num">Phase 1 · Week 1 · complete</div>
@@ -1144,22 +1571,22 @@
         <p>The Phase 1 monolith re-delivered as gateway + Identity, Organization, Provider, Patient and a Scheduling skeleton: database per service, RS256/JWKS, synchronous reference checks, connected traces. No new capability; Phase 1 requirements re-delivered.</p>
         <div class="reqs">IAM-01..04 · PPL-01..04 · ORG-01..03 · OBS-04 · DASH-01..02 (re-delivered)</div>
       </div>
-      <div class="phase active">
-        <div class="p-num">Phase 2 · Week 2 · active</div>
+      <div class="phase">
+        <div class="p-num">Phase 2 · Week 2 · complete</div>
         <h3>Scheduling + Service Workflow</h3>
-        <p>Temporal booking / cancel / reschedule / waitlist / visit-completion workflows on two worker containers, data-layer conflict prevention, layered idempotency, waitlist auto-booking, modeled billing pre-check, Visit and Billing services. All 12 plans executed; the full regression run and human review are pending.</p>
+        <p>Temporal booking / cancel / reschedule / waitlist / visit-completion workflows on two worker containers, data-layer conflict prevention, layered idempotency, waitlist auto-booking, modeled billing pre-check, Visit and Billing services. All 12 plans executed; ROADMAP.md marks the phase complete (2026-11-10).</p>
         <div class="reqs">SCHED-01..08 · VISIT-01..05 · BILL-01..02</div>
       </div>
       <div class="phase">
-        <div class="p-num">Phase 2.1 · inserted after the Week 1-2 review · plans executed, verification pending</div>
+        <div class="p-num">Phase 2.1 · inserted after the Week 1-2 review · complete</div>
         <h3>Phase 2.1 &mdash; Week 1-2 mentor review remediation</h3>
-        <p>Appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, post-commit safety, single-use refresh tokens, case-insensitive email, pagination, self-service reads, NFR targets and a runnable k6 load test. The NFR targets are not yet measured (Phase 3).</p>
+        <p>Appointment state machine with a check-in window, provider schedule-change propagation, reconcilers for stuck states, post-commit safety, single-use refresh tokens, case-insensitive email, pagination, self-service reads, NFR targets and a runnable k6 load test. The NFR targets are not yet measured (the k6 sustained, burst and contention runs were deferred until after Phase 3).</p>
         <div class="reqs">M1 · M2 · S3..S7 · C1..C5 · D1 · D2 · NFR-01..08</div>
       </div>
-      <div class="phase">
-        <div class="p-num">Phase 3 · Week 3</div>
+      <div class="phase active">
+        <div class="p-num">Phase 3 · Week 3 · active · implementation plans executed, phase gate and visual checks pending</div>
         <h3>Event-Driven System + Observability</h3>
-        <p>Kafka outbox backbone, Celery/RabbitMQ workers + DLQ, event-derived analytics, full observability, dashboard closeout.</p>
+        <p>A transactional outbox relayed to Kafka by Debezium, three idempotent consumers (visit downstream, notifications and reminders on Celery and Temporal timers, analytics projections), a read-only analytics API, Prometheus metrics on every process, four provisioned Grafana dashboards, one trace across HTTP, Temporal, Kafka and Celery, and this dashboard&rsquo;s closeout. Built and tested on the local stack. Still to come: the phase gate, the NFR measurement (sustained, burst and contention) and the human checks of the dashboards, Jaeger and this page.</p>
         <div class="reqs">EVENT-01..05 · NOTIF-01..04 · ANLY-01..06 · OBS-01..03 · DASH-03..04</div>
       </div>
     </div>
@@ -1169,7 +1596,7 @@
 
 <footer>
   <div class="wrap">
-    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v3.1 · Phase 2.1</code></span>
+    <span>SmartHealth — Architecture &amp; Decision Dashboard · <code>v4 · Phase 3</code></span>
     <span>Source of truth: <code>docs/architecture-dashboard.html</code> · updated per phase</span>
   </div>
 </footer>

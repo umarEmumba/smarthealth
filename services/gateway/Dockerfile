@@ -27,4 +27,9 @@ RUN pip install --no-cache-dir .
 # count is NOT the sync-WSGI formula. Two listeners, one app: :8000 is the public
 # one (the only port Compose publishes); :9100 serves /metrics to Prometheus on the
 # internal network only. The app decides by the socket a request arrived on.
-CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 -b 0.0.0.0:9100 services.gateway.app:app"]
+# Two workers stay (D-14). Prometheus multiprocess mode (CR-02): the directory
+# variable is exported here, in the default command only, before gunicorn starts
+# (prometheus_client picks its value class at import), so every /metrics scrape is
+# the SUM over both workers; the hooks in libs/observability/gunicorn_conf.py empty
+# the directory at start and mark dead workers.
+CMD ["sh", "-c", "export PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus-multiproc && mkdir -p \"$PROMETHEUS_MULTIPROC_DIR\" && exec gunicorn -c python:libs.observability.gunicorn_conf -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 -b 0.0.0.0:9100 services.gateway.app:app"]

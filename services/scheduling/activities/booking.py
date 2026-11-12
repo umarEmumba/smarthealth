@@ -46,6 +46,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+from prometheus_client import Histogram
 from pymongo import AsyncMongoClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +77,19 @@ from services.scheduling.repository.models import Appointment
 
 log = get_logger(__name__)
 
+# Saga completion time (NFR-05, D-04): from the appointment row's creation (the
+# accepted booking) to the DATABASE clock at the moment the saga settled it, by
+# outcome (`confirmed` | `failed`) only: never a per-appointment label. Served on
+# the scheduling worker's metrics port (plan 03-15), scraped as
+# job="smarthealth-scheduling-worker". Buckets cover 0.1 s to 900 s (NFR-05's
+# confirm p95 is 5 s and p99 15 s; a hold that is reaped settles in minutes).
+BOOKING_SAGA_SECONDS = Histogram(
+    "booking_saga_seconds",
+    "Seconds from an accepted booking to its saga outcome",
+    ["outcome"],
+    buckets=(0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 30, 60, 120, 300, 600, 900),
+)
+
 ACTOR = "system:booking"
 AUDIT_ACTOR_ID = "service:scheduling"
 AUDIT_ACTOR_ROLE = "service"
@@ -86,6 +100,24 @@ NOTIFICATION_TYPE = "booking_confirmed"
 def _business_error(kind: str, message: str) -> ApplicationError:
     """A non-retryable business outcome; `message` must carry no values."""
     return ApplicationError(message, type=kind, non_retryable=True)
+
+
+async def _observe_saga_seconds(db: AsyncSession, appointment_id: str, outcome: str) -> None:
+    """Record `now() - appointments.created_at` (both on the database clock, so
+    worker clock skew cannot distort it) in `booking_saga_seconds{outcome}`. Read in
+    the activity's existing session, after its state change committed; a failed
+    read only loses one observation and never fails (and so never compensates or
+    retries) the step."""
+    try:
+        seconds = await db.scalar(
+            text("SELECT extract(epoch FROM (now() - created_at)) FROM appointments WHERE id = :a"),
+            {"a": uuid.UUID(appointment_id)},
+        )
+    except Exception as exc:  # noqa: BLE001 - a metric must never fail a saga step
+        log.warning("booking.saga_seconds_unavailable", outcome=outcome, error=type(exc).__name__)
+        return
+    if seconds is not None:
+        BOOKING_SAGA_SECONDS.labels(outcome=outcome).observe(max(float(seconds), 0.0))
 
 
 def _workflow_id() -> str:
@@ -375,6 +407,7 @@ class SchedulingActivities:
                 log.info("booking.confirm", appointment_id=inp.appointment_id, outcome="lost_hold")
                 raise _business_error("ConfirmLostHold", "slot hold lost before confirm")
             await db.commit()
+            await _observe_saga_seconds(db, inp.appointment_id, "confirmed")
         log.info("booking.confirm", appointment_id=inp.appointment_id, outcome="confirmed")
         # Committed above: a failed audit must not fail (and so compensate) a
         # confirmed booking (S3).
@@ -481,6 +514,8 @@ class SchedulingActivities:
             await db.commit()
             appointment = await db.get(Appointment, uuid.UUID(inp.appointment_id))
             clinic_id = str(appointment.clinic_id) if appointment is not None else None
+            if failed:
+                await _observe_saga_seconds(db, inp.appointment_id, "failed")
         log.info(
             "booking.mark_failed",
             appointment_id=inp.appointment_id,
