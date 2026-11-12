@@ -1,8 +1,8 @@
 ---
 phase: 03-event-driven-system-observability
-verified: 2026-11-11T14:00:00Z
-status: gaps_found
-score: 3/5 roadmap success criteria verified (SC1, SC3, SC5 VERIFIED; SC2, SC4 PARTIAL); 18/20 requirements satisfied outright, 2 partial (EVENT-05 on the consumer path, OBS-01)
+verified: 2026-11-12T10:00:00Z
+status: passed
+score: 5/5 roadmap success criteria verified (SC2 VERIFIED with a recorded, user-scoped caveat; SC1, SC3, SC4, SC5 VERIFIED); 20/20 requirements accounted for (17 satisfied, 2 satisfied with caveat [NOTIF-02, NOTIF-03], 1 accepted deviation [EVENT-04], 0 partial, 0 orphaned)
 covered_files:
   - ".planning/phases/03-event-driven-system-observability/03-01-event-foundation-PLAN.md"
   - ".planning/phases/03-event-driven-system-observability/03-01-event-foundation-SUMMARY.md"
@@ -44,175 +44,204 @@ covered_files:
   - ".planning/phases/03-event-driven-system-observability/03-19-dashboard-closeout-SUMMARY.md"
   - ".planning/phases/03-event-driven-system-observability/03-20-phase-gate-PLAN.md"
   - ".planning/phases/03-event-driven-system-observability/03-20-phase-gate-SUMMARY.md"
+  - ".planning/phases/03-event-driven-system-observability/03-21-consumer-reliability-PLAN.md"
+  - ".planning/phases/03-event-driven-system-observability/03-21-consumer-reliability-SUMMARY.md"
+  - ".planning/phases/03-event-driven-system-observability/03-22-visit-trigger-recovery-PLAN.md"
+  - ".planning/phases/03-event-driven-system-observability/03-22-visit-trigger-recovery-SUMMARY.md"
+  - ".planning/phases/03-event-driven-system-observability/03-23-connection-budget-PLAN.md"
+  - ".planning/phases/03-event-driven-system-observability/03-23-connection-budget-SUMMARY.md"
+  - ".planning/phases/03-event-driven-system-observability/03-24-multiprocess-metrics-PLAN.md"
+  - ".planning/phases/03-event-driven-system-observability/03-24-multiprocess-metrics-SUMMARY.md"
+  - ".planning/phases/03-event-driven-system-observability/03-25-multiprocess-rollout-PLAN.md"
+  - ".planning/phases/03-event-driven-system-observability/03-25-multiprocess-rollout-SUMMARY.md"
+  - ".planning/phases/03-event-driven-system-observability/03-26-gap-closeout-PLAN.md"
+  - ".planning/phases/03-event-driven-system-observability/03-26-gap-closeout-SUMMARY.md"
+  - "libs/db/postgres.py"
+  - "libs/events/classify.py"
   - "libs/events/consumer.py"
-  - "libs/events/outbox.py"
+  - "libs/observability/gunicorn_conf.py"
   - "libs/observability/http_metrics.py"
   - "scripts/backfill_visit_completed_events.py"
-  - "services/analytics/consumer.py"
-  - "services/notification/workflows/reminder.py"
-  - "services/visit/consumer.py"
+  - "scripts/replay_dlq.py"
+  - "services/visit/activities/downstream.py"
+  - "services/visit/downstream.py"
   - "services/visit/repository/visit_repo.py"
-covered_digest: "v2:sha256:34cba1fa075effd65028eb237955eb1b8f1086e0321a6e4534f784e41b2c1f49"
+  - "services/visit/worker.py"
+covered_digest: "v2:sha256:eda27ddf6ac8c2d05a0f66c5b29cf143c1309e824f9a4f03a484e29344a0140c"
 behavior_unverified: 0
-overrides_applied: 0
-re_verification: none (initial verification)
-gaps:
-  - truth: "No silent loss: a healthy visit.completed (and any analytics or notification event) is never dead-lettered because of a transient infrastructure failure, and a dead-lettered visit.completed can be recovered (SC2 / phase goal; EVENT-03, EVENT-05; D-03 replacement safety net)"
-    status: failed
-    reason: "CR-01 confirmed in code. _is_transient() classifies only sqlalchemy OperationalError/InterfaceError/connection_invalidated, TimeoutError, ConnectionError, OSError and Temporal RPC statuses. asyncpg TooManyConnectionsError (53300), CannotConnectNowError (57P03) and DeadlockDetectedError (40P01) are not in the SQLAlchemy asyncpg error-translate map (checked against SQLAlchemy 2.0.52 here) and are not RuntimeError/OSError, so they are re-raised as ordinary handler errors; the base consumer (libs/events/consumer.py 309-326) retries 3 times with 0.5 s backoff and dead-letters. The sweeper Schedule is deleted, list_unsettled requires downstream_started_at IS NOT NULL, scripts/backfill_visit_completed_events.py skips a visit whose outbox row already exists (already_queued), and no DLQ replay tool exists. A dead-lettered visit.completed therefore leaves the visit completed with downstream_started_at NULL for ever (billing never finalized, appointment never completed). The 300-connection ceiling was actually hit at the phase gate, so the trigger is demonstrated. docs/architecture.md 10.2 states 'An infrastructure outage (Postgres ...) is never dead-lettered', which is false for these error classes. No test covers it: tests/visit/test_visit_consumer.py test_a_database_outage_is_transient uses the SQLAlchemy OperationalError class only."
-    artifacts:
-      - path: "services/visit/consumer.py"
-        issue: "_is_transient (lines 101-109) misses asyncpg PostgresError classes 08/53/57/40"
-      - path: "services/analytics/consumer.py"
-        issue: "same classification gap (lines ~81-87): projection events dead-lettered on DB errors (WR-02)"
-      - path: "services/notification/triggers.py"
-        issue: "third copy of _is_transient (lines ~97-104) has drifted (no SQLAlchemy branch) (IN-01)"
-      - path: "libs/events/consumer.py"
-        issue: "_decode dead-letters every 4xx Schema Registry status including 408/429 (line ~347)"
-      - path: "services/visit/repository/visit_repo.py"
-        issue: "list_unsettled excludes downstream_started_at IS NULL, so no reconciler recovers a lost trigger"
-      - path: "scripts/backfill_visit_completed_events.py"
-        issue: "treats an existing outbox row as already_queued (line 121), so it cannot repair a dead-lettered event; also no replay of a DLQ record"
-    missing:
-      - "One shared libs/events/classify.py that classifies by SQLSTATE class (08, 53, 57, 40) and asyncpg.PostgresError, plus Temporal and broker classification; import it from the three consumers; exempt 408/429/5xx Schema Registry statuses from the poison path"
-      - "A recovery route for a dead-lettered visit.completed: either a reconciler query (status='completed' AND downstream_started_at IS NULL AND completed_at < now() - grace) that calls the idempotent ensure_downstream_started, or a DLQ replay script that re-produces a dead-lettered record to its source topic"
-      - "A test that makes the handler raise asyncpg.exceptions.TooManyConnectionsError and asserts RETRY_LATER (not dead-letter) for the visit and analytics consumers, and a test for the recovery route"
-      - "Correct docs/architecture.md 10.2 and the dashboard Q&A once fixed (or state the limitation until then)"
-  - truth: "Every service exposes Prometheus metrics visible in Grafana dashboards for critical flows (SC4; OBS-01): the HTTP request-rate, error-ratio and latency panels read correct values"
-    status: partial
-    reason: "CR-02 confirmed in code and live. Every gunicorn-served API (gateway, billing, analytics, identity, patient, provider, organization, scheduling, visit) runs -w ${WEB_CONCURRENCY:-2} (services/*/Dockerfile, WEB_CONCURRENCY not set in infra/docker-compose.yml) and PROMETHEUS_MULTIPROC_DIR / MultiProcessCollector appear nowhere in libs, services, infra, scripts, README or docs. Each scrape of /metrics is answered by one of two worker registries. Live Prometheus query sum by (job)(resets(http_requests_total[6h])) returned 2758 (scheduling), 2008 (identity), 1690 (billing), 1632 (organization), 1536 (provider), 1375 (gateway), 1024 (patient), 999 (visit), 644 (analytics) counter resets in 6 h on a stack that was not restarted. rate() and histogram_quantile on the booking/NFR dashboard (smarthealth-booking-nfr.json) and the gateway 5xx ratio are therefore unreliable; the Phase 3 purpose of those histograms (measure NFR-03/NFR-04 after the phase) cannot be trusted. Single-process targets (Temporal workers, three consumers, Celery) are unaffected; all 17 Prometheus job groups are up and every dashboard is provisioned, so exposure and provisioning are real; the defect is value correctness."
-    artifacts:
-      - path: "services/gateway/Dockerfile"
-        issue: "gunicorn -w 2, no multiprocess mode; gateway /metrics is a hand-written generate_latest() route on :9100"
-      - path: "services/analytics/Dockerfile"
-        issue: "same; applies to the eight other gunicorn Dockerfiles (billing, identity, patient, provider, organization, scheduling, visit)"
-      - path: "libs/observability/http_metrics.py"
-        issue: "Instrumentator uses the process registry; does not switch to MultiProcessCollector"
-      - path: "infra/grafana/dashboards/smarthealth-booking-nfr.json"
-        issue: "http_requests_total and http_request_duration_seconds panels read per-worker, reset-riddled series"
-    missing:
-      - "Either set PROMETHEUS_MULTIPROC_DIR (cleaned at start) plus a gunicorn_conf.py child_exit calling multiprocess.mark_process_dead, and build the gateway /metrics from a CollectorRegistry with MultiProcessCollector, or set WEB_CONCURRENCY=1 for the Prometheus-scraped APIs (also eases the connection budget, WR-05)"
-      - "An e2e check that resets(http_requests_total[...]) is 0 after a short traffic burst, so the defect cannot return"
-deferred: []
+overrides_applied: 1
+overrides:
+  - must_have: "SC2 / EVENT-05 / NOTIF-02 reminders are delivered with no silent loss: a reschedule signal arriving while the last lead's enqueue activity runs is not dropped (first review WR-01)"
+    reason: "User decision D-14 (2026-11-11) put the reminder reschedule-signal race out of scope for gap closure and recorded it as a follow-up (needs workflow.patched plus a recorded-history replay test). The window is one activity execution at the final lead; every other reschedule path is covered. Recorded in 03-CONTEXT.md D-14 and in the 03-26 SUMMARY follow-ups. Orchestrator: confirm this override is acceptable, or downgrade SC2 to PARTIAL and status to human_needed."
+    accepted_by: "user (D-14 in 03-CONTEXT.md; recorded by verifier, not newly asked)"
+    accepted_at: "2026-11-11T00:00:00Z"
+re_verification:
+  previous_status: gaps_found
+  previous_score: "3/5 roadmap success criteria (SC2, SC4 PARTIAL); 18/20 requirements outright"
+  gaps_closed:
+    - "CR-01: a dead-lettered or dropped visit.completed is recoverable and a transient DB/broker/Temporal/registry failure is retried, bounded, then dead-lettered as TransientExhausted"
+    - "CR-02: HTTP request/latency series correct under gunicorn -w 2 (Prometheus multiprocess mode in all nine APIs)"
+    - "WR-05 (connection budget; closed-loop engines retired; measured peak 105)"
+    - "WR-02/WR-03/WR-07/IN-01 of the first review (shared classifier, transient cap, commit retry, single classifier)"
+    - "Gap-review WR-01, WR-02, WR-07 (quick task 261112-8r6: lost-trigger pass first under its own budget, age ceiling plus kill switch plus per-visit backoff, replay --apply needs a selector and skips poison)"
+  gaps_remaining: []
+  regressions: []
 ---
 
-# Phase 3: Event-Driven System + Observability Verification Report
+# Phase 3: Event-Driven System + Observability Verification Report (re-verification after gap closure)
 
 **Phase Goal:** Every state change reliably becomes a durable, replayable event with no dual-write gaps, background jobs run independently of user-facing flows with guaranteed at-least-once delivery and no silent loss, operators can see the five core operational metrics derived from the event stream, and every critical flow is traceable end-to-end and observable via metrics/logs/dashboards, with the Architecture & Decision dashboard fully closed out.
-**Verified:** 2026-11-11
-**Status:** gaps_found
-**Re-verification:** No, initial verification
+**Verified:** 2026-11-12
+**Status:** passed (one verifier judgement call on SC2, flagged below)
+**Re-verification:** Yes, after gap closure plans 03-21..03-26 and quick task 261112-8r6
+
+## Previous verification (gaps_found, 2026-11-11)
+
+The first verification found two blockers and scored 3/5 (SC2 and SC4 PARTIAL), 18/20 requirements outright (EVENT-05 and OBS-01 PARTIAL). What changed since:
+
+| Previous gap | What changed | Re-verified how |
+|---|---|---|
+| CR-01 silent loss of a dead-lettered `visit.completed`; consumers dead-lettering on asyncpg 53300/57P03/40P01 | `libs/events/classify.py` (one classifier, SQLSTATE classes 08/53/57/40, shared by visit, analytics, notification consumers); transient cap -> `TransientExhausted` in `libs/events/consumer.py`; visit-reconciler lost-trigger pass (`services/visit/downstream.py` `restart_lost_triggers`); backfill `stale_queued`; `scripts/replay_dlq.py` | read the code, ran tests, live Temporal and docs (below) |
+| CR-02 wrong HTTP metrics under gunicorn `-w 2` | Prometheus multiprocess mode, `libs/observability/gunicorn_conf.py`, `MultiProcessCollector` in `http_metrics.py`, gateway `/metrics` rebuilt from the multiprocess registry | live Prometheus `resets()` query, live container env |
+| WR-05 connection budget | `libs/db/postgres.py` retires closed-loop engines; pool settings; `test_compose_connection_budget`; peak 304 -> 105 | test run, sample file |
+| Docs / dashboard claimed an outage is never dead-lettered | docs 10.2/10.4/10.7/10.8/10.9 and three dashboard sentences (plus the fourth in 261112-8r6) rewritten, guard tests added | `tests/docs` run |
 
 ## Verdict
 
-The core design is real and works: transactional outbox in every producer's own transaction, Debezium CDC, ten Avro subjects, idempotent consumers, Temporal reminders feeding one Celery send task with a dead-letter exchange, an event-fed analytics projection with five views behind a clinic-scoped API, one connected Jaeger trace, and a closed-out dashboard. I could not falsify any of that and found live evidence for most of it.
+Both blockers are closed with code, test and live evidence, and I could not falsify either closure. The ROADMAP contract holds. The one judgement call is SC2: the first-review WR-01 reminder reschedule-signal race remains open by user decision D-14. I rated SC2 VERIFIED with a recorded caveat rather than PARTIAL, because (a) the user explicitly scoped it out and recorded it, (b) the loss window is a single activity execution at the final reminder lead, and (c) the SC2 text (asynchronous, never blocking, delivered by Celery/RabbitMQ, retried without double-send, poison to DLQ) is demonstrably met. The orchestrator may legitimately choose to treat it as PARTIAL; the frontmatter override records the basis and what to change.
 
-Two clauses of the phase goal are not met as written, both confirmed against the code and, for the second, against the live stack:
+## Closure checks by item
 
-1. "no silent loss" (CR-01): a dead-lettered `visit.completed` is never recovered, and the consumer dead-letters on asyncpg connection/resource errors it should retry. This is the exact safety net D-03 retired.
-2. "observable via metrics/dashboards" (CR-02): HTTP rate and latency series are wrong under gunicorn `-w 2` without multiprocess mode.
+### 1. CR-01 closed (VERIFIED)
 
-Neither is mitigated by an accepted deviation: the user accepted the test-environment limits, the root-user Dockerfiles, the EVENT-04 deviation and unmeasured NFRs, but nothing in the CONTEXT, the SUMMARYs or the docs records either of these two as accepted. The documented claim in `docs/architecture.md` 10.2 ("an infrastructure outage (Postgres ...) is never dead-lettered") is contradicted by the code, which makes it a documentation-accuracy defect as well.
+| Check | Evidence |
+|---|---|
+| Classifier covers asyncpg `TooManyConnectionsError` / `CannotConnectNowError` / `DeadlockDetectedError` and SQLSTATE classes 08/53/57/40 | `libs/events/classify.py`: `TRANSIENT_SQLSTATE_CLASSES = ("08","53","57","40")`, `sqlstate_of` walks `sqlstate`/`pgcode` on the exception, `orig`, `__cause__`/`__context__` (depth-bounded, cycle-safe); explicit SQLSTATE is authoritative (23505/42P01 stay non-transient); SQLAlchemy class only decides when no code exists |
+| Used by all three consumers, no copies | `services/visit/consumer.py:123` `classify.is_transient(exc, temporal=True)`; `services/analytics/consumer.py:111` `classify.is_transient(exc)`; `services/notification/triggers.py:175` `classify.is_transient(exc, db=False, temporal=True, broker=True)`; AST guard in `tests/events/test_classify.py` |
+| Cap yields `TransientExhausted` | `libs/events/consumer.py:76` `TRANSIENT_EXHAUSTED`, `_retry_later` (line 456) dead-letters after the attempt floor and time cap (10 / 900 s) |
+| Lost trigger recoverable: reconciler | `services/visit/downstream.py` `restart_lost_triggers(max_age_minutes, backoff)` with `LostTriggerBackoff`, `VISIT_LOST_TRIGGER_RESTART_ENABLED` kill switch, `VISIT_LOST_TRIGGER_MAX_AGE_HOURS` ceiling (default 24), abort after 3 consecutive RPC errors; runs first under its own 20 s budget (`services/visit/activities/downstream.py`) |
+| Lost trigger recoverable: backfill and replay | `scripts/backfill_visit_completed_events.py` `stale_queued` / `restarted` counts; `scripts/replay_dlq.py` (dry run default, `--apply` needs a selector, `POISON_ERROR_TYPES` skipped by default) |
+| Live proof of recovery | `closeout-logs/gap-e2e.txt`: `PASSED ...test_lost_visit_trigger_is_recovered_by_the_reconciler` |
+| Retired sweeper Schedule still absent | I listed live Temporal schedules from inside `visit-worker`: `scheduling-hold-reaper, scheduling-pending-starter, scheduling-reconciler, scheduling-schedule-change-poller, visit-reconciler`. No `visit-downstream-sweeper`. Gate e2e `test_sweeper_schedule_retired_on_live_server` PASSED |
+| No workflow/activity name or shape changed | `git diff 1291b59..HEAD` on workflows, `schedules.py`, notification and scheduling workflows and REQUIREMENTS.md: only `services/visit/workflows/reconciler.py`, and that diff is docstring only; `tests/workflows/test_replay_reconciler.py`: 10 passed, 1 skipped (opt-in recorder) |
+| D-03 condition for the dead-letter branch | Now holds: a dead-lettered `visit.completed` has three recovery routes, the Schedule stays retired, and the kill-between-commit-and-publish proof from 03-11/03-12 is unchanged |
+| Tests (mine, this session) | `tests/events/test_classify.py`, `test_replay_dlq.py`, `tests/docs`, `tests/libs/test_postgres_registry.py`: 280 passed; `tests/visit/test_visit_consumer.py`, `test_visit_reconciler.py`, `tests/events/test_consumer_reliability.py`: 68 passed |
 
-## Success Criteria (ROADMAP contract)
+Proof level, stated honestly: the 53300/57P03/40P01 path is proven at the real `_handle_message` with real asyncpg error classes, not by a live 53300 injection (docs 10.9 says so). This is a behavioral test, so the truth is VERIFIED, not presence-only.
+
+### 2. CR-02 closed (VERIFIED)
+
+- Live Prometheus (queried now): `sum by (job)(resets(http_requests_total[30m]))` returned **0** for all nine API jobs (provider, patient, scheduling, identity, billing, visit, gateway, organization, analytics).
+- Targets: 20 active targets, all `up` (17 job groups; the three Temporal workers expose two targets each).
+- `PROMETHEUS_MULTIPROC_DIR` appears in exactly the nine API Dockerfile `CMD`s (grep: analytics, billing, gateway, identity, organization, patient, provider, scheduling, visit; notification Dockerfile: 0). Live pid 1 environment: 1 match in scheduling, gateway, visit, analytics API containers; 0 in scheduling-worker, visit-worker, visit-consumer, analytics-consumer, notification-celery, notification-consumer, notification-temporal-worker.
+- Two workers kept: `-w ${WEB_CONCURRENCY:-2}` in the CMD (checked in `services/visit/Dockerfile`; D-14 honored, not collapsed to 1).
+- `libs/observability/gunicorn_conf.py` has `on_starting` (empties the directory in the master) and `child_exit` (`mark_process_dead`); `http_metrics.py:54` builds `MultiProcessCollector`.
+- Gate e2e: nine `test_http_request_counters_have_no_resets_and_never_decrease[...]` cases PASSED (count 9 in `gap-e2e.txt`); smoke resets file: 0 for each of the nine jobs.
+
+### 3. WR-05 closed (VERIFIED)
+
+`libs/db/postgres.py`: `_registry`, `_retire`, and `_entry_for` retire entries whose loop `is_closed()`; `test_compose_connection_budget` in `tests/libs/test_postgres_registry.py` passes (my run). Measured peak: I recomputed from `closeout-logs/gap-pg-samples.txt` (192 samples): max `total=` **105** (first gate: 304). Caveat that stays open (gap-review WR-05/WR-06): the "241 of 297" budget is derived for services but Temporal's 40 is observed, not derived, and host-side processes are not in the sum; pool settings are unbounded integers.
+
+### Gate evidence cross-check (logs exist and match the 03-26 SUMMARY)
+
+- `closeout-logs/gap-non-e2e.txt` last line: `2049 passed, 11 skipped, 98 deselected, 128 warnings in 1618.63s`. Match.
+- `closeout-logs/gap-e2e.txt` last line: `97 passed, 5 deselected, 1 warning in 1280.55s`. Match.
+- Both logs untracked (`git status`). I did not rerun them.
+
+## ROADMAP Success Criteria
 
 | # | Criterion | Verdict | Evidence |
 |---|-----------|---------|----------|
-| 1 | Events published to Kafka with a registered schema via a transactional outbox; killing the process between commit and publish never loses or duplicates; consumers tolerate redelivery | **VERIFIED** | `libs/events/outbox.py` `enqueue_event` inserts through the caller's `AsyncSession`, never commits, deterministic uuid5 id with `ON CONFLICT (id) DO NOTHING`. Emit sites inside the state-change transactions: `appointment_repo.py` lines 256, 494, 615, 761, 812, 876 (booked, cancelled, rescheduled, checked_in, completed, no_show); `patient_repo.py` 60, 175; `provider_repo.py` 391; `visit_repo.py` 171. Live Schema Registry: 10 subjects (`com.smarthealth.events.*`), global compatibility BACKWARD. Live Connect (via `docker exec`): `scheduling-outbox`, `patient-outbox`, `provider-outbox`, `visit-outbox` connector and task both RUNNING. `wal_level=logical` in `infra/docker-compose.yml`. Kill/redelivery proofs exist (`tests/e2e/test_phase3_outbox_cdc.py`, `test_phase3_redelivery.py`, `test_phase3_visit_downstream.py`); e2e gate run 2 = 71 passed (recorded by 03-20; I did not rerun the suite). D-01 honored: no service-side relay loop (grep for relay/poll code found only comments and the replay tooling). |
-| 2 | Booking/cancel/reschedule trigger an asynchronous notification that never blocks the booking; reminders and follow-ups scheduled and delivered by Celery/RabbitMQ workers, retried without double-send, poison to a DLQ | **PARTIAL** | Delivery side VERIFIED: `services/notification/celery_app.py` `task_acks_late`, `task_reject_on_worker_lost`, `x-dead-letter-exchange` to `notifications.dlq`; `tasks.py` unique `dedupe_key` at delivery-log and provider layers, exponential `task.retry`; Temporal `ReminderWorkflow`/`FollowUpReminderWorkflow` (D-02) enqueue the same send; the live Jaeger trace contains `apply_async/notifications.send` and `run/notifications.send`. Booking is never blocked (event is consumed after commit). PARTIAL because of the phase-goal clause "no silent loss": the Kafka-to-Celery and Kafka-to-Temporal trigger consumers share the CR-01 classification gap, so a transient failure can dead-letter a valid notification trigger or visit-downstream start with no recovery, and WR-01 (a `reschedule` signal arriving while the last lead's enqueue activity runs is dropped, so the new slot gets no reminders) is a real lost-reminder path. |
-| 3 | Operator can view all five metrics, each computed from the event stream/projections, not by polling the transactional DB | **VERIFIED** | `services/analytics/repository/queries.py` reads only five views (`v_active_patients`, `v_appointments_booked_daily`, `v_completed_visits_daily`, `v_cancellation`, `v_visit_wait`) created in `analytics_0001_projections.py`; no OLTP database referenced under `services/analytics`. API `/api/analytics/summary` and `/timeseries` behind the gateway (`routing.py` line 41), role- and clinic-scoped; projections fed by the analytics consumer with claim and effect in one transaction; rebuild by replay (`rebuild.py`). Wait time defined check-in to visit start per the research revision; D-13 (start at cutover) stated in docs. Caveat: WR-02 (analytics projection can permanently drop an event on a DB connection error until a manual rebuild), which affects metric accuracy under load, not the existence or derivation of the metrics. |
-| 4 | Every service exposes Prometheus metrics visible in Grafana for critical flows; one booking traced end-to-end in Jaeger as one connected trace; structured logs for booking, availability sync, billing, notifications, workers | **PARTIAL** | Tracing VERIFIED live: fetched trace `8132991350448d3158960a29412aa965` from Jaeger (61 spans, 12 services) containing gateway POST, scheduling `POST /api/appointments`, `StartWorkflow:BookingWorkflow`, `RunActivity:booking.*` (validate, reserve_slot, billing_precheck, confirm, schedule_notification), billing/identity/organization/patient/provider hops, `smarthealth.appointment.events process` in both the analytics and notification consumers, `StartWorkflow:ReminderWorkflow`/`RunWorkflow:ReminderWorkflow`, `apply_async/notifications.send` and `run/notifications.send`: HTTP to Temporal to Kafka to Celery in one trace. Live Prometheus: 17 job groups, all targets up. Four dashboards provisioned from `infra/grafana/dashboards/` (operations, events, notifications, booking-nfr) with the user's visual approval. Structured logs: `tests/e2e/test_phase3_logs.py`. PARTIAL because of CR-02: HTTP rate/latency/5xx panels show per-worker, reset-ridden data (thousands of counter resets per job in 6 h). Exposure is real; correctness of the headline HTTP/NFR series is not. |
-| 5 | Architecture & Decision dashboard shows booking, cancel/reschedule, visit lifecycle, notifications, analytics flows, plus an evaluation Q&A, complete and current | **VERIFIED** | `docs/architecture-dashboard.html`: "Event flows (Phase 3)" section (line 1058) with cancel/reschedule, visit lifecycle, notification and analytics flows; Phase 3 decision cards (CDC vs poller, Debezium image deviation, EVENT-04 deviation, Avro, topic per aggregate, idempotency flavours, Temporal reminders, Celery on RabbitMQ 4.3, sweeper retired); evaluation Q&A section 06 (line 1326); roadmap section 07 updated; stale "scaffolding" language removed (the Event backbone and Background-queue cards say "Wired"). `pytest tests/docs`: 164 passed (run by me). The user reviewed it offline at full and narrow width. Minor accuracy debt: the sweeper-retired card and 10.2 text assert behaviour that CR-01 contradicts (see gap 1). |
+| 1 | Events via transactional outbox with registered schema; kill between commit and publish never loses or duplicates; consumers tolerate redelivery | **VERIFIED** | Unchanged and not regressed: previous report's evidence (same-transaction `enqueue_event`, Debezium CDC, 10 Avro subjects) plus the gate e2e (97 passed) containing the outbox/CDC, redelivery and visit-downstream kill proofs. New: lost-event recovery now exists, so "never loses" also holds for the dead-letter branch |
+| 2 | Booking/cancel/reschedule notify asynchronously without blocking; reminders and follow-ups by Celery/RabbitMQ; retry without double-send; poison to DLQ | **VERIFIED with recorded caveat** | Delivery side unchanged and verified (acks_late, dedupe keys at two layers, DLX to `notifications.dlq`, Temporal reminder workflows feed one Celery send). The "no silent loss" clause previously failing through CR-01 now holds for the notification-trigger consumer (shared classifier, cap, replay script). Caveat: first-review WR-01 (a `reschedule` signal arriving while the last lead's enqueue activity runs is dropped, so the new slot gets no reminders) is open by D-14. Why VERIFIED and not PARTIAL: user-scoped and recorded, one-activity window at the final lead, and SC2's literal text is met. Honest residual: it is a real silent-loss path for reminders in that window, and the fix needs `workflow.patched` plus a replay test |
+| 3 | Five metrics from the event stream/projections, not by polling the OLTP database | **VERIFIED** | Unchanged: five views, analytics API, no OLTP access in `services/analytics`. Previous caveat (WR-02, projection event dead-lettered on a DB error) is closed by the shared classifier in `services/analytics/consumer.py:111` and recoverable by `scripts/replay_dlq.py` or `services.analytics.rebuild` |
+| 4 | Prometheus metrics for every service visible in Grafana; one booking is one connected Jaeger trace; structured logs | **VERIFIED** | Metrics now correct (CR-02 closed, section 2); 20 targets up; Grafana dashboards provisioned (`tests/infra/test_grafana_provisioning.py` part of the earlier gate). Trace: see item 5 |
+| 5 | Dashboard shows the flows, includes the evaluation Q&A, complete and current | **VERIFIED with a small accuracy debt** | `tests/docs` passes (my run, inside the 280). The three outage sentences were rewritten and approved by the user; the fourth ("Not verified") was updated in 261112-8r6. One stale sentence remains (item 6) |
+
+## 5. Jaeger: one connected trace (VERIFIED by test, live fetch not possible now)
+
+I tried to fetch a live booking trace. The Jaeger query API (`localhost:16686`) is up but holds no booking traces: it is in-memory and was restarted after the OOM kill, so the earlier trace `8132991350448d3158960a29412aa965` now returns 404 and the newest gateway traces are non-booking. I did not generate new traffic (no state mutation). Evidence instead: `closeout-logs/gap-e2e.txt` line 237 `PASSED tests/e2e/test_phase3_trace.py::test_one_booking_is_one_connected_trace_across_http_temporal_kafka_and_celery` and line 169 `test_the_booking_trace_id_is_in_the_json_logs_of_every_process_it_touched`, both in the finished-stack gate run after all the gap-closure code; the previous verification fetched the live 61-span, 12-service trace. The gap-closure changes did not touch tracing code (only consumer retry, reconciler, metrics, pool code).
+
+## 6. Docs and dashboard honesty (one recorded follow-up)
+
+- `docs/architecture.md` 10.2/10.4/10.7/10.8/10.9 and the dashboard now state: retried with capped backoff, `TransientExhausted` after the cap, recovery tools, head-of-line effect, multiprocess metrics, connection budget with measured peaks, what was and was not proven. Guard tests (`tests/docs`) fail if the false claim returns. They pass.
+- **Remaining stale sentence** (recorded follow-up, not fixed): `docs/architecture-dashboard.html` line 1542, the **"Failure paths:"** sentence, still says "the consumer's decode-time Schema Registry outage path has no automated test". It is untrue in the safe direction (it understates: 03-21 added unit tests for 408/429/5xx). The same paragraph also says the smoke profile "passed in three runs" (four runs recorded) and that nobody has looked at the Jaeger trace in the UI (the user did). Understatements, not overclaims; not blocking.
 
 ## Observable Truths vs User Decisions
 
 | Decision | Honored? | Evidence |
 |---|---|---|
-| D-01 CDC (Debezium), no polling relay | Yes | Four connectors RUNNING live; `wal_level=logical`; services only insert outbox rows |
-| D-02 Temporal reminders, Celery delivery | Yes | `services/notification/workflows/reminder.py` uses `workflow.now()`, `wait_condition`, `execute_activity` only; trace shows RunWorkflow:ReminderWorkflow then Celery run |
-| D-03 Retire the sweeper, prove replacement by kill test | Retired yes (`services/visit/schedules.py` `retire_sweeper_schedule` runs at each worker start; tombstone workflow kept); replacement proven for the kill-between-commit-and-publish path, NOT for the dead-letter branch (CR-01) | see gap 1 |
-| D-04 NFRs measured after Phase 3; no extra sync work on accept; histograms added; smoke still passes | Yes, with the CR-02 caveat on the histograms' trustworthiness | Smoke passed three times (recorded); NFR-01..08 deliberately unmeasured (accepted) |
-| D-13 Analytics start at cutover | Yes | Stated in docs/architecture.md 10.9 and the dashboard |
-| EVENT-04 projections on a Kafka consumer, not Celery | ACCEPTED, RECORDED DEVIATION (flagged, not failed) | `PHASE3_TRACE_NOTES["EVENT-04"]` in `tests/docs/test_requirement_traceability.py`; dashboard card "Projections on a Kafka consumer, not Celery"; REQUIREMENTS.md wording intentionally untouched |
+| D-01 CDC, no polling relay | Yes | four Debezium connectors RUNNING per the gate; services only insert outbox rows |
+| D-02 Temporal reminders, Celery delivery | Yes | unchanged |
+| D-03 retire the sweeper, prove replacement | Yes, now also for the dead-letter branch | live schedule list has no sweeper; lost-trigger e2e PASSED |
+| D-04 NFRs measured after Phase 3 | Yes | smoke ran four times, thresholds passed (accept p95/p99 21.8/78.9, 29.3/170, 49.1/200.8, 41.85/245.5 ms, per docs); sustained/burst/contention deferred by the user |
+| D-13 analytics start at cutover | Yes | stated in docs and dashboard |
+| D-14 gap closure scope (multiprocess with two workers kept; WR-01/WR-04/WR-06 etc. out of scope) | Yes | two workers kept; no WR-01 change; REQUIREMENTS.md diff empty |
+| EVENT-04 projections on Kafka consumer, not Celery | ACCEPTED, RECORDED DEVIATION (flagged, not failed) | user accepted at the 03-01 checkpoint; REQUIREMENTS.md wording untouched; `PHASE3_TRACE_NOTES["EVENT-04"]` |
 
-## Requirements Coverage
+## Requirements Coverage (20 of 20, no orphans)
 
-All 20 IDs appear in the plan frontmatter (union of plans 03-01..03-20; 03-20 lists all 20) and all 20 are mapped to Phase 3 in REQUIREMENTS.md (all still Pending; I did not tick any). No orphaned requirement.
+All 20 IDs appear in the plans' `requirements:` frontmatter (union across 03-01..03-26; the gap plans cite EVENT-02/03/05, NOTIF-01, ANLY-06, OBS-01, DASH-03/04) and all 20 appear in REQUIREMENTS.md mapped to Phase 3 (checked by grep: each ID is present in at least one plan, and in REQUIREMENTS.md twice). I did not tick or edit any requirement; `git diff 1291b59..HEAD -- .planning/REQUIREMENTS.md` is empty (DASH-04 was already `[x]` before this phase's verification, and the traceability rows still read Pending; the orchestrator owns ticking).
 
-| Requirement | Plans | Status | Evidence / note |
-|---|---|---|---|
-| EVENT-01 | 03-01,03,05,07,08,09,18 | SATISFIED | 10 registered Avro subjects (live), strict serializer, schemas under `libs/events/schemas/` |
-| EVENT-02 | 03-01,05,07,08,09,11,12,17 | SATISFIED | Same-transaction outbox, CDC, kill proofs |
-| EVENT-03 | 03-04,09,10,11,12,14,17 | SATISFIED with caveat | Idempotent via processed-event claims, deterministic workflow ids, dedupe keys; redelivery test; caveat: CR-01 path loses the effect for one visit event |
-| EVENT-04 | 03-02,06,14 | SATISFIED (accepted deviation, flagged) | Notifications, reminders and follow-ups are Celery/RabbitMQ; projections are a Kafka consumer (user-accepted at the 03-01 checkpoint) |
-| EVENT-05 | 03-02,04,14 | PARTIAL | Celery retry plus `notifications.dlq` and Kafka DLQs work for poison messages; but non-poison infra errors are dead-lettered and a dead-lettered visit event has no recovery (CR-01, WR-02); `notifications.dlq` unbounded and undrained (IN-04) |
-| NOTIF-01 | 03-07,14 | SATISFIED | notification-trigger consumer, async, traced |
-| NOTIF-02 | 03-06,14 | SATISFIED with caveat | Reminders via Temporal; WR-01 drops a reschedule signal in one window |
-| NOTIF-03 | 03-06,14 | SATISFIED with caveat | FollowUpReminderWorkflow; WR-06 (no staleness guard on backfilled `visit.completed`) |
-| NOTIF-04 | 03-02,14 | SATISFIED | acks_late, retry, dedupe key at two layers; fake-provider caveat documented |
-| ANLY-01..05 | 03-08,07,09,10,13,16 | SATISFIED | five views, API, Grafana panels; WR-02 accuracy caveat under DB errors |
-| ANLY-06 | 03-10,13 | SATISFIED | queries read views only; no OLTP access in `services/analytics` |
-| OBS-01 | 03-15,16,18 | PARTIAL | targets up, dashboards provisioned; HTTP series wrong under 2 gunicorn workers (CR-02) |
-| OBS-02 | 03-01,02,04,17 | SATISFIED | one connected Jaeger trace verified live |
-| OBS-03 | 03-17 | SATISFIED | `tests/e2e/test_phase3_logs.py` |
-| DASH-03 | 03-18,19 | SATISFIED | flows section present |
-| DASH-04 | 03-18,19 | SATISFIED | Q&A and roadmap updated |
-
-## Required Artifacts / Key Links (spot-verified)
-
-| Link | Status |
-|---|---|
-| service transaction -> `outbox` row (`enqueue_event`) at all 10 emit sites | WIRED |
-| outbox -> Debezium connector -> `smarthealth.*.events` topics | WIRED (4 connectors, tasks RUNNING) |
-| `smarthealth.visit.events` -> visit-downstream consumer -> `ensure_downstream_started` | WIRED (but CR-01 failure branch) |
-| `smarthealth.appointment.events` -> notification-trigger -> Celery `notifications.send` and Temporal reminder | WIRED (live trace) |
-| appointment/patient/visit events -> analytics consumer -> projections -> views -> `/api/analytics` -> gateway | WIRED |
-| `/metrics` on all processes -> Prometheus -> Grafana | WIRED; HTTP series incorrect (CR-02) |
-
-## Anti-Patterns / Review Findings Bearing on the Goal
-
-| Finding | Severity | Bearing |
+| Requirement | Status | Note |
 |---|---|---|
-| CR-01 (confirmed) | BLOCKER | Conflicts with "no silent loss" and with the D-03 condition |
-| CR-02 (confirmed live) | BLOCKER | Conflicts with "observable via metrics/dashboards"; undermines the post-phase NFR measurement |
-| WR-02 dead-lettering projection events on DB errors; 4xx 408/429 poison | WARNING | Same root cause as CR-01; fix together |
-| WR-01 reminder drops late reschedule signal | WARNING | Needs `workflow.patched` plus recorded-history replay test |
-| WR-03 over-broad transient set with no cap (partition can block for ever) | WARNING | Delay, not loss; add a cap or narrow |
-| WR-04 `debezium` REPLICATION role can decode `patient_db` (PHI) via `test_decoding`; Connect REST unauthenticated; FileConfigProvider unrestricted | WARNING | Contradicts the 'outbox only' docstring in `libs/events/migration.py`; Atlas review returned only low findings, so this was either not raised or rated low; recommend `CONNECT_CONFIG_PROVIDERS_FILE_ALLOWED_PATHS`, `REVOKE CONNECT ... FROM PUBLIC`, and a docstring correction. Not blocking for a local-dev assignment but PHI-relevant |
-| WR-05 connection budget above 300; `_entry_for` orphans engines without `dispose()` | WARNING | Most likely cause of the observed `TooManyConnectionsError` and the trigger of CR-01; the user accepted the test symptom, not the production-path consequence |
-| WR-06 backfill/replay sends follow-ups for old visits | WARNING | Add staleness guard in `on_visit_completed` and a caution in the backfill script |
-| WR-07 failed offset commit crashes the consumer | WARNING | Crash-loop on broker blip; at-least-once preserved |
-| IN-01..IN-06 | INFO | Duplicate classification code (fold into CR-01 fix), duplicated notification code, unbounded `event_type` label cardinality, rabbitmq-init admin password in env, metrics-server flag, slot invalidation recovery undocumented |
-| Debt markers (TBD/FIXME/XXX) | none blocking found in the reviewed files by the review; not rescanned |
+| EVENT-01 | SATISFIED | 10 subjects, strict serializer |
+| EVENT-02 | SATISFIED | same-transaction outbox, CDC, kill proofs; lost-event recovery added |
+| EVENT-03 | SATISFIED | idempotent consumers; the CR-01 loss path is closed |
+| EVENT-04 | ACCEPTED DEVIATION (flagged) | notifications/reminders/follow-ups on Celery+RabbitMQ; projections are a Kafka consumer, user-accepted; wording untouched. Not a failure |
+| EVENT-05 | SATISFIED | retry plus DLQ (`notifications.dlq`, Kafka DLQs); transient failures no longer dead-lettered early; `TransientExhausted` and replay. Caveats: `notifications.dlq` unbounded/undrained (IN-04 first review); head-of-line effect of the cap needs a replay step after a long outage |
+| NOTIF-01 | SATISFIED | |
+| NOTIF-02 | SATISFIED with caveat | first-review WR-01 reschedule race (D-14, recorded) |
+| NOTIF-03 | SATISFIED with caveat | first-review WR-06: a replay or backfill can start follow-ups for old visits (no staleness guard); `replay_dlq.py` docstring now says so |
+| NOTIF-04 | SATISFIED | fake-provider caveat documented |
+| ANLY-01..05 | SATISFIED | five views, API, panels |
+| ANLY-06 | SATISFIED | views only |
+| OBS-01 | SATISFIED | CR-02 closed live |
+| OBS-02 | SATISFIED | connected trace (test, previous live fetch) |
+| OBS-03 | SATISFIED | `test_phase3_logs.py` passed in the gate |
+| DASH-03 | SATISFIED | flows section |
+| DASH-04 | SATISFIED | Q&A and roadmap; one stale "Failure paths" sentence (follow-up) |
 
-## Test Evidence and Accepted Limits
+## Anti-patterns and review state
 
-- `tests/docs`: 164 passed (my run). I did not run the full suites; the recorded 03-20 numbers are: non-e2e run 1 = 2 failed / 1854 passed / 1 error; run 2 = 5 failed / 1850 passed / 1 error; e2e run 2 = 71 passed.
-- The non-e2e gate never finished clean on any run. The user accepted this explicitly (provider specialty-ordering test, `TooManyConnectionsError` at the 300-connection ceiling, macOS fork SIGTRAP; each passed alone) as recorded test-environment limitations, plus ten root-user Dockerfiles, and the 03-20 follow-up to raise `max_connections`, cap Jaeger memory and dispose engines is not done. I honor these as accepted. Note that the connection-ceiling symptom is the same mechanism that, in production-shaped use, triggers CR-01, so the acceptance should not be read as covering CR-01.
-- NFR-01..08 are unmeasured by the user's decision (smoke only). Not a gap.
-- Regression check of prior phases: Phases 1, 1.1 and 2.1 VERIFICATION files were not changed by Phase 3 truths except the one the phase deliberately retired (the Phase 2.1 note that `visit-downstream-sweeper` runs; D-03). The remaining 2.1 reconcilers (scheduling, visit, hold reaper, pending starter) are still registered. The only regression exposure is the lost-trigger case in gap 1: the Phase 2.1 SC4 'unsettled visits' reconciler never covers a visit whose `downstream_started_at` is NULL. No Phase 1/1.1 regression found.
+- Debt markers (`TBD`/`FIXME`/`XXX`) in the 11 gap-closure source files: none found.
+- Gap review (`03-REVIEW-GAP.md`): 0 critical, 7 warning, 6 info. WR-01, WR-02 (the default-poison and no-selector part) and WR-07 were fixed by quick task 261112-8r6 (I confirmed the code names: `POISON_ERROR_TYPES`, the `--apply needs a selector` refusal, `LostTriggerBackoff`, max age, kill switch; their tests pass). None of the remaining warnings is a blocker for the roadmap contract; none is mitigated by a user override except as listed in the follow-ups.
+- Semgrep (recorded by 03-26): 24 findings identical to the 03-20 triage, all accepted or false positives (ten root-user Dockerfiles accepted by the user); 0 findings on the gap-closure code with `p/python` and `p/security-audit`. I did not rerun it.
+
+## Accepted limits honored (not failed)
+
+Ten root-user Dockerfiles; NFR-01..08 unmeasured (smoke only, four runs, thresholds passed; sustained/burst/contention deferred); the known baseline test (`tests/provider/test_provider_tracer.py::test_admin_registers_provider_through_gateway`) deselected by node id; macOS fork SIGTRAP class; Kafka and Jaeger OOM kills on the 7.65 GiB Docker VM; `scripts/compose_healthcheck.sh` not flagging a stopped container.
+
+## Remaining follow-ups (explicit)
+
+1. First-review WR-01: reminder reschedule-signal race (needs `workflow.patched` plus a replay test). This is the SC2 caveat.
+2. First-review WR-04: `debezium` role can read other databases via `test_decoding`; Connect REST unauthenticated; `FileConfigProvider` unrestricted (PHI-relevant, local-dev scope).
+3. First-review WR-06: no staleness guard in `on_visit_completed` (replay/backfill can message old patients).
+4. Gap-review WR-02 remainder: no dedupe of repeated DLQ copies and no replayed marker in `scripts/replay_dlq.py` (a replay fans out to every group on the topic).
+5. Gap-review WR-03: the transient retry sleeps on the single poll thread, so one stuck message slows all three partitions up to the cap (pause only the failing partition).
+6. Gap-review WR-04: `RuntimeError`, `OSError`, `KombuError`/`AMQPError`/`PyMongoError` are blanket-transient, so a deterministic failure costs a 900 s cap per message.
+7. Gap-review WR-05: `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` unbounded (`Field(ge=...)`); the halved API pool (5+5) is untested against the deferred burst profile.
+8. Gap-review WR-06: "241 of 297" is not a bound (Temporal's connection pools observed not derived, host-side processes not counted); set `SQL_MAX_CONNS`/`SQL_VIS_MAX_CONNS`.
+9. Gap-review IN-01..IN-06 (e.g. `sqlstate_of` follows `__context__`, per-message transient state cleanup, engine registry lock, backfill partial-apply, replay edge cases, `25006` classification).
+10. Dashboard line 1542 "Failure paths:" sentence (and the "three runs" / "nobody has looked at Jaeger" statements) is stale.
+11. `scripts/compose_healthcheck.sh` does not flag a stopped required container; Kafka and Jaeger memory caps; dev `max_connections` not raised.
+12. Deferred load profiles (`sustained`, `burst`, `contention`) and an A/B of multiprocess-metrics overhead on the accept path; provider specialty-ordering test; SIGTRAP class; identity migration test on the live DB.
+13. The live `visit-downstream` DLQ holds 814 `NonRetryableEventError` records for deleted harness visits (replay skips poison by default).
+14. Real SMS/email provider idempotency key (documented caveat); EVENT-04 REQUIREMENTS.md wording decision; ticking the 20 requirements in REQUIREMENTS.md (orchestrator's step).
 
 ## Human Verification
 
-None outstanding. The user already checked Jaeger (trace `8132991350448d3158960a29412aa965`, which I re-fetched and confirmed), the four Grafana dashboards and `docs/architecture-dashboard.html`.
+None outstanding. The user already approved Jaeger, the four dashboards, the architecture dashboard, and the gap-closure dashboard sentences (03-26 sign-off, 2026-11-12). The single judgement item (SC2 caveat) is recorded in the frontmatter override rather than as a human-verification request.
 
-## Gaps Summary and Suggested Gap-Closure Plans
+## Gaps Summary
 
-Two focused plans close the phase.
-
-**Plan A (CR-01 + WR-02 + IN-01 + WR-03, event reliability).**
-1. Add `libs/events/classify.py` (SQLSTATE class 08/53/57/40 and `asyncpg.PostgresError`, Temporal statuses narrowed per WR-03, broker errors) and use it in `services/visit/consumer.py`, `services/analytics/consumer.py`, `services/notification/triggers.py`; cap consecutive transient retries and then dead-letter with `TransientExhausted`; exempt 408/429 in `libs/events/consumer.py` `_decode`.
-2. Add a recovery route for a lost visit trigger: extend `services/visit/repository/visit_repo.py` (a `list_lost_trigger` query for `status='completed' AND downstream_started_at IS NULL AND completed_at < now() - grace`) wired into the visit reconciler activity that calls `ensure_downstream_started`; or ship a DLQ replay script under `scripts/`.
-3. Tests: asyncpg `TooManyConnectionsError` -> `RETRY_LATER` for visit and analytics; dead-lettered `visit.completed` is recovered. Update `docs/architecture.md` 10.2 and the dashboard Q&A.
-4. Optionally WR-05 (pool size setting; `dispose()` in `libs/db/postgres.py` `_entry_for`) to remove the trigger, WR-01 (patched reminder fix with replay test), WR-06 (staleness guard) and WR-07 (commit retry).
-
-**Plan B (CR-02, metrics correctness).** Enable multiprocess mode in the nine gunicorn Dockerfiles (`services/{gateway,billing,analytics,identity,patient,provider,organization,scheduling,visit}/Dockerfile`) and the gateway `/metrics` route, or drop to `WEB_CONCURRENCY=1` for scraped APIs; add an e2e assertion that `resets(http_requests_total[5m])` is zero after traffic; rerun the smoke profile. Do this before the deferred `sustained`/`burst`/`contention` runs.
-
-Security follow-up (not gating): WR-04 hardening and docstring correction, IN-04 DLQ cap and admin-password secret.
-
-If the user prefers to accept either gap, record it as an override in this file's frontmatter (`overrides:` with reason, accepted_by, accepted_at) and add it to `docs/architecture.md` 10.9 with the operator recovery step; both look like real defects, not intentional deviations, so closure is recommended over override.
+No gaps. Both blockers from the previous report are closed with code, test and live evidence; no regression found in Phases 1, 1.1 or 2.1 (the retired sweeper Schedule stays absent, the other five Schedules are registered, reconciler workflow and activity names unchanged and replay-tested).
 
 ---
 
-_Verified: 2026-11-11T14:00:00Z_
+_Verified: 2026-11-12T10:00:00Z_
 _Verifier: Claude (gsd-verifier)_
+
+## User confirmation (2026-11-12)
+
+The user confirmed the SC2 override (first-review WR-01 reminder reschedule-signal race accepted as a recorded follow-up, per D-14) with "Accept as recorded follow-up (Recommended)", and chose to tick EVENT-04 with the reworded note ("Tick it and reword (Recommended)").

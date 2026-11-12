@@ -15,7 +15,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 - [x] **Phase 1.1: Microservice Re-architecture** (INSERTED) - Split the Phase 1 monolith into independently deployable services with their own databases, an API gateway, and RS256/JWKS token verification (week-1 mentor feedback) (completed 2026-10-12)
 - [x] **Phase 2: Scheduling + Service Workflow** - Temporal-orchestrated booking/cancel/reschedule/visit sagas with conflict prevention, idempotency, waitlist, and modeled billing pre-check (completed 2026-11-10)
 - [x] **Phase 2.1: Week 1-2 mentor review remediation** (INSERTED) - Appointment state machine and check-in window, provider schedule-change propagation, post-commit saga safety, reconcilers, Week 1 carry-overs, quantified NFRs and a load test (week 1-2 mentor feedback) (completed 2026-11-10)
-- [ ] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout
+- [x] **Phase 3: Event-Driven System + Observability** - Kafka event backbone, Celery background workers, event-derived analytics, full observability, and dashboard closeout (completed 2026-11-12)
 
 ## Phase Details
 
@@ -243,7 +243,7 @@ Part A delivers a reliable, distributed healthcare-operations backend across thr
 
 Success criterion 1 is defined honestly (research F4): no loss, at-least-once on the wire, effect-level exactly-once through idempotent consumers, proven by forced redelivery (plans 03-05, 03-11, 03-17). Notifications reach the fake provider once per dedupe key even across a worker kill (plan 03-02); a real provider must accept an idempotency key for the same guarantee (documented in plan 03-18).
 
-**Plans:** 25/26 plans executed: 20/20 executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own), plus 6 gap-closure plans (0/6 executed) from the phase verification (CR-01 event reliability, CR-02 metrics correctness), in waves 14-19, one plan per wave because they share the live stack (revised after plan-check: the multiprocess rollout split into 03-24 and 03-25, closeout renumbered 03-26)
+**Plans:** 26/26 plans complete: 20/20 executed in 13 waves (revised after plan-check: every plan under 15 files and at most 3 tasks; one plan per wave edits `infra/docker-compose.yml`; disruptive live-stack proofs run in waves of their own), plus 6 gap-closure plans (0/6 executed) from the phase verification (CR-01 event reliability, CR-02 metrics correctness), in waves 14-19, one plan per wave because they share the live stack (revised after plan-check: the multiprocess rollout split into 03-24 and 03-25, closeout renumbered 03-26)
 
 **Wave 1**
 
@@ -326,7 +326,7 @@ Success criterion 1 is defined honestly (research F4): no loss, at-least-once on
 
 **Wave 19** *(gap closure, blocked on Wave 18 completion)*
 
-- [ ] 03-26-gap-closeout-PLAN.md — docs and dashboard corrected with guard tests (three dashboard sentences), final regression with fail-closed gate checks, follow-ups, gateway budget restored as the last automated step, user re-check of the three sentences (EVENT-05, OBS-01, DASH-03, DASH-04)
+- [x] 03-26-gap-closeout-PLAN.md — docs and dashboard corrected with guard tests (three dashboard sentences), final regression with fail-closed gate checks, follow-ups, gateway budget restored as the last automated step, user re-check of the three sentences (EVENT-05, OBS-01, DASH-03, DASH-04)
 
 ## Progress
 
@@ -338,4 +338,4 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Foundation + Core Services | 7/7 | Complete    | 2026-09-10 |
 | 2. Scheduling + Service Workflow | 12/12 | Complete | 2026-11-10 |
 | 2.1. Week 1-2 mentor review remediation | 13/13 | Complete | 2026-11-10 |
-| 3. Event-Driven System + Observability | 25/26 | In Progress|  |
+| 3. Event-Driven System + Observability | 26/26 | Complete    | 2026-11-12 |
